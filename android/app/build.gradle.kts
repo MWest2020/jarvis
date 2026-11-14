@@ -40,6 +40,8 @@ android {
     lint {
         abortOnError = true
         checkReleaseBuilds = false
+        // Warnings in the CI log, not only in an HTML report nobody downloads.
+        textReport = true
     }
 }
 

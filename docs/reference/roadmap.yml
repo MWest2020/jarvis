@@ -15,3 +15,8 @@ done_means:
   - {item: "A spoken round trip from the phone over the tailnet (HTTP Shortcuts)", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge/tasks.md"}
   - {item: "Change run-bridge-in-cluster proposed (proposal, design, tasks, spec delta)", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/8"}
   - {item: "Bridge runs as a pod on the cluster, tailnet-only (Service + NetworkPolicy), verified", status: done, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/run-in-cluster.md#test-on-2026-11-14"}
+  - {item: "Change add-android-client proposed (proposal, design, tasks, spec), with the first version of the app", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/12"}
+  - {item: "Android app builds in CI: unit tests, lint, dependency check, debug APK artifact", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/12/checks"}
+  - {item: "Change add-android-client approved by Mark", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/12"}
+  - {item: "Android app: a spoken round trip on Mark's phone, recorded in the how-to", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/android-app.md#test-record"}
+  - {item: "Android app: release-signed APK from CI (needs Mark's signing key as GitHub secrets)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-android-client/tasks.md"}

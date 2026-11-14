@@ -1,13 +1,13 @@
 ---
 status: current
-last_reviewed: 2026-11-14
+last_reviewed: 2026-11-15
 ---
 # Phone setup: tap-to-talk with HTTP Shortcuts (weekend slice, task 3.1)
 
 This is the weekend-test client only (D7, open question: decided). It uses the
 "HTTP Shortcuts" Android app (Waboodoo) already on the phone, on the same
-Tailscale network as the bridge machine. A native Android app is a later
-change, built after this test.
+Tailscale network as the bridge machine. The native Android app is described
+in [`android-app.md`](android-app.md); this guide stays valid beside it.
 
 Exact menu names can differ a little between HTTP Shortcuts versions; the
 steps below describe the shapes to look for rather than a fixed version.

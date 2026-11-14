@@ -20,3 +20,10 @@ kotlin {
 dependencies {
     testImplementation(libs.junit)
 }
+
+tasks.test {
+    testLogging {
+        // One line per test in the CI log, so a green run shows what it ran.
+        events("passed", "failed", "skipped")
+    }
+}
