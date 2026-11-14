@@ -4,5 +4,7 @@ last_reviewed: 2026-11-14
 ---
 # How-to guides
 
-Filled by the weekend slice: running the bridge on the machine, and setting up the HTTP
-Shortcuts tap-to-talk button on the phone.
+| Guide | Covers |
+|---|---|
+| [`bridge-service.md`](bridge-service.md) | Installing and running the bridge service, configuring it, picking a Kokoro voice, the manual end-to-end check on the tailnet. |
+| [`android-http-shortcuts.md`](android-http-shortcuts.md) | Setting up the tap-to-talk HTTP Shortcuts button on the phone for the weekend test. |
