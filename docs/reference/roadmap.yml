@@ -1,0 +1,15 @@
+# Roadmap, as data, for the overview at westerweel.work/nu/. An item is "done" only with
+# evidence (a PR, issue or doc); everything else is "open".
+project: jarvis
+goal: "Talk to a Claude Code session hands-free from an Android phone, on your own machines, over Tailscale."
+current: weekend-test
+phases:
+  - {id: weekend-test, name: "Weekend test", summary: "spoken round trip from the phone (HTTP Shortcuts) to headless Claude Code, local STT/TTS"}
+  - {id: plugin, name: "Plugin", summary: "machine side as a Claude Code plugin others can install"}
+  - {id: android-app, name: "Android app", summary: "a native phone client built on the lessons of the test"}
+done_means:
+  - {item: "Change add-voice-bridge proposed (proposal, design, tasks, spec)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge"}
+  - {item: "Change applied: Mark agrees with the drafted tasks and spec", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge"}
+  - {item: "Bridge service on the tailnet with token, headless Claude Code, session resume", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
+  - {item: "Local STT (faster-whisper) and TTS (Kokoro) behind one interface each", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
+  - {item: "A spoken round trip from the phone in the car", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
