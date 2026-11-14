@@ -3,7 +3,7 @@
 # (uv sync --frozen, CPU-only torch), the Claude Code CLI, and the
 # faster-whisper and Kokoro weights, so a pod needs no internet for models.
 # Build context = repo root:  docker build -f deploy/Dockerfile .
-FROM node:22.11.0-bookworm-slim
+FROM node:22.23.5-bookworm-slim
 
 # uv (pinned), copied from the official distroless image.
 COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
@@ -37,12 +37,15 @@ RUN uv python install 3.12 \
 COPY bridge/ ./bridge/
 RUN uv sync --frozen --no-dev --no-editable --python 3.12
 
-# Model weights at build time: load both models once, exactly as the bridge
-# does at start, so whatever they fetch lands in HF_HOME. Extra Kokoro voices
-# can be added with --build-arg KOKORO_VOICES="af_heart bf_emma".
+# Model weights at build time, at pinned Hugging Face commits (fetch_models.py
+# points refs/main at them). Then the bridge's own warm-up runs OFFLINE, exactly
+# as at start: it proves the pinned files are all it needs. Extra Kokoro voices:
+# --build-arg KOKORO_VOICES="af_heart bf_emma" (Whisper sizes need a pin added).
 ARG WHISPER_MODEL=base
 ARG KOKORO_VOICES=af_heart
-RUN .venv/bin/python -c "import sys; from bridge import stt, tts; \
+COPY deploy/fetch_models.py /opt/jarvis/fetch_models.py
+RUN .venv/bin/python /opt/jarvis/fetch_models.py "$WHISPER_MODEL" $KOKORO_VOICES \
+ && HF_HUB_OFFLINE=1 .venv/bin/python -c "import sys; from bridge import stt, tts; \
 stt.warm_up(sys.argv[1]); [tts.synthesize('Ready.', voice=v) for v in sys.argv[2:]]" \
     "$WHISPER_MODEL" $KOKORO_VOICES \
  && chmod -R a+rX /opt/jarvis /opt/python

@@ -29,11 +29,17 @@ What is in it:
   first use.
 - Node and Claude Code, pinned (`CLAUDE_CODE_VERSION` build argument).
 - The faster-whisper `base` weights and Kokoro with the `af_heart` voice, fetched at build
-  time by running the bridge's own warm-up. The container sets `HF_HUB_OFFLINE=1`, so a pod
-  start downloads nothing. Another voice or Whisper size means a rebuild:
-  `--build-arg KOKORO_VOICES="af_heart bf_emma" --build-arg WHISPER_MODEL=small`.
+  time at pinned Hugging Face commits (`deploy/fetch_models.py`), then checked by running
+  the bridge's own warm-up offline. The container sets `HF_HUB_OFFLINE=1`, so a pod start
+  downloads nothing. Another voice means a rebuild with
+  `--build-arg KOKORO_VOICES="af_heart bf_emma"`; another Whisper size also needs its
+  commit added to `fetch_models.py`.
 - `jarvis-sync-projects` (the project sync below).
 - User uid 10001. Claude Code's auto-updater and non-essential traffic are off.
+
+CI runs every build with `--read-only --tmpfs /tmp --network none` and `HOME=/tmp`: the
+bridge must load both models, listen, and answer 401 without a token. That is the proof
+that a read-only root filesystem and an offline start work.
 
 The package is private when the repository is. The cluster needs an image pull secret with a
 token that may read GHCR packages (`read:packages`).
@@ -73,8 +79,11 @@ whole cluster network by default:
 
    The phone then calls `http://jarvis.<tailnet>.ts.net:8787/turn?project=<name>`.
 
-2. **A NetworkPolicy** that admits the bridge's port only from the operator's namespace
-   (`tailscale` by default), where its proxy pod runs:
+2. **A NetworkPolicy** that admits the bridge's port only from the operator's proxy pod for
+   this Service. The operator's namespace (`tailscale` by default) can also hold public
+   Funnel proxies for other apps, so narrow the rule to the proxy's pod labels
+   (`kubectl -n tailscale get pods --show-labels`; the operator labels each proxy with the
+   Service it serves). The namespace-only form below is the starting point:
 
    ```yaml
    apiVersion: networking.k8s.io/v1
@@ -92,7 +101,9 @@ whole cluster network by default:
            - { protocol: TCP, port: 8787 }
    ```
 
-   This only works on a CNI that enforces NetworkPolicy (Cilium, Calico). Without that, do
+   Limit egress too: DNS (53) and HTTPS (443) are all the bridge and the project sync need
+   (GitHub, the Anthropic API). This only works on a CNI that enforces NetworkPolicy
+   (Cilium, Calico). Without that, do
    not use the opt-in. Tested on Cilium (2026-11-14): the operator's proxy gets through;
    a pod in another namespace, the LAN to the pod IP, and the LAN to a NodePort all time
    out. Host-network processes on the pod's own node can still connect (Cilium admits the
@@ -121,6 +132,13 @@ container; Claude Code's tools are read-only anyway (`Read`, `Glob`, `Grep`).
 - `CLAUDE_CODE_OAUTH_TOKEN` from a Secret, for headless Claude Code (`claude setup-token`).
 - `JARVIS_TOKEN` from a Secret: the phone's token. Never in git.
 - With `readOnlyRootFilesystem`, mount an `emptyDir` on `/tmp`.
+- `automountServiceAccountToken: false` and `enableServiceLinks: false`: the bridge needs
+  no Kubernetes API token and no environment variables for other Services. Claude Code's
+  file tools are kept out of `/proc` and confined to the project directory (`--restricted`),
+  but there is no reason to hand it more than it needs.
+- Logs: `kubectl logs` shows request lines, summaries and errors, never transcripts or full
+  replies; those are in `$JARVIS_STATE_DIR/bridge.log` (rotated at 10 MB, three old files).
+  Both redact the token and the Claude credentials.
 
 A sketch of the pod spec, one volume with two sub-paths (the init container creates them):
 
