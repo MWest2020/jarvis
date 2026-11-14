@@ -16,4 +16,9 @@ the change is applied. Everything else is a GitHub issue.
 - Nothing of Mark's own setup (habitat, factory, machine names) in the plugin.
 - Secrets (the token) never in git.
 
+**Documentation:** everything an agent needs is in `docs/` (start at `docs/index.md`); the
+handbook MCP (`.mcp.json`) serves it, so don't scan the whole repo. On every change, check
+whether `docs/` needs updating, and update it in the same commit. **No push before that check
+is done.** CI (`docs-gates`) fails a PR that changes code without touching `docs/`.
+
 **Commit identity:** MWest2020 <mwest2020@hotmail.com>.
