@@ -6,6 +6,7 @@ lose the running conversation for each project.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -34,7 +35,9 @@ class SessionStore:
             return {}
 
     def _write(self, data: dict[str, str]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(data))
         tmp.replace(self._path)

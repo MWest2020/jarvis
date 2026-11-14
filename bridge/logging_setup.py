@@ -11,7 +11,10 @@ from pathlib import Path
 
 
 def configure(log_path: Path) -> logging.Logger:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # The log holds full replies, which can quote file contents: owner only.
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log_path.touch(mode=0o600, exist_ok=True)
+    log_path.chmod(0o600)
     logger = logging.getLogger("bridge")
     logger.setLevel(logging.INFO)
     handler = logging.FileHandler(log_path, encoding="utf-8")

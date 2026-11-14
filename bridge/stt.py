@@ -16,3 +16,8 @@ def transcribe(audio_bytes: bytes, *, model_size: str = "base") -> str:
     model = _model(model_size)
     segments, _info = model.transcribe(io.BytesIO(audio_bytes))
     return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def warm_up(model_size: str = "base") -> None:
+    """Load the model now, so the first voice turn does not pay for it."""
+    _model(model_size)

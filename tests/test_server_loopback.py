@@ -91,3 +91,48 @@ def test_rejects_a_missing_project(running_server):
 def test_rejects_an_empty_body(running_server):
     response, _ = _post_turn(running_server, body=b"")
     assert response.status == 400
+
+
+def _raw(port, payload: bytes) -> bytes:
+    import socket
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(payload)
+        return s.recv(4096)
+
+
+def test_rejects_a_non_numeric_content_length(running_server):
+    reply = _raw(running_server, b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+                 b"Authorization: Bearer test-token\r\nContent-Length: abc\r\n\r\n")
+    assert reply.startswith(b"HTTP/1.0 400") or reply.startswith(b"HTTP/1.1 400")
+
+
+def test_rejects_a_too_large_upload_before_reading_it(running_server):
+    reply = _raw(running_server, b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+                 b"Authorization: Bearer test-token\r\nContent-Length: 999999999\r\n\r\n")
+    assert b" 413 " in reply.split(b"\r\n")[0]
+
+
+def test_a_non_ascii_token_is_a_plain_401(running_server):
+    reply = _raw(running_server, "POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+                 "Authorization: Bearer ték\r\nContent-Length: 1\r\n\r\nx".encode("latin-1"))
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_silence_is_answered_without_an_agent_turn(running_server, monkeypatch):
+    calls = []
+    monkeypatch.setattr(stt, "transcribe", lambda audio_bytes, model_size: "  ")
+    monkeypatch.setattr(claude_adapter, "run_turn", lambda **kw: calls.append(kw))
+    response, data = _post_turn(running_server)
+    assert response.status == 200
+    assert data == b"FAKE-WAV-" + server.NOT_HEARD.encode()
+    assert calls == []
+
+
+def test_a_second_turn_on_a_busy_project_gets_409(running_server):
+    lock = server._project_lock("demo")
+    lock.acquire()
+    try:
+        response, _ = _post_turn(running_server)
+        assert response.status == 409
+    finally:
+        lock.release()
