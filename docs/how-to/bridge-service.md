@@ -25,9 +25,12 @@ uv sync
 ```
 
 This installs `faster-whisper`, `kokoro` and `soundfile` into a local `.venv`
-(gitignored). The first run of the service downloads the Whisper and Kokoro
-model weights to the usual Hugging Face / Kokoro cache directories; that
-needs a working internet connection once.
+(gitignored). On Linux, torch comes from PyTorch's CPU index (no CUDA libraries), and
+the spaCy English model Kokoro's G2P needs is installed with the rest instead of at
+first use. The first run of the service downloads the Whisper and Kokoro model weights
+to the usual Hugging Face / Kokoro cache directories; that needs a working internet
+connection once. (In a cluster the image carries the weights; see
+[`run-in-cluster.md`](run-in-cluster.md).)
 
 ## Configure
 
@@ -38,6 +41,7 @@ your process manager.
 | Variable | Required | Meaning |
 |---|---|---|
 | `JARVIS_BIND_HOST` | yes | The Tailscale IP to listen on, e.g. `100.x.y.z` (IPv4 100.64.0.0/10 or IPv6 fd7a:115c:a1e0::/48). Loopback is allowed for local tests. Every other address is refused at start, wildcards and public addresses included (Network exposure, AGENTS.md). |
+| `JARVIS_BEHIND_TAILSCALE_PROXY` | no | Only for a pod behind the Tailscale operator: `1` allows a private (RFC 1918 or CGNAT) bind address. See [`run-in-cluster.md`](run-in-cluster.md). Leave it unset on a workstation. |
 | `JARVIS_TOKEN` | yes | The shared secret the phone sends as `Authorization: Bearer <token>`. Generate one with `openssl rand -hex 32`. Never commit it. |
 | `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/mark/code/demo`. The phone selects a project by name in the request. |
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |

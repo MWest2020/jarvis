@@ -13,3 +13,5 @@ done_means:
   - {item: "Bridge service on the tailnet with token, headless Claude Code, session resume", status: done, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/bridge-service.md#test-on-2026-11-14"}
   - {item: "Local STT (faster-whisper) and TTS (Kokoro) on the machine", status: done, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/bridge-service.md#test-on-2026-11-14"}
   - {item: "A spoken round trip from the phone over the tailnet (HTTP Shortcuts)", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge/tasks.md"}
+  - {item: "Change run-bridge-in-cluster proposed (proposal, design, tasks, spec delta)", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/run-bridge-in-cluster"}
+  - {item: "Bridge runs as a pod on the cluster, tailnet-only (Service + NetworkPolicy), verified", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/run-in-cluster.md"}

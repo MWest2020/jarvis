@@ -1,0 +1,66 @@
+# The jarvis bridge as a container image (run-bridge-in-cluster, D3).
+# Everything the bridge needs at start is baked in: the Python environment
+# (uv sync --frozen, CPU-only torch), the Claude Code CLI, and the
+# faster-whisper and Kokoro weights, so a pod needs no internet for models.
+# Build context = repo root:  docker build -f deploy/Dockerfile .
+FROM node:22.11.0-bookworm-slim
+
+# uv (pinned), copied from the official distroless image.
+COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
+
+# git: the project sync (deploy/sync-projects.sh). ca-certificates: HTTPS to
+# GitHub and the Anthropic API. libsndfile comes with the soundfile wheel and
+# espeak-ng with the espeakng-loader wheel, so no other system packages.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Claude Code headless, pinned: the version the bridge's argv (--tools,
+# dontAsk, --strict-mcp-config) was tested with. Never `latest`.
+ARG CLAUDE_CODE_VERSION=2.1.322
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+ && npm cache clean --force
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1 \
+    HF_HOME=/opt/jarvis/hf
+
+WORKDIR /opt/jarvis/app
+
+# Dependencies first (cached layer), then the bridge itself.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv python install 3.12 \
+ && uv sync --frozen --no-dev --no-install-project --python 3.12
+COPY bridge/ ./bridge/
+RUN uv sync --frozen --no-dev --no-editable --python 3.12
+
+# Model weights at build time: load both models once, exactly as the bridge
+# does at start, so whatever they fetch lands in HF_HOME. Extra Kokoro voices
+# can be added with --build-arg KOKORO_VOICES="af_heart bf_emma".
+ARG WHISPER_MODEL=base
+ARG KOKORO_VOICES=af_heart
+RUN .venv/bin/python -c "import sys; from bridge import stt, tts; \
+stt.warm_up(sys.argv[1]); [tts.synthesize('Ready.', voice=v) for v in sys.argv[2:]]" \
+    "$WHISPER_MODEL" $KOKORO_VOICES \
+ && chmod -R a+rX /opt/jarvis /opt/python
+
+COPY deploy/sync-projects.sh /usr/local/bin/jarvis-sync-projects
+RUN chmod 755 /usr/local/bin/jarvis-sync-projects \
+ && useradd -m -u 10001 jarvis
+
+# At run time: models from the image only, no hub calls, no Claude Code
+# auto-update or telemetry.
+ENV PATH=/opt/jarvis/app/.venv/bin:$PATH \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    DISABLE_AUTOUPDATER=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    PYTHONUNBUFFERED=1 \
+    JARVIS_WHISPER_MODEL=${WHISPER_MODEL}
+
+USER 10001
+EXPOSE 8787
+CMD ["jarvis-bridge"]

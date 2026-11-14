@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from bridge import claude_adapter, stt, tts
-from bridge.config import BridgeConfig, ConfigError, load_config
+from bridge.config import BEHIND_PROXY_WARNING, BridgeConfig, ConfigError, load_config
 from bridge.logging_setup import configure as configure_logging
 from bridge.sessions import SessionStore
 from bridge.summary import extract_summary
@@ -167,6 +167,8 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     configure_logging(config.log_path)
+    if config.behind_tailscale_proxy:
+        logger.warning(BEHIND_PROXY_WARNING, config.bind_host)
     # Load both speech models before the first turn: on a small CPU the first
     # Kokoro load alone took over two minutes (2026-11-14 tailnet test).
     logger.info("loading speech models (whisper %s, kokoro)", config.whisper_model)

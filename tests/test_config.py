@@ -67,3 +67,71 @@ def test_rejects_a_non_tailscale_bind_host(monkeypatch, tmp_path, host):
 def test_accepts_tailscale_and_loopback(monkeypatch, tmp_path, host):
     _set_minimal_env(monkeypatch, tmp_path, JARVIS_BIND_HOST=host)
     assert load_config().bind_host == host
+
+
+# run-bridge-in-cluster: the explicit opt-in for a pod IP behind a Tailscale proxy.
+
+@pytest.mark.parametrize("host", ["10.200.3.17", "172.16.0.5", "192.168.178.50"])
+def test_rejects_a_pod_ip_without_the_opt_in(monkeypatch, tmp_path, host):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_BIND_HOST=host)
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+@pytest.mark.parametrize("host", ["10.200.3.17", "172.31.255.1", "192.168.1.10", "100.64.0.1"])
+def test_opt_in_accepts_a_private_address(monkeypatch, tmp_path, host):
+    _set_minimal_env(
+        monkeypatch, tmp_path, JARVIS_BIND_HOST=host, JARVIS_BEHIND_TAILSCALE_PROXY="1"
+    )
+    config = load_config()
+    assert config.bind_host == host
+    assert config.behind_tailscale_proxy is True
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["0.0.0.0", "::", "8.8.8.8", "172.32.0.1", "11.0.0.1", "2001:db8::1", "fd00::1"],
+)
+def test_opt_in_still_rejects_wildcard_and_public(monkeypatch, tmp_path, host):
+    _set_minimal_env(
+        monkeypatch, tmp_path, JARVIS_BIND_HOST=host, JARVIS_BEHIND_TAILSCALE_PROXY="1"
+    )
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "2", " 1"])
+def test_opt_in_must_be_exactly_1(monkeypatch, tmp_path, value):
+    _set_minimal_env(
+        monkeypatch, tmp_path, JARVIS_BIND_HOST="10.0.0.1", JARVIS_BEHIND_TAILSCALE_PROXY=value
+    )
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_opt_in_is_logged_loudly(monkeypatch, tmp_path, caplog):
+    _set_minimal_env(
+        monkeypatch, tmp_path, JARVIS_BIND_HOST="10.200.3.17", JARVIS_BEHIND_TAILSCALE_PROXY="1"
+    )
+    with caplog.at_level("WARNING", logger="bridge.config"):
+        load_config()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "the opt-in must log a warning"
+    assert "10.200.3.17" in warnings[0].getMessage()
+    assert "NOT on a Tailscale interface" in warnings[0].getMessage()
+
+
+def test_without_opt_in_nothing_is_logged(monkeypatch, tmp_path, caplog):
+    _set_minimal_env(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="bridge.config"):
+        config = load_config()
+    assert config.behind_tailscale_proxy is False
+    assert not [r for r in caplog.records if r.name == "bridge.config"]
+
+
+def test_opt_in_0_means_off(monkeypatch, tmp_path):
+    _set_minimal_env(
+        monkeypatch, tmp_path, JARVIS_BIND_HOST="10.0.0.1", JARVIS_BEHIND_TAILSCALE_PROXY="0"
+    )
+    with pytest.raises(ConfigError):
+        load_config()
