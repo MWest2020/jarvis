@@ -14,7 +14,7 @@ Start here. Agents: read this page and follow the links; there is no need to sca
 | Requirements and scenarios | [`openspec/changes/add-voice-bridge/specs/voice-bridge/spec.md`](../openspec/changes/add-voice-bridge/specs/voice-bridge/spec.md) |
 | Roadmap (feeds westerweel.work/nu) | [`reference/roadmap.yml`](reference/roadmap.yml) |
 | Working rules for agents | [`../AGENTS.md`](../AGENTS.md) |
-| How-to guides (running the bridge, phone setup) | [`how-to/`](how-to/) — filled as the weekend slice lands |
+| How-to guides (running the bridge, phone setup) | [`how-to/`](how-to/) |
 
 ## Rule
 
