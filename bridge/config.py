@@ -26,17 +26,32 @@ def _require(name: str) -> str:
     return value
 
 
+# Tailscale's address ranges (CGNAT IPv4 and its IPv6 ULA prefix), plus loopback
+# for local tests. Anything else is refused: Network exposure says Tailscale only.
+_ALLOWED_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+)
+
+
 def _check_private_host(host: str) -> str:
     # AGENTS.md: reachable only over a private network, never public.
-    if host in ("0.0.0.0", "::", ""):
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ConfigError(f"JARVIS_BIND_HOST={host!r} is not a valid IP address") from exc
+    if ip.is_unspecified:
         raise ConfigError(
             f"JARVIS_BIND_HOST must be a specific interface address (the Tailscale IP), "
             f"not a wildcard like {host!r}. Never public, per AGENTS.md."
         )
-    try:
-        ipaddress.ip_address(host)
-    except ValueError as exc:
-        raise ConfigError(f"JARVIS_BIND_HOST={host!r} is not a valid IP address") from exc
+    if not any(ip in net for net in _ALLOWED_NETWORKS):
+        raise ConfigError(
+            f"JARVIS_BIND_HOST={host!r} is not a Tailscale address (100.64.0.0/10 or "
+            f"fd7a:115c:a1e0::/48) or loopback. The bridge is never served elsewhere."
+        )
     return host
 
 

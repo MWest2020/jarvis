@@ -23,3 +23,8 @@ def synthesize(text: str, *, voice: str = "af_heart") -> bytes:
     buffer = io.BytesIO()
     sf.write(buffer, audio, samplerate=24000, format="WAV")
     return buffer.getvalue()
+
+
+def warm_up() -> None:
+    """Load the pipeline and render a word, so the first voice turn does not pay for it."""
+    synthesize("Ready.")

@@ -39,7 +39,9 @@ else (1.3 approvals, 2.3, 3.2, 3.3, 4.2, the plugin packaging and the adapter) c
 - [ ] 3.3 Project selection by voice
 
 ## 4. Validation
-- [ ] 4.1 End-to-end test on the tailnet — needs a real phone, tailnet and running Claude
-  Code session; not possible from this sandbox, see `docs/how-to/bridge-service.md` for the
-  manual procedure
+- [ ] 4.1 End-to-end test on the tailnet — 2026-11-14, host session: two spoken turns over
+  the Tailscale address (curl from a tailnet peer, Kokoro-rendered questions) returned spoken
+  WAV summaries; the follow-up resumed the same session id; no token and a wrong token got
+  401. Still open: the same from the phone with HTTP Shortcuts. See
+  `docs/how-to/bridge-service.md` (Test on 2026-11-14)
 - [ ] 4.2 Test while parked in the car before using it while driving

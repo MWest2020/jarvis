@@ -6,6 +6,8 @@ text-to-speech; the full reply is logged on the machine instead of spoken.
 """
 from __future__ import annotations
 
+import re
+
 SUMMARY_MARKER = "SPOKEN SUMMARY:"
 
 SYSTEM_PROMPT_ADDITION = (
@@ -18,13 +20,37 @@ SYSTEM_PROMPT_ADDITION = (
 FALLBACK_SUMMARY = "Done. Check the log for details."
 
 
+MAX_SPOKEN_CHARS = 300
+
+# Anything that looks like code or a path is never spoken (Requirement: Spoken
+# output), whatever the model wrote after the marker.
+_MARKER = re.compile(r"^[\s*#_>`-]*SPOKEN SUMMARY:[*_`]*\s*(.*)$", re.IGNORECASE)
+_UNSPEAKABLE = re.compile(
+    r"(```|`|(^|\s)[~.]?/[\w.-]+/|[\w-]+/[\w./-]+|\\[\w]|"
+    r"\b[\w-]+\.(py|js|ts|tsx|json|ya?ml|toml|md|sh|go|rs|java|c|h|cpp|rb|php|html|css|sql|lock)\b|"
+    r"[{}<>$|;]|&&|=>|\(\))"
+)
+
+
+def _clean(text: str) -> str:
+    text = re.sub(r"[*_#>]+", "", text)
+    return " ".join(text.split())
+
+
 def extract_summary(reply_text: str) -> str:
-    for line in reversed(reply_text.splitlines()):
-        line = line.strip()
-        if line.startswith(SUMMARY_MARKER):
-            summary = line[len(SUMMARY_MARKER):].strip()
-            if summary:
-                return summary
-    # Claude did not add the marker - fall back to a short, safe line rather
-    # than reading code or paths aloud (Requirement: Spoken output).
+    lines = reply_text.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        m = _MARKER.match(lines[i])
+        if not m:
+            continue
+        summary = _clean(m.group(1))
+        if not summary:
+            # The marker on its own line, the summary on the next one.
+            rest = [ln for ln in lines[i + 1:] if ln.strip()]
+            summary = _clean(rest[0]) if rest else ""
+        if summary and len(summary) <= MAX_SPOKEN_CHARS and not _UNSPEAKABLE.search(summary):
+            return summary
+        break
+    # No marker, or a summary with code, paths or too long: a short, safe line
+    # instead of reading it aloud. The full reply is in the log.
     return FALLBACK_SUMMARY

@@ -21,3 +21,25 @@ def test_falls_back_when_marker_is_missing():
 
 def test_falls_back_when_marker_line_is_empty():
     assert extract_summary(f"Some reply.\n{SUMMARY_MARKER}   ") == FALLBACK_SUMMARY
+
+
+def test_accepts_a_bold_marker_and_strips_markdown():
+    assert extract_summary("Reply.\n**SPOKEN SUMMARY:** All *tests* pass.") == "All tests pass."
+
+
+def test_reads_the_next_line_when_the_marker_stands_alone():
+    assert extract_summary(f"Reply.\n{SUMMARY_MARKER}\nThe build is green.") == "The build is green."
+
+
+def test_never_speaks_paths_or_code():
+    for bad in (
+        "Changed /home/mark/code/demo/app.py.",
+        "Run `rm -rf build && make` next.",
+        "Edited bridge/server.py and the tests.",
+        "Set x = {a: 1}.",
+    ):
+        assert extract_summary(f"Reply.\n{SUMMARY_MARKER} {bad}") == FALLBACK_SUMMARY, bad
+
+
+def test_never_speaks_a_very_long_summary():
+    assert extract_summary(f"{SUMMARY_MARKER} " + "word " * 200) == FALLBACK_SUMMARY

@@ -6,7 +6,7 @@ runs Claude Code headless, and speaks back a short summary. Over Tailscale, no t
 messaging platform in between.
 
 Status: approved, weekend test in progress. The work is specified as an OpenSpec change:
-[`openspec/changes/add-voice-bridge/`](openspec/changes/add-voice-bridge/) (proposal, design,
+[`openspec/changes/archive/2026-11-14-add-voice-bridge/`](openspec/changes/archive/2026-11-14-add-voice-bridge/) (proposal, design,
 tasks, spec). Documentation lives in [`docs/`](docs/index.md).
 
 ## Support
