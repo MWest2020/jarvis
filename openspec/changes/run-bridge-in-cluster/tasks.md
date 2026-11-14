@@ -10,7 +10,7 @@
 - [x] 2.2 `deploy/Dockerfile`: uv, Python 3.12, Node, pinned Claude Code, models at build
   time, non-root (D3)
 - [x] 2.3 `.github/workflows/image.yml`: tests, build on PR, push to GHCR on main (D7)
-- [ ] 2.4 First image pushed from main and its digest pinned in the deployment
+- [x] 2.4 First image pushed from main and its digest pinned in the deployment
 
 ## 2b. Review findings
 - [x] 2.5 `--restricted` and `Read(//proc/**)` on every turn; leak reproduced before and
@@ -25,7 +25,7 @@
 
 ## 4. Deployment
 - [x] 4.1 `docs/how-to/run-in-cluster.md`: image, Service, NetworkPolicy, secrets, volume
-- [ ] 4.2 Deployed on a cluster behind the Tailscale operator (manifests in the operator's
+- [x] 4.2 Deployed on a cluster behind the Tailscale operator (manifests in the operator's
   GitOps repository)
-- [ ] 4.3 Verified: no token gives 401 over the tailnet; a real voice turn answers; the pod
+- [x] 4.3 Verified: no token gives 401 over the tailnet; a real voice turn answers; the pod
   is not reachable from a namespace other than the operator's
