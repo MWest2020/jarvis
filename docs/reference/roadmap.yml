@@ -3,13 +3,27 @@
 project: jarvis
 goal: "Talk to a Claude Code session hands-free from an Android phone, on your own machines, over Tailscale."
 current: weekend-test
+# The phases after weekend-test are those of the change add-drive-mode (proposed, not yet
+# approved by Mark). They replace the earlier two-step outline (plugin, android-app).
 phases:
   - {id: weekend-test, name: "Weekend test", summary: "spoken round trip from the phone (HTTP Shortcuts) to headless Claude Code, local STT/TTS"}
+  - {id: live-turn, name: "Live turn", summary: "a streamed reply: heard, working, speech as it is ready; stop with one press"}
+  - {id: parked-test, name: "Parked test", summary: "a one-button web client from the bridge, tried parked in the car"}
+  - {id: drive, name: "The drive", summary: "project by voice, long replies you can listen to, where was I, a drive log at the desk"}
+  - {id: handoffs, name: "Handoffs", summary: "start a build or leave a note by voice, read back and confirmed with a yes"}
   - {id: plugin, name: "Plugin", summary: "machine side as a Claude Code plugin others can install"}
-  - {id: android-app, name: "Android app", summary: "a native phone client built on the lessons of the test"}
+  - {id: android-app, name: "Android app", summary: "a native phone client: screen off, the wheel button"}
 done_means:
   - {item: "Change add-voice-bridge proposed (proposal, design, tasks, spec)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge"}
   - {item: "Change approved by Mark (2026-11-14), his full tasks and spec in", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/1"}
   - {item: "Bridge service on the tailnet with token, headless Claude Code, session resume", status: done, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/bridge-service.md#test-on-2026-11-14"}
   - {item: "Local STT (faster-whisper) and TTS (Kokoro) on the machine", status: done, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/bridge-service.md#test-on-2026-11-14"}
   - {item: "A spoken round trip from the phone over the tailnet (HTTP Shortcuts)", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge/tasks.md"}
+  - {item: "Change add-drive-mode proposed (proposal, design, tasks, spec deltas)", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/9"}
+  - {item: "Change add-drive-mode approved by Mark", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/9"}
+  - {item: "Live turn: streamed reply, tone events, stop, timings, the agent and speech interfaces", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#1-live-turn"}
+  - {item: "Reference web client, and the parked test in the car", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#2-reference-client-and-parked-test"}
+  - {item: "The drive: project by voice, listening, recap, background turns, drive log", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#3-the-drive"}
+  - {item: "Handoffs with read-back and a spoken yes; a build started by voice", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#4-handoffs"}
+  - {item: "Machine side installable as a Claude Code plugin, nothing of Mark's setup in it", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#5-plugin"}
+  - {item: "Native Android app, used with the screen off from the wheel button", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#6-android-app"}
