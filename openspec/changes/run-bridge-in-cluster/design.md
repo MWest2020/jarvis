@@ -36,7 +36,8 @@ own auth key per app, while the operator already owns tailnet membership in the 
 pod IP is reachable from the whole cluster network by default, so the bind address alone no
 longer limits who can connect. Two things do: (a) the only way in from outside the cluster
 is a `LoadBalancer` Service with `loadBalancerClass: tailscale` and hostname `jarvis`, with
-no Funnel annotation, so it exists on the tailnet only; (b) a NetworkPolicy admits ingress
+no Funnel annotation and no NodePort (`allocateLoadBalancerNodePorts: false`), so it exists
+on the tailnet only; (b) a NetworkPolicy admits ingress
 to the bridge's port only from the Tailscale operator's namespace (its proxy). Kubelet
 probes come from the node and are not affected. The token is still checked on every
 request. Plain HTTP on port 8787, like on a workstation: the tailnet already encrypts, and
