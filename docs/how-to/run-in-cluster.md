@@ -179,8 +179,9 @@ sub-path exists; run it as `sh -c 'mkdir -p /data/state && exec jarvis-sync-proj
 
 ## Resources and probes
 
-- Memory: the bridge holds about 1.8 GB resident with both models loaded. A request of
-  2.5 Gi and a limit of 3 Gi leave room for a turn.
+- Memory: measured in the pod, about 2.3 GiB at rest with both models loaded and a peak of
+  2.78 GiB during a turn (Claude Code's own process comes on top while it runs). A request
+  of 2.5 Gi with a limit of 3 Gi works but leaves little room; 3 Gi / 4 Gi is safer.
 - There is no health route. Use a TCP probe on 8787: the server only listens once both
   models are loaded, so an open port means ready. A startup probe with a few minutes of
   slack covers the model load on a slow CPU.
@@ -198,3 +199,30 @@ curl -X POST "http://jarvis.<tailnet>.ts.net:8787/turn?project=demo" \
 
 And from a pod in another namespace, the pod IP on 8787 must time out (the NetworkPolicy).
 The bridge's start log shows the `JARVIS_BEHIND_TAILSCALE_PROXY=1` warning.
+
+## Test on 2026-11-14
+
+The first deployment, on a three-worker cluster with Cilium and the Tailscale operator,
+image `jarvis-bridge:sha-a663a26`, the manifests as described above (one replica, memory
+request 2.5 Gi, limit 3 Gi), six projects synced:
+
+- Image pull about 2 min 50 s (1.34 GB compressed); project sync about a minute; model load
+  about a minute. The pod became ready with no restarts, read-only root filesystem included.
+- The start log shows the `JARVIS_BEHIND_TAILSCALE_PROXY=1` warning, then "listening".
+- From a tailnet machine, no token and a wrong token: 401.
+- Turn 1, the WAV "What is this project about in one sentence?": 200 `audio/wav` in 16.9 s
+  end to end (curl's total, over the tailnet: upload, transcription, the Claude Code turn,
+  synthesis). Spoken summary: "Jarvis lets you talk to Claude Code from your Android phone,
+  hands-free, while it runs on your own machines over Tailscale and speaks back a short
+  summary."
+- Turn 2, the follow-up "And which speech models does it use?": 200 in 18.7 s, the same
+  session id, and an answer about faster-whisper and Kokoro.
+- The request source in the log is the operator's proxy pod. From a pod in another
+  namespace, the pod IP and the Service both time out; from the LAN, the pod IP and port
+  8787 on every node time out.
+- `kubectl logs` holds request lines and summaries only; transcripts and full replies are
+  in the `0600` log file. The project sync (GitHub) and Claude Code (the Anthropic API) work
+  with egress limited to DNS and 443.
+- Memory (cgroup): about 2.3 GiB anonymous at rest after two turns, peak 2.78 GiB, no OOM.
+  That is close to a 3 Gi limit; give it 4 Gi if turns grow (larger repos, longer replies).
+
