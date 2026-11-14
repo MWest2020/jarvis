@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The bridge speaks plain HTTP and is reachable only over the tailnet, where WireGuard
+  encrypts the traffic underneath (docs/how-to/run-in-cluster.md). So cleartext is off for
+  everything except Tailscale's MagicDNS names.
+
+  This file cannot express an address range, so a bare 100.x.y.z address over http is not
+  allowed; use the *.ts.net name. That the name really points at a Tailscale address
+  (100.64.0.0/10 or fd7a:115c:a1e0::/48) is checked in code before anything is sent
+  (core/BridgeClient.kt).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+</network-security-config>
