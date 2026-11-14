@@ -30,6 +30,9 @@ _UNSPEAKABLE = re.compile(
     r"\b[\w-]+\.(py|js|ts|tsx|json|ya?ml|toml|md|sh|go|rs|java|c|h|cpp|rb|php|html|css|sql|lock)\b|"
     r"[{}<>$|;]|&&|=>|\(\))"
 )
+# Never speak anything shaped like a credential: an Anthropic key, or any long
+# unbroken run of token characters (hex tokens, base64 secrets, session ids).
+_SECRET_LIKE = re.compile(r"sk-ant-|[A-Za-z0-9_-]{32,}", re.IGNORECASE)
 
 
 def _clean(text: str) -> str:
@@ -48,7 +51,8 @@ def extract_summary(reply_text: str) -> str:
             # The marker on its own line, the summary on the next one.
             rest = [ln for ln in lines[i + 1:] if ln.strip()]
             summary = _clean(rest[0]) if rest else ""
-        if summary and len(summary) <= MAX_SPOKEN_CHARS and not _UNSPEAKABLE.search(summary):
+        if (summary and len(summary) <= MAX_SPOKEN_CHARS
+                and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary)):
             return summary
         break
     # No marker, or a summary with code, paths or too long: a short, safe line

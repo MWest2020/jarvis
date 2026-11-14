@@ -37,18 +37,24 @@ pod IP is reachable from the whole cluster network by default, so the bind addre
 longer limits who can connect. Two things do: (a) the only way in from outside the cluster
 is a `LoadBalancer` Service with `loadBalancerClass: tailscale` and hostname `jarvis`, with
 no Funnel annotation and no NodePort (`allocateLoadBalancerNodePorts: false`), so it exists
-on the tailnet only; (b) a NetworkPolicy admits ingress
-to the bridge's port only from the Tailscale operator's namespace (its proxy). Kubelet
-probes come from the node and are not affected. The token is still checked on every
+on the tailnet only; (b) a NetworkPolicy admits ingress to the bridge's port only from the
+Tailscale operator's proxy pod for this Service, selected by namespace and by the proxy's
+pod labels: the operator's namespace also holds public Funnel proxies for other apps.
+Egress is limited to DNS and HTTPS (GitHub, the Anthropic API). Kubelet probes come from
+the node and are not affected. The token is still checked on every
 request. Plain HTTP on port 8787, like on a workstation: the tailnet already encrypts, and
 the phone's shortcut stays the same apart from the host name.
 
-**D3. One image, everything baked in.** Base `node:22.11.0-bookworm-slim` (Node for Claude
+**D3. One image, everything baked in.** Base `node:22.23.5-bookworm-slim` (Node for Claude
 Code), uv-managed CPython 3.12, `uv sync --frozen --no-dev`, Claude Code pinned
-(`CLAUDE_CODE_VERSION`, the version the bridge's argv was tested with). The build runs the
-bridge's own warm-up (`stt.warm_up`, one Kokoro render per voice in `KOKORO_VOICES`) with
-`HF_HOME` inside the image, and the running container sets `HF_HUB_OFFLINE=1`: a pod start
-fetches no models. The image runs as uid 10001. Claude Code's auto-updater and
+(`CLAUDE_CODE_VERSION`, the version the bridge's argv was tested with). The model weights
+are fetched at pinned Hugging Face commits (`deploy/fetch_models.py`: Systran/faster-whisper-base
+and hexgrad/Kokoro-82M by commit SHA, with the cache's `refs/main` pointed at them). Then the
+bridge's own warm-up (`stt.warm_up`, one Kokoro render per voice in `KOKORO_VOICES`) runs
+offline, so a file the pin misses fails the build. The running container sets
+`HF_HUB_OFFLINE=1`: a pod start fetches no models. CI runs the built image with a read-only
+root, only `/tmp` writable and no network, and checks that the bridge starts and answers 401
+without a token. The image runs as uid 10001. Claude Code's auto-updater and
 non-essential traffic are off. The same image runs the project sync as an init container.
 
 **D4. CPU-only torch on Linux.** PyPI's Linux torch wheel pulls in about 5 GB of CUDA
@@ -73,11 +79,28 @@ writer next to a running turn.
 
 **D6. Persistent state.** One volume holds the copies and the state: the session file, the
 bridge log and Claude Code's home directory (its session transcripts, which `--resume`
-needs). A restart keeps every project's conversation.
+needs). A restart keeps every project's conversation. The bridge log rotates (10 MB, three
+old files, all `0600`). Transcripts and full replies go to that file only; stdout, which a
+cluster turns into `kubectl logs`, gets the summary lines.
+
+**D8. File tools stay out of /proc; secrets are redacted on top (review).** The bridge is
+PID 1 in its container with the same uid as its Claude Code child, so `/proc/1/environ`
+holds `JARVIS_TOKEN` and the child's own environ holds `CLAUDE_CODE_OAUTH_TOKEN`. Removing
+`JARVIS_*` from the child's environment does not hide them. Claude Code 2.1.322's Read tool
+refuses `/proc`, but Grep on `/proc/self/environ`, or on a committed symlink to it, returned
+the environment (reproduced with a canary). Every turn therefore runs with `--restricted`
+(file tools confined to the working directory; user, project and local settings files are
+ignored, so a cloned repo's `.claude/settings.json` hooks have no effect) and with
+`Read(//proc/**)` in `--disallowedTools` (Grep and Glob follow Read deny rules). Retested:
+direct paths, a file symlink and a directory symlink into `/proc` are all denied, and
+`--resume` keeps working under `--restricted`. Behind that, the log handlers redact the
+values of `JARVIS_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` and anything shaped like `sk-ant-…`,
+and the spoken summary falls back to the fixed line when it contains `sk-ant-` or any run
+of 32 or more token characters (`[A-Za-z0-9_-]`).
 
 **D7. Image build in CI.** `.github/workflows/image.yml` runs the tests, then builds the
 image on every PR (no push) and pushes `:<sha>` and `:sha-<short>` on main with
-`GITHUB_TOKEN` (`packages: write`). The package inherits the repository's visibility. The
+`GITHUB_TOKEN` (`packages: write`; the workflow's default is `contents: read`). The package inherits the repository's visibility. The
 deployment pins the digest, never a tag.
 
 ## Risks / Trade-offs
@@ -85,9 +108,12 @@ deployment pins the digest, never a tag.
 - The pod IP is reachable from the cluster network if the cluster's CNI does not enforce
   NetworkPolicy. The how-to says so; on such a cluster this setup is not safe, and the token
   is the only check left.
-- `CLAUDE_CODE_OAUTH_TOKEN` is in the environment of the Claude Code process, which its Read
-  tool could read (`/proc/self/environ`). The same holds on a workstation for the logged-in
-  credentials file. The spoken-output filter keeps it out of speech, not out of the log.
+- Credentials in process environments: `JARVIS_TOKEN` in the bridge's, `CLAUDE_CODE_OAUTH_TOKEN`
+  in the Claude Code child's. D8 closes the known path (file tools on `/proc`) and redacts
+  log and speech. What it cannot redact: if a future Claude Code version opened a new way to
+  read them, a reply quoting a credential would still land in Claude Code's own session
+  transcript under `$HOME/.claude`, which no bridge filter sees. Re-check D8 on every Claude
+  Code bump (`CLAUDE_CODE_VERSION`).
 - One replica with a node-local volume: if that node is down, the bridge is down until it
   is back. Acceptable for a personal tool.
 - The image is large (about 3 GB: torch, models, Node). It is pulled once per node.

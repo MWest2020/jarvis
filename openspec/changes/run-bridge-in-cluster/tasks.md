@@ -12,6 +12,14 @@
 - [x] 2.3 `.github/workflows/image.yml`: tests, build on PR, push to GHCR on main (D7)
 - [ ] 2.4 First image pushed from main and its digest pinned in the deployment
 
+## 2b. Review findings
+- [x] 2.5 `--restricted` and `Read(//proc/**)` on every turn; leak reproduced before and
+  denied after; `--resume` checked under `--restricted` (D8)
+- [x] 2.6 Log redaction of the bridge's secrets and `sk-ant-…`; summary refuses
+  credential-shaped text; transcripts and full replies off stdout; log rotation (D6, D8)
+- [x] 2.7 Model weights pinned to Hugging Face commits, warm-up offline at build; CI smoke
+  test with a read-only root and no network (D3)
+
 ## 3. Projects
 - [x] 3.1 `deploy/sync-projects.sh`: shallow clone or refresh, token via credential helper (D5)
 

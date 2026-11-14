@@ -94,6 +94,20 @@ def test_the_command_restricts_tools_not_just_preapproves_them():
     assert "bypassPermissions" not in command
 
 
+def test_the_command_keeps_file_tools_out_of_proc_and_ignores_repo_settings():
+    # Review of run-bridge-in-cluster: Grep on /proc/self/environ (or a committed
+    # symlink to it) returned the process environment. --restricted confines the
+    # file tools to the cwd and ignores user/project/local settings (a cloned
+    # repo's hooks); Read(//proc/**) is denied for Read, Grep and Glob alike.
+    for session_id in (None, "old-session"):
+        command = build_command(allowed_tools=TOOLS, session_id=session_id)
+        assert "--restricted" in command
+        denied = command[command.index("--disallowedTools") + 1].split(",")
+        assert "Read(//proc/**)" in denied
+        if session_id:
+            assert command[command.index("--resume") + 1] == "old-session"
+
+
 def test_omits_resume_when_there_is_no_prior_session():
     assert "--resume" not in build_command(allowed_tools=TOOLS, session_id=None)
 

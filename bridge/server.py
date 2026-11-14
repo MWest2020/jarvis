@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 import socket
 import sys
 import threading
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from bridge import claude_adapter, stt, tts
 from bridge.config import BEHIND_PROXY_WARNING, BridgeConfig, ConfigError, load_config
+from bridge.logging_setup import FILE_ONLY
 from bridge.logging_setup import configure as configure_logging
 from bridge.sessions import SessionStore
 from bridge.summary import extract_summary
@@ -106,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_turn(self, project_name: str, working_dir: Path, audio_bytes: bytes) -> None:
         transcript = stt.transcribe(audio_bytes, model_size=self.config.whisper_model)
-        logger.info("project=%s transcript=%r", project_name, transcript)
+        logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
         if not transcript.strip():
             # Silence: no agent turn, just say so.
             self._respond_audio(tts.synthesize(NOT_HEARD, voice=self.config.kokoro_voice), NOT_HEARD, "")
@@ -122,7 +124,8 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.sessions.set(project_name, new_session_id)
         logger.info(
-            "project=%s session=%s full_reply=%r", project_name, new_session_id, reply_text
+            "project=%s session=%s full_reply=%r", project_name, new_session_id, reply_text,
+            extra=FILE_ONLY,
         )
 
         summary = extract_summary(reply_text)
@@ -166,7 +169,10 @@ def main() -> None:
         print(f"jarvis-bridge: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    configure_logging(config.log_path)
+    configure_logging(
+        config.log_path,
+        secrets=(config.token, os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")),
+    )
     if config.behind_tailscale_proxy:
         logger.warning(BEHIND_PROXY_WARNING, config.bind_host)
     # Load both speech models before the first turn: on a small CPU the first

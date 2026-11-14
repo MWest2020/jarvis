@@ -55,10 +55,15 @@ The tools headless Claude Code can use are **fixed** for this weekend slice:
 that (it only pre-approves, and your own settings, such as an `auto` permission
 mode or allowed Bash rules, and MCP servers would still apply), so each turn runs
 with `--tools Read,Glob,Grep`, `--permission-mode dontAsk`, `--strict-mcp-config`
-(no MCP servers) and `--disallowedTools Bash,Edit,Write,...` as a second layer.
+(no MCP servers), `--restricted` (file tools confined to the project directory, and your
+user, project and local settings files ignored, so a repo's own `.claude/settings.json`
+hooks never run) and `--disallowedTools Bash,Edit,Write,...,Read(//proc/**)` as a second
+layer. The `/proc` rule matters: Grep follows Read deny rules, and without it Grep on
+`/proc/self/environ` (or a committed symlink to it) returned the process environment.
 There is no approval flow yet for anything beyond that list (D6); that is a
 later task. The transcript goes to Claude Code over stdin, and the `JARVIS_*`
-variables (the token) are removed from its environment.
+variables (the token) are removed from its environment. That alone does not hide them
+(the bridge's own `/proc/<pid>/environ` still has them); the two flags above do.
 
 ## Run
 
@@ -68,7 +73,10 @@ uv run jarvis-bridge
 
 The service logs to `$JARVIS_STATE_DIR/bridge.log` (full Claude Code replies
 and transcripts are logged there, even though only a short summary is ever
-spoken — D5) and also to stdout.
+spoken — D5) and also to stdout. Transcripts and full replies go to the file only;
+stdout gets the request lines, the summaries and errors. The file rotates at 10 MB
+and keeps three old files. Both redact the token, the Claude credentials and anything
+shaped like `sk-ant-…`.
 
 ## What the endpoint does
 
@@ -85,12 +93,13 @@ recorded audio as the body. Replies:
 | 502 | The Claude Code turn failed or timed out (details in the log) |
 
 A connection that stalls for 30 seconds is closed. The log and the session file
-are created owner-only (`0600`, in a `0700` directory): the log holds full
-replies, which can quote file contents.
+are created owner-only (`0600`, in a `0700` directory, rotated logs too): the log
+holds full replies, which can quote file contents.
 
 Only the summary is spoken, and only when it is short (300 characters at most)
 and contains nothing that looks like code or a path (backticks, slashes, file
-names, shell operators). Otherwise the phone hears "Done. Check the log for
+names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
+letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
 details."
 
 ## Picking a Kokoro voice

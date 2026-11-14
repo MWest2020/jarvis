@@ -56,7 +56,9 @@ def test_unknown_project_raises(monkeypatch, tmp_path):
         config.project("does-not-exist")
 
 
-@pytest.mark.parametrize("host", ["8.8.8.8", "192.168.1.10", "2001:db8::1"])
+@pytest.mark.parametrize(
+    "host", ["8.8.8.8", "192.168.1.10", "2001:db8::1", "::ffff:10.0.0.1", "169.254.1.1"]
+)
 def test_rejects_a_non_tailscale_bind_host(monkeypatch, tmp_path, host):
     _set_minimal_env(monkeypatch, tmp_path, JARVIS_BIND_HOST=host)
     with pytest.raises(ConfigError):
@@ -90,7 +92,8 @@ def test_opt_in_accepts_a_private_address(monkeypatch, tmp_path, host):
 
 @pytest.mark.parametrize(
     "host",
-    ["0.0.0.0", "::", "8.8.8.8", "172.32.0.1", "11.0.0.1", "2001:db8::1", "fd00::1"],
+    ["0.0.0.0", "::", "8.8.8.8", "172.32.0.1", "11.0.0.1", "2001:db8::1", "fd00::1",
+     "::ffff:10.0.0.1", "169.254.1.1", "169.254.169.254"],
 )
 def test_opt_in_still_rejects_wildcard_and_public(monkeypatch, tmp_path, host):
     _set_minimal_env(

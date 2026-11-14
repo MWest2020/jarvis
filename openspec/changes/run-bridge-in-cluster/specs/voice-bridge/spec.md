@@ -17,12 +17,12 @@ The bridge SHALL only be reachable over the Tailscale network and SHALL reject r
 
 #### Scenario: Behind a Tailscale proxy in a cluster
 - **WHEN** the bridge runs in a pod with `JARVIS_BEHIND_TAILSCALE_PROXY=1` and listens on its pod IP
-- **THEN** it logs a warning at start, it is exposed only through a tailnet-only Service without Funnel, and a NetworkPolicy admits connections to it only from the Tailscale operator's namespace
+- **THEN** it logs a warning at start, it is exposed only through a tailnet-only Service without Funnel, and a NetworkPolicy admits connections to it only from the Tailscale operator's proxy for that Service
 
 #### Scenario: Wildcard or public address with the opt-in
 - **WHEN** `JARVIS_BEHIND_TAILSCALE_PROXY=1` is set and the bind address is a wildcard or a public address
 - **THEN** the bridge refuses to start
 
 #### Scenario: Connection from another namespace in the cluster
-- **WHEN** a pod outside the Tailscale operator's namespace connects to the bridge's pod IP
+- **WHEN** any pod other than that proxy connects to the bridge's pod IP
 - **THEN** the connection is dropped by the NetworkPolicy

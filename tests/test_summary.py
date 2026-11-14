@@ -43,3 +43,25 @@ def test_never_speaks_paths_or_code():
 
 def test_never_speaks_a_very_long_summary():
     assert extract_summary(f"{SUMMARY_MARKER} " + "word " * 200) == FALLBACK_SUMMARY
+
+
+# Review of run-bridge-in-cluster: nothing shaped like a credential is spoken.
+
+def test_never_speaks_an_anthropic_key():
+    for bad in (
+        "The token is sk-ant-oat01-abc.",
+        "It starts with SK-ANT- and then some letters.",
+    ):
+        assert extract_summary(f"Reply.\n{SUMMARY_MARKER} {bad}") == FALLBACK_SUMMARY, bad
+
+
+def test_never_speaks_a_long_token_like_run():
+    hex_token = "a3f9" * 8                       # 32 characters
+    assert extract_summary(f"{SUMMARY_MARKER} The value is {hex_token} here.") == FALLBACK_SUMMARY
+    b64ish = "Zm9vYmFy-ZmFrZV9zZWNyZXQ_dmFsdWU1234"
+    assert extract_summary(f"{SUMMARY_MARKER} Found {b64ish} in the file.") == FALLBACK_SUMMARY
+
+
+def test_still_speaks_ordinary_long_words():
+    reply = f"{SUMMARY_MARKER} Internationalization and the counterrevolutionaries both pass."
+    assert extract_summary(reply) == "Internationalization and the counterrevolutionaries both pass."
