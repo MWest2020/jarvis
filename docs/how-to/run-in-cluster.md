@@ -65,6 +65,7 @@ whole cluster network by default:
    spec:
      type: LoadBalancer
      loadBalancerClass: tailscale
+     allocateLoadBalancerNodePorts: false   # the proxy uses the ClusterIP; no NodePort
      selector: { app: jarvis }
      ports:
        - { name: http, port: 8787, targetPort: 8787 }
@@ -92,7 +93,10 @@ whole cluster network by default:
    ```
 
    This only works on a CNI that enforces NetworkPolicy (Cilium, Calico). Without that, do
-   not use the opt-in.
+   not use the opt-in. Tested on Cilium (2026-11-14): the operator's proxy gets through;
+   a pod in another namespace, the LAN to the pod IP, and the LAN to a NodePort all time
+   out. Host-network processes on the pod's own node can still connect (Cilium admits the
+   local host for kubelet probes); the token covers that.
 
 ## Projects
 
