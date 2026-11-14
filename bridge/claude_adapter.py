@@ -31,6 +31,27 @@ DENIED_TOOLS: tuple[str, ...] = (
 )
 
 
+# --restricted (D8 of run-bridge-in-cluster) was verified with this version; older
+# Claude Code may not have it, and without it the file tools can reach /proc.
+MIN_CLAUDE_CODE_VERSION = "2.1.322"
+
+
+def check_cli(timeout_s: int = 60) -> None:
+    """Fail at start, clearly, when the installed Claude Code lacks --restricted."""
+    try:
+        proc = subprocess.run(["claude", "--help"], capture_output=True, text=True,
+                              timeout=timeout_s)
+    except FileNotFoundError as exc:
+        raise ClaudeTurnError("claude (Claude Code) is not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeTurnError(f"claude --help did not answer within {timeout_s}s") from exc
+    if "--restricted" not in proc.stdout + proc.stderr:
+        raise ClaudeTurnError(
+            "this Claude Code has no --restricted flag, which the bridge requires to keep "
+            f"its file tools out of /proc; install Claude Code {MIN_CLAUDE_CODE_VERSION} or newer"
+        )
+
+
 def build_command(*, allowed_tools: tuple[str, ...], session_id: str | None) -> list[str]:
     """argv for one headless turn (D1, D6).
 

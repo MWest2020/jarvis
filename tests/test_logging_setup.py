@@ -2,11 +2,14 @@
 (review of run-bridge-in-cluster)."""
 import logging
 import stat
+import sys
 
 import pytest
 
 from bridge import logging_setup
-from bridge.logging_setup import FILE_ONLY, REDACTED, RedactingFilter, StreamFilter
+from bridge.logging_setup import (
+    FILE_ONLY, REDACTED, STREAM_ONLY, FileFilter, RedactingFilter, StreamFilter,
+)
 
 TOKEN = "f" * 64
 OAUTH = "sk-ant-oat01-" + "x" * 40
@@ -52,15 +55,15 @@ def configured(tmp_path, monkeypatch):
     log_path = tmp_path / "state" / "bridge.log"
     logger = logging_setup.configure(log_path, secrets=(TOKEN, OAUTH))
     added = logger.handlers[-2:]
-    yield logger, log_path
+    yield logger, log_path, added[1]
     for handler in added:
         logger.removeHandler(handler)
         handler.close()
 
 
 def test_configured_logger_redacts_splits_and_rotates(capsys, configured):
-    # capsys first, so the StreamHandler binds to the captured stderr.
-    logger, log_path = configured
+    logger, log_path, stream_handler = configured
+    stream_handler.stream = sys.stderr   # capsys's stream for this call phase (setStream would flush the closed setup-phase one)
     child = logging.getLogger("bridge.server")
     child.info("project=demo full_reply=%r", f"the token is {TOKEN}", extra=FILE_ONLY)
     child.info("project=demo summary=%r", "All good.")
@@ -76,3 +79,50 @@ def test_configured_logger_redacts_splits_and_rotates(capsys, configured):
     assert len(rotated) == logging_setup.LOG_BACKUPS + 1
     for path in rotated:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
+
+
+def test_a_bad_format_never_raises_from_the_filter():
+    record = _record("two %s %s", "only-one")
+    assert RedactingFilter((TOKEN,)).filter(record) is True
+
+
+def test_stream_only_records_stay_out_of_the_file():
+    f = FileFilter()
+    assert f.filter(_record("detail")) is True
+    assert f.filter(_record("short", **STREAM_ONLY)) is False
+
+
+def test_tracebacks_are_redacted_in_file_and_stdout(capsys, configured):
+    _logger, log_path, stream_handler = configured
+    stream_handler.stream = sys.stderr   # capsys's stream for this call phase (setStream would flush the closed setup-phase one)
+    child = logging.getLogger("bridge.server")
+    try:
+        raise RuntimeError(f"boom with {TOKEN} and {OAUTH}")
+    except RuntimeError:
+        child.exception("unexpected error handling turn for %s", "demo")
+    text = log_path.read_text()
+    err = capsys.readouterr().err
+    for out in (text, err):
+        assert "RuntimeError: boom with" in out   # the traceback is still there
+        assert TOKEN not in out and OAUTH not in out and "sk-ant-" not in out
+        assert REDACTED in out
+
+
+def test_stack_info_is_redacted():
+    record = _record("msg")
+    record.stack_info = f"Stack (most recent call last):\n  token {TOKEN}"
+    RedactingFilter((TOKEN,)).filter(record)
+    assert TOKEN not in record.stack_info
+
+
+def test_turn_errors_split_detail_to_file_and_short_line_to_stdout(capsys, configured):
+    _logger, log_path, stream_handler = configured
+    stream_handler.stream = sys.stderr   # capsys's stream for this call phase (setStream would flush the closed setup-phase one)
+    child = logging.getLogger("bridge.server")
+    child.error("claude turn failed for %s: %s", "demo", "unexpected JSON {secret stuff}",
+                extra=FILE_ONLY)
+    child.error("claude turn failed for %s (details in bridge.log)", "demo", extra=STREAM_ONLY)
+    text = log_path.read_text()
+    err = capsys.readouterr().err
+    assert "secret stuff" in text and "details in bridge.log" not in text
+    assert "secret stuff" not in err and "details in bridge.log" in err

@@ -27,7 +27,8 @@ What is in it:
 - uv-managed Python 3.12 and `uv sync --frozen --no-dev`. torch comes from PyTorch's CPU
   index on Linux (no CUDA), and the spaCy model Kokoro needs is locked, not pip-installed at
   first use.
-- Node and Claude Code, pinned (`CLAUDE_CODE_VERSION` build argument).
+- Node and Claude Code, pinned (`CLAUDE_CODE_VERSION` build argument, 2.1.322 or newer:
+  the bridge refuses to start without Claude Code's `--restricted` flag).
 - The faster-whisper `base` weights and Kokoro with the `af_heart` voice, fetched at build
   time at pinned Hugging Face commits (`deploy/fetch_models.py`), then checked by running
   the bridge's own warm-up offline. The container sets `HF_HUB_OFFLINE=1`, so a pod start
@@ -136,8 +137,8 @@ container; Claude Code's tools are read-only anyway (`Read`, `Glob`, `Grep`).
   no Kubernetes API token and no environment variables for other Services. Claude Code's
   file tools are kept out of `/proc` and confined to the project directory (`--restricted`),
   but there is no reason to hand it more than it needs.
-- Logs: `kubectl logs` shows request lines, summaries and errors, never transcripts or full
-  replies; those are in `$JARVIS_STATE_DIR/bridge.log` (rotated at 10 MB, three old files).
+- Logs: `kubectl logs` shows request lines, summaries and short error lines, never
+  transcripts, full replies, Claude Code's stderr or tracebacks; those are in `$JARVIS_STATE_DIR/bridge.log` (rotated at 10 MB, three old files).
   Both redact the token and the Claude credentials.
 
 A sketch of the pod spec, one volume with two sub-paths (the init container creates them):

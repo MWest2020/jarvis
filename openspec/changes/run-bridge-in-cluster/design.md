@@ -93,8 +93,11 @@ the environment (reproduced with a canary). Every turn therefore runs with `--re
 ignored, so a cloned repo's `.claude/settings.json` hooks have no effect) and with
 `Read(//proc/**)` in `--disallowedTools` (Grep and Glob follow Read deny rules). Retested:
 direct paths, a file symlink and a directory symlink into `/proc` are all denied, and
-`--resume` keeps working under `--restricted`. Behind that, the log handlers redact the
-values of `JARVIS_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` and anything shaped like `sk-ant-…`,
+`--resume` keeps working under `--restricted`. The bridge refuses to start when
+`claude --help` does not list `--restricted` (minimum Claude Code 2.1.322). Behind that, the log handlers redact the
+values of `JARVIS_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` and anything shaped like `sk-ant-…`
+(messages and tracebacks; a filter error never breaks logging), keep Claude Code's stderr
+and unexpected replies in the file with only a short line on stdout,
 and the spoken summary falls back to the fixed line when it contains `sk-ant-` or any run
 of 32 or more token characters (`[A-Za-z0-9_-]`).
 

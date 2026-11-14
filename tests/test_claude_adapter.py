@@ -137,3 +137,31 @@ def test_a_timeout_kills_the_process_group(monkeypatch):
     with pytest.raises(ClaudeTurnError):
         _turn()
     assert killed == [999999]
+
+
+# Review of run-bridge-in-cluster: refuse to start without --restricted.
+
+def _fake_run(stdout="", exc=None):
+    def run(cmd, **kwargs):
+        assert cmd == ["claude", "--help"]
+        if exc:
+            raise exc
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+    return run
+
+
+def test_check_cli_accepts_a_claude_with_restricted(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run("  --restricted   Restricted mode: ..."))
+    claude_adapter.check_cli()
+
+
+def test_check_cli_refuses_a_claude_without_restricted(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run("  --resume  Resume a conversation"))
+    with pytest.raises(ClaudeTurnError, match="--restricted"):
+        claude_adapter.check_cli()
+
+
+def test_check_cli_reports_a_missing_claude(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run(exc=FileNotFoundError("claude")))
+    with pytest.raises(ClaudeTurnError, match="not on PATH"):
+        claude_adapter.check_cli()

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from bridge import claude_adapter, stt, tts
 from bridge.config import BEHIND_PROXY_WARNING, BridgeConfig, ConfigError, load_config
-from bridge.logging_setup import FILE_ONLY
+from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
 from bridge.logging_setup import configure as configure_logging
 from bridge.sessions import SessionStore
 from bridge.summary import extract_summary
@@ -98,7 +98,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._handle_turn(project_name, project.working_dir, audio_bytes)
         except claude_adapter.ClaudeTurnError as exc:
-            logger.error("claude turn failed for %s: %s", project_name, exc)
+            # The error can quote Claude Code's stderr or its whole JSON reply:
+            # details to the file only, a short line to stdout.
+            logger.error("claude turn failed for %s: %s", project_name, exc, extra=FILE_ONLY)
+            logger.error("claude turn failed for %s (details in bridge.log)", project_name,
+                         extra=STREAM_ONLY)
             self._respond_error(502, "the agent turn failed; see the log")
         except Exception:  # noqa: BLE001 - last-resort guard for a voice endpoint
             logger.exception("unexpected error handling turn for %s", project_name)
@@ -175,6 +179,11 @@ def main() -> None:
     )
     if config.behind_tailscale_proxy:
         logger.warning(BEHIND_PROXY_WARNING, config.bind_host)
+    try:
+        claude_adapter.check_cli()
+    except claude_adapter.ClaudeTurnError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from exc
     # Load both speech models before the first turn: on a small CPU the first
     # Kokoro load alone took over two minutes (2026-11-14 tailnet test).
     logger.info("loading speech models (whisper %s, kokoro)", config.whisper_model)

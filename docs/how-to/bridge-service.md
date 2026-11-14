@@ -11,7 +11,10 @@ Claude Code. For the phone side, see
 ## Prerequisites
 
 - Tailscale running on this machine, and its IP known (`tailscale ip -4`).
-- Claude Code installed and already authenticated (`claude --version` works).
+- Claude Code **2.1.322 or newer**, installed and already authenticated
+  (`claude --version` works). The bridge needs its `--restricted` flag (verified with
+  2.1.322) and checks at start: if `claude --help` does not list `--restricted`, it
+  exits with a message saying so.
 - `espeak-ng` installed (a system package; Kokoro's text-to-speech front end
   depends on it) — e.g. `apt install espeak-ng` on Debian/Ubuntu.
 - `uv` installed. Never `pip` directly in this repo (AGENTS.md).
@@ -74,9 +77,10 @@ uv run jarvis-bridge
 The service logs to `$JARVIS_STATE_DIR/bridge.log` (full Claude Code replies
 and transcripts are logged there, even though only a short summary is ever
 spoken — D5) and also to stdout. Transcripts and full replies go to the file only;
-stdout gets the request lines, the summaries and errors. The file rotates at 10 MB
+stdout gets the request lines, the summaries and short error lines; error details
+(Claude Code's stderr, an unexpected reply) and tracebacks go to the file. The file rotates at 10 MB
 and keeps three old files. Both redact the token, the Claude credentials and anything
-shaped like `sk-ant-…`.
+shaped like `sk-ant-…`, tracebacks included.
 
 ## What the endpoint does
 
