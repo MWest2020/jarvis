@@ -6,6 +6,7 @@ the environment, which operators fill from a local, gitignored `.env`.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,8 @@ from pathlib import Path
 # 1.3 (weekend slice): a fixed, read-only allow-list. No approval flow yet,
 # so nothing that writes or executes is ever on this list (D6).
 READ_ONLY_ALLOWED_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
+
+logger = logging.getLogger("bridge.config")
 
 
 class ConfigError(RuntimeError):
@@ -36,7 +39,34 @@ _ALLOWED_NETWORKS = (
 )
 
 
-def _check_private_host(host: str) -> str:
+# Behind a Tailscale proxy in a cluster (run-bridge-in-cluster, D1): the bridge
+# listens on its pod IP, which is private, and the Tailscale operator's proxy is the
+# only thing allowed to reach it. Only these ranges, and only with the explicit opt-in.
+_PROXY_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+)
+
+BEHIND_PROXY_WARNING = (
+    "JARVIS_BEHIND_TAILSCALE_PROXY=1: listening on private address %s, NOT on a "
+    "Tailscale interface. This is only safe when a Tailscale proxy is the sole way in "
+    "(a tailnet-only Service plus a NetworkPolicy that admits only the proxy). "
+    "The token is still required on every request."
+)
+
+
+def _behind_tailscale_proxy() -> bool:
+    raw = os.environ.get("JARVIS_BEHIND_TAILSCALE_PROXY", "")
+    if raw in ("", "0"):
+        return False
+    if raw == "1":
+        return True
+    raise ConfigError(f"JARVIS_BEHIND_TAILSCALE_PROXY must be 1 or unset, not {raw!r}")
+
+
+def _check_private_host(host: str, *, behind_proxy: bool = False) -> str:
     # AGENTS.md: reachable only over a private network, never public.
     try:
         ip = ipaddress.ip_address(host)
@@ -47,12 +77,20 @@ def _check_private_host(host: str) -> str:
             f"JARVIS_BIND_HOST must be a specific interface address (the Tailscale IP), "
             f"not a wildcard like {host!r}. Never public, per AGENTS.md."
         )
-    if not any(ip in net for net in _ALLOWED_NETWORKS):
+    if any(ip in net for net in _ALLOWED_NETWORKS):
+        return host
+    if behind_proxy and any(ip in net for net in _PROXY_NETWORKS):
+        return host
+    if behind_proxy:
         raise ConfigError(
-            f"JARVIS_BIND_HOST={host!r} is not a Tailscale address (100.64.0.0/10 or "
-            f"fd7a:115c:a1e0::/48) or loopback. The bridge is never served elsewhere."
+            f"JARVIS_BIND_HOST={host!r} is not a private address. Behind a Tailscale "
+            f"proxy only RFC 1918 (10/8, 172.16/12, 192.168/16) and CGNAT (100.64/10) "
+            f"addresses are allowed. The bridge is never served elsewhere."
         )
-    return host
+    raise ConfigError(
+        f"JARVIS_BIND_HOST={host!r} is not a Tailscale address (100.64.0.0/10 or "
+        f"fd7a:115c:a1e0::/48) or loopback. The bridge is never served elsewhere."
+    )
 
 
 @dataclass(frozen=True)
@@ -73,6 +111,7 @@ class BridgeConfig:
     whisper_model: str
     kokoro_voice: str
     claude_timeout_s: int
+    behind_tailscale_proxy: bool = False
 
     def project(self, name: str) -> ProjectConfig:
         try:
@@ -98,7 +137,12 @@ def _parse_projects(raw: str) -> dict[str, ProjectConfig]:
 
 
 def load_config() -> BridgeConfig:
-    bind_host = _check_private_host(_require("JARVIS_BIND_HOST"))
+    behind_proxy = _behind_tailscale_proxy()
+    bind_host = _check_private_host(_require("JARVIS_BIND_HOST"), behind_proxy=behind_proxy)
+    if behind_proxy:
+        # Logging is not configured yet here, so this lands on stderr (Python's
+        # last-resort handler); server.main logs it again into the bridge log.
+        logger.warning(BEHIND_PROXY_WARNING, bind_host)
     token = _require("JARVIS_TOKEN")
     port = int(os.environ.get("JARVIS_PORT", "8787"))
     projects = _parse_projects(_require("JARVIS_PROJECTS"))
@@ -115,4 +159,5 @@ def load_config() -> BridgeConfig:
         whisper_model=os.environ.get("JARVIS_WHISPER_MODEL", "base"),
         kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "af_heart"),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
+        behind_tailscale_proxy=behind_proxy,
     )

@@ -94,6 +94,20 @@ def test_the_command_restricts_tools_not_just_preapproves_them():
     assert "bypassPermissions" not in command
 
 
+def test_the_command_keeps_file_tools_out_of_proc_and_ignores_repo_settings():
+    # Review of run-bridge-in-cluster: Grep on /proc/self/environ (or a committed
+    # symlink to it) returned the process environment. --restricted confines the
+    # file tools to the cwd and ignores user/project/local settings (a cloned
+    # repo's hooks); Read(//proc/**) is denied for Read, Grep and Glob alike.
+    for session_id in (None, "old-session"):
+        command = build_command(allowed_tools=TOOLS, session_id=session_id)
+        assert "--restricted" in command
+        denied = command[command.index("--disallowedTools") + 1].split(",")
+        assert "Read(//proc/**)" in denied
+        if session_id:
+            assert command[command.index("--resume") + 1] == "old-session"
+
+
 def test_omits_resume_when_there_is_no_prior_session():
     assert "--resume" not in build_command(allowed_tools=TOOLS, session_id=None)
 
@@ -123,3 +137,31 @@ def test_a_timeout_kills_the_process_group(monkeypatch):
     with pytest.raises(ClaudeTurnError):
         _turn()
     assert killed == [999999]
+
+
+# Review of run-bridge-in-cluster: refuse to start without --restricted.
+
+def _fake_run(stdout="", exc=None):
+    def run(cmd, **kwargs):
+        assert cmd == ["claude", "--help"]
+        if exc:
+            raise exc
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+    return run
+
+
+def test_check_cli_accepts_a_claude_with_restricted(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run("  --restricted   Restricted mode: ..."))
+    claude_adapter.check_cli()
+
+
+def test_check_cli_refuses_a_claude_without_restricted(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run("  --resume  Resume a conversation"))
+    with pytest.raises(ClaudeTurnError, match="--restricted"):
+        claude_adapter.check_cli()
+
+
+def test_check_cli_reports_a_missing_claude(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _fake_run(exc=FileNotFoundError("claude")))
+    with pytest.raises(ClaudeTurnError, match="not on PATH"):
+        claude_adapter.check_cli()

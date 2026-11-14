@@ -15,6 +15,8 @@ Start here. Agents: read this page and follow the links; there is no need to sca
 | Roadmap (feeds westerweel.work/nu) | [`reference/roadmap.yml`](reference/roadmap.yml) |
 | Working rules for agents | [`../AGENTS.md`](../AGENTS.md) |
 | How-to guides (running the bridge, phone setup) | [`how-to/`](how-to/) |
+| Running the bridge in a Kubernetes cluster (image, tailnet-only Service, NetworkPolicy) | [`how-to/run-in-cluster.md`](how-to/run-in-cluster.md) |
+| Change in progress: run the bridge in a cluster | [`openspec/changes/run-bridge-in-cluster/`](../openspec/changes/run-bridge-in-cluster/) |
 
 ## Rule
 

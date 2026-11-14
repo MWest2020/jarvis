@@ -10,6 +10,11 @@ dependencies = [
     "av>=12,<17",
     "kokoro>=0.7",
     "soundfile>=0.12",
+    # Listed directly only so the sources below apply (kokoro pulls it in anyway).
+    "torch>=2.6",
+    # misaki (Kokoro's G2P) otherwise pip-installs this spaCy model at first use,
+    # which needs pip and internet in the running service. Locked here instead.
+    "en-core-web-sm",
 ]
 
 [project.scripts]
@@ -21,6 +26,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["bridge"]
+
+# CPU-only torch on Linux: the bridge runs on CPU (int8 Whisper, Kokoro), and PyPI's
+# Linux wheel drags in about 5 GB of CUDA libraries (run-bridge-in-cluster, D4).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

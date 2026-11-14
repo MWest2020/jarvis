@@ -11,7 +11,10 @@ Claude Code. For the phone side, see
 ## Prerequisites
 
 - Tailscale running on this machine, and its IP known (`tailscale ip -4`).
-- Claude Code installed and already authenticated (`claude --version` works).
+- Claude Code **2.1.322 or newer**, installed and already authenticated
+  (`claude --version` works). The bridge needs its `--restricted` flag (verified with
+  2.1.322) and checks at start: if `claude --help` does not list `--restricted`, it
+  exits with a message saying so.
 - `espeak-ng` installed (a system package; Kokoro's text-to-speech front end
   depends on it) — e.g. `apt install espeak-ng` on Debian/Ubuntu.
 - `uv` installed. Never `pip` directly in this repo (AGENTS.md).
@@ -25,9 +28,12 @@ uv sync
 ```
 
 This installs `faster-whisper`, `kokoro` and `soundfile` into a local `.venv`
-(gitignored). The first run of the service downloads the Whisper and Kokoro
-model weights to the usual Hugging Face / Kokoro cache directories; that
-needs a working internet connection once.
+(gitignored). On Linux, torch comes from PyTorch's CPU index (no CUDA libraries), and
+the spaCy English model Kokoro's G2P needs is installed with the rest instead of at
+first use. The first run of the service downloads the Whisper and Kokoro model weights
+to the usual Hugging Face / Kokoro cache directories; that needs a working internet
+connection once. (In a cluster the image carries the weights; see
+[`run-in-cluster.md`](run-in-cluster.md).)
 
 ## Configure
 
@@ -38,6 +44,7 @@ your process manager.
 | Variable | Required | Meaning |
 |---|---|---|
 | `JARVIS_BIND_HOST` | yes | The Tailscale IP to listen on, e.g. `100.x.y.z` (IPv4 100.64.0.0/10 or IPv6 fd7a:115c:a1e0::/48). Loopback is allowed for local tests. Every other address is refused at start, wildcards and public addresses included (Network exposure, AGENTS.md). |
+| `JARVIS_BEHIND_TAILSCALE_PROXY` | no | Only for a pod behind the Tailscale operator: `1` allows a private (RFC 1918 or CGNAT) bind address. See [`run-in-cluster.md`](run-in-cluster.md). Leave it unset on a workstation. |
 | `JARVIS_TOKEN` | yes | The shared secret the phone sends as `Authorization: Bearer <token>`. Generate one with `openssl rand -hex 32`. Never commit it. |
 | `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/mark/code/demo`. The phone selects a project by name in the request. |
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |
@@ -51,10 +58,15 @@ The tools headless Claude Code can use are **fixed** for this weekend slice:
 that (it only pre-approves, and your own settings, such as an `auto` permission
 mode or allowed Bash rules, and MCP servers would still apply), so each turn runs
 with `--tools Read,Glob,Grep`, `--permission-mode dontAsk`, `--strict-mcp-config`
-(no MCP servers) and `--disallowedTools Bash,Edit,Write,...` as a second layer.
+(no MCP servers), `--restricted` (file tools confined to the project directory, and your
+user, project and local settings files ignored, so a repo's own `.claude/settings.json`
+hooks never run) and `--disallowedTools Bash,Edit,Write,...,Read(//proc/**)` as a second
+layer. The `/proc` rule matters: Grep follows Read deny rules, and without it Grep on
+`/proc/self/environ` (or a committed symlink to it) returned the process environment.
 There is no approval flow yet for anything beyond that list (D6); that is a
 later task. The transcript goes to Claude Code over stdin, and the `JARVIS_*`
-variables (the token) are removed from its environment.
+variables (the token) are removed from its environment. That alone does not hide them
+(the bridge's own `/proc/<pid>/environ` still has them); the two flags above do.
 
 ## Run
 
@@ -64,7 +76,11 @@ uv run jarvis-bridge
 
 The service logs to `$JARVIS_STATE_DIR/bridge.log` (full Claude Code replies
 and transcripts are logged there, even though only a short summary is ever
-spoken — D5) and also to stdout.
+spoken — D5) and also to stdout. Transcripts and full replies go to the file only;
+stdout gets the request lines, the summaries and short error lines; error details
+(Claude Code's stderr, an unexpected reply) and tracebacks go to the file. The file rotates at 10 MB
+and keeps three old files. Both redact the token, the Claude credentials and anything
+shaped like `sk-ant-…`, tracebacks included.
 
 ## What the endpoint does
 
@@ -81,12 +97,13 @@ recorded audio as the body. Replies:
 | 502 | The Claude Code turn failed or timed out (details in the log) |
 
 A connection that stalls for 30 seconds is closed. The log and the session file
-are created owner-only (`0600`, in a `0700` directory): the log holds full
-replies, which can quote file contents.
+are created owner-only (`0600`, in a `0700` directory, rotated logs too): the log
+holds full replies, which can quote file contents.
 
 Only the summary is spoken, and only when it is short (300 characters at most)
 and contains nothing that looks like code or a path (backticks, slashes, file
-names, shell operators). Otherwise the phone hears "Done. Check the log for
+names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
+letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
 details."
 
 ## Picking a Kokoro voice
