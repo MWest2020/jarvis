@@ -11,4 +11,4 @@ tasks, spec). Documentation lives in [`docs/`](docs/index.md).
 
 ## Support
 
-If this is useful to you: [buy me a coffee](https://buymeacoffee.com/mark).
+If this is useful to you: [buy me a coffee](https://buymeacoffee.com/mark.westerweel).

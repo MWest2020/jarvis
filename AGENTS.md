@@ -6,7 +6,7 @@ separate (HTTP Shortcuts for the first test, a native Android app later).
 
 **Working method:** OpenSpec. A change that alters what the bridge promises (who can reach it,
 what it runs, what it speaks) goes propose → apply → archive, and no code is written before
-the change is applied. Everything else is a GitHub issue.
+the change is approved by Mark. Everything else is a GitHub issue.
 
 **Hard rules**
 - Reachable only over a private network (Tailscale by default) plus a shared token. Never public.

@@ -9,7 +9,7 @@ phases:
   - {id: android-app, name: "Android app", summary: "a native phone client built on the lessons of the test"}
 done_means:
   - {item: "Change add-voice-bridge proposed (proposal, design, tasks, spec)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge"}
-  - {item: "Change approved by Mark (2026-11-14), his full tasks and spec in", status: done, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-voice-bridge/tasks.md"}
+  - {item: "Change approved by Mark (2026-11-14), his full tasks and spec in", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/1"}
   - {item: "Bridge service on the tailnet with token, headless Claude Code, session resume", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
-  - {item: "Local STT (faster-whisper) and TTS (Kokoro) behind one interface each", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
-  - {item: "A spoken round trip from the phone in the car", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
+  - {item: "Local STT (faster-whisper) and TTS (Kokoro) on the machine", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
+  - {item: "A spoken round trip from the phone over the tailnet (HTTP Shortcuts)", status: open, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/add-voice-bridge/tasks.md"}
