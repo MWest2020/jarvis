@@ -5,6 +5,10 @@ Talk to a Claude Code session while driving: the phone records, your machine tra
 runs Claude Code headless, and speaks back a short summary. Over Tailscale, no third-party
 messaging platform in between.
 
-Status: proposal. The work is specified as an OpenSpec change:
+Status: approved, weekend test in progress. The work is specified as an OpenSpec change:
 [`openspec/changes/add-voice-bridge/`](openspec/changes/add-voice-bridge/) (proposal, design,
-tasks, spec). No code before the change is applied.
+tasks, spec). Documentation lives in [`docs/`](docs/index.md).
+
+## Support
+
+If this is useful to you: [buy me a coffee](https://buymeacoffee.com/mark.westerweel).

@@ -1,0 +1,11 @@
+name: docs-gates
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+jobs:
+  gates:
+    uses: MWest2020/handbook/.github/workflows/docs-gates.yml@main
+    with:
+      code_paths: "bridge/,plugin/,client/,pyproject.toml"
+      docs_paths: "docs/"
+      drift_mode: "fail"
