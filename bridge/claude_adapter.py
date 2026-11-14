@@ -23,7 +23,7 @@ class ClaudeTurnError(RuntimeError):
 # Tools that must never run from a voice turn in the weekend slice, denied on top
 # of --tools as a second layer.
 DENIED_TOOLS: tuple[str, ...] = (
-    "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task",
+    "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent",
 )
 
 
