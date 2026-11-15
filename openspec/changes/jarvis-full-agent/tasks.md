@@ -25,7 +25,7 @@ executable. Nothing is installed anywhere in this phase.
   it is a canonical UUID, passed as `--resume=<uuid>`; anything else is discarded and a new
   session starts and the reply says so. Test with the stored value
   `--dangerously-skip-permissions` and with `--version`: neither reaches argv (D33)
-- [ ] 1.4 The command line of D34, fixed by a test: `auto`, `--permission-prompts none`,
+- [ ] 1.4 The turn settings set `disableAllHooks: false`. The command line of D34, fixed by a test: `auto`, `--permission-prompts none`,
   `--system-prompt-snapshot off`, the prompt file, the static root-owned turn settings; none
   of the forbidden options; refusal to start when the user's settings default to bypass.
   The turn settings are written by the installer only; no code path writes settings into
@@ -36,12 +36,14 @@ executable. Nothing is installed anywhere in this phase.
   instruction; an optional second prompt file from the configuration
 - [ ] 1.7 `agent_host/gate`: the PreToolUse hook, for every tool. Rules from
   `agent_host/gate_rules.toml` and `/etc/jarvis-agent/rules.d/`. Default rules (D36): for
-  `kubectl`, `helm`, `argocd`, the secrets client, `gh`, cloud CLIs and `docker` every
+  `kubectl`, `helm`, `argocd`, the secrets client, `gh`, `docker` and the infrastructure CLIs named in the rules (`terraform`, `tofu`, `aws`,
+  `gcloud`, `az`, `doctl`, `hcloud`, `pulumi`) every
   subcommand not on the read-verb list is gated; `curl`, `wget` and httpie with a writing
   method or a data or upload option; `git push` parsed by its option grammar (`-d`,
   `--delete`, `--prune`, `:ref`, `-f`, `--force*`, grouped short flags, `+refspec`,
-  `--mirror`, `--all`, `--tags`, a bare push resolved to its target or gated); the `mcp__*`
-  name default. Naming rules for the classes merge, deploy, delete, force, api, account,
+  `--mirror`, `--all`, `--tags`, a bare push resolved to its target or gated); `scp`,
+  `rsync` and `sftp` to or from another host as class `outward` with the host as target,
+  and under the path rule when both ends are local; the `mcp__*` name default. Naming rules for the classes merge, deploy, delete, force, api, account,
   message, create, root. Unwrapping of `ssh`, `bash -c`, `sh -c` and `sudo`
 - [ ] 1.7b The class `self` (the paths of D36, including the user's instructions file,
   managed settings and every file a configured hook runs; writes by `Edit`, `Write` and
@@ -53,7 +55,9 @@ executable. Nothing is installed anywhere in this phase.
 - [ ] 1.7d The checkout settings rule: the wrapper refuses a turn (`unsafe_settings`) when
   `.claude/settings.json` or `settings.local.json` of the checkout contains `env`, `hooks`
   or `disableAllHooks`; checked before every turn (the confirming one too) and again after
-  it. The gate is also installed through managed settings, inert without the turn marker
+  it. And in the gate, on every call: both files of the turn's checkout are re-read, and
+  while either contains one of the three keys every gated call is denied, with or without a
+  grant, with "project settings changed, needs the desk"; nothing becomes pending
 - [ ] 1.8 The hash of D36 (tool name, zero byte, command; or canonical input without
   `description`); the grant from the environment matched by that hash and used once; silence
   on a match; denial on any error; a gated `Bash` call with a separator, pipe, substitution
@@ -93,21 +97,28 @@ executable. Nothing is installed anywhere in this phase.
   names both; a `self` write is never pending; the `confirm off` command gives the fixed
   sentence and any other argument form is desk-only; a checkout with `env`, with `hooks` and
   with `disableAllHooks` in its settings is refused; `gh pr merge` without
-  `--match-head-commit` is not nameable; an exact no clears the pending call; a grant for another hash; a
+  `--match-head-commit` is not nameable; an exact no clears the pending call; settings that gain `env`, `hooks` or
+  `disableAllHooks` after the turn started (as a `git pull` or `gh pr checkout` would bring
+  them): the next gated call is denied even with a matching grant, an ungated call still
+  runs, and removing the key lifts the denial; an unreadable settings file denies; `scp` and
+  `rsync` to another host are gated and name the host, a local copy is not `outward`;
+  `terraform apply` and `aws s3 rm` gated, `terraform version` not; a grant for another hash; a
   reused grant; an expired pending call; a pending call cleared by an unrelated request; a
   pending file altered between gate and wrapper (the read-back and the hash follow the
   altered call); a second gated call in one turn; a request with an extra field, a path as
   project, a symlinked project, a bare repository, an oversized body; the argv
 - [ ] 1.15 `agent_host/install.sh`: installs wrapper, gate, the `confirm` switch, rules,
-  prompt and the turn settings root-owned under `/usr/local/lib/jarvis-agent`; the gate's
-  entry in Claude Code's managed settings; a configuration template, an
+  prompt and the turn settings root-owned under `/usr/local/lib/jarvis-agent`. It never
+  touches Claude Code's managed or user settings; a configuration template, an
   environment file and an empty `rules.d/` under `/etc/jarvis-agent`; prints the
   `authorized_keys` line for a given public key and source address; never edits
   `authorized_keys` itself
 - [ ] 1.16 `agent_host/` added to the `docs-gates` code paths; `docs/how-to/agent-host.md`
   (what is installed where, the configuration keys, the kill switch, host-local rules, the
-  `authorized_keys` line, how to read the records, how to switch confirmation off, and the
-  trust statement of D40 in plain words); `AGENTS.md` hard rule on the allow-list rewritten
+  `authorized_keys` line, how to read the records, how to switch confirmation off, the
+  update runbook (which checks to repeat on a Claude Code version bump, the mid-turn
+  settings check first), the optional managed-settings hardening as an entry to merge into
+  an existing file, and the trust statement of D40 in plain words); `AGENTS.md` hard rule on the allow-list rewritten
   as in the proposal
 - [ ] 1.17 **(host)** Canary checks with the real Claude Code, written into the how-to with
   the version, and their outcome into design D36 where it says so:
@@ -119,12 +130,15 @@ executable. Nothing is installed anywhere in this phase.
   - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
     refused without a grant and runs once with one;
   - a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
-  - with the wrapper's refusal switched off for the test: `env`, `hooks` and
-    `disableAllHooks` in a checkout's `.claude/settings.json`, present at the start and
-    appearing in the middle of a turn, cannot plant a grant, and cannot get a gated call
-    past the managed-settings copy of the gate. **If this fails, phase 1 does not ship**:
-    `full` mode is enabled nowhere and the design is reopened (D36);
-  - the managed-settings copy of the gate does nothing in the coding session;
+  - the checkout settings, with the wrapper's start check switched off for the test: `env`
+    (a planted grant included), `hooks` and `disableAllHooks` in a checkout's
+    `.claude/settings.json`, present at the start and appearing in the middle of a turn,
+    never get a gated call through: the gate's per-call re-read denies it, and
+    `disableAllHooks: false` in the turn settings keeps the gate running against a project
+    file that says `true`. **If this fails,
+    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened
+    (D36). This check goes into the update runbook: run again on every Claude Code version
+    bump on the agent host, before Jarvis uses the new version;
   - the employer hook refuses in a `-p` turn;
   - `autoMemoryDirectory` from `--settings` gives the turn the coding session's memory; if
     not, the symlink fallback of D34 is set up for each listed checkout;
@@ -229,3 +243,10 @@ rest is hands, not questions.
    and the agent host: allow that proxy to reach the agent host on TCP 22 (the admin
    console is his). The session reports whether it is needed after 3.4.
 3. **The parked test** (4.5).
+4. **Optional hardening: the gate in Claude Code's managed settings on the agent host**
+   (D36). **(Mark)** only: it changes the coding session's own configuration, so neither the
+   installer nor the coding session does it, and no phase depends on it. The how-to gives
+   the entry to merge into an existing managed-settings file, never to overwrite one. The
+   entry checks the turn marker first and exits 0 without reading anything when it is
+   absent, has a short hook timeout, and a broken or missing script fails open in the
+   coding session; Jarvis turns stay closed through the turn-settings copy.

@@ -216,7 +216,8 @@ There are two kinds of rule.
 
 *Rules by default, for tools that can change things.* For these programs **every**
 subcommand is gated unless it is on a short list of read verbs: `kubectl`, `helm`, `argocd`,
-the secrets client (`bao`, `vault`), `gh`, cloud CLIs of that kind, and `docker`. The read
+the secrets client (`bao`, `vault`), `gh`, `docker`, and the infrastructure CLIs named in
+the rules: `terraform`, `tofu`, `aws`, `gcloud`, `az`, `doctl`, `hcloud`, `pulumi`. The read
 verbs are `get`, `describe`, `logs`, `list`, `ls`, `view`, `status`, `diff`, `top`,
 `version`, `show`, `search`, `checks`, `history`, `explain`, `read` for the secrets client,
 and for `gh` also the work that never needs a yes: `pr create`, `pr checkout`, `pr comment`,
@@ -233,6 +234,9 @@ subcommand nobody thought of (`gh issue delete`, `gh gist create --public`, `kub
   gated as such; a push that lands on a default branch is *merge*, with or without an
   explicit refspec (the gate resolves where a bare `git push` goes; if it cannot, the push
   is gated);
+- `scp`, `rsync` and `sftp`: to or from a host other than this one they are class
+  `outward`, nameable with the host as target (the host shape); between paths on the agent
+  host itself the path rule of the class `self` and of `rm -r` applies;
 - connector tools: **any** `mcp__*` tool whose name contains `send`, `reply`, `forward`,
   `delete`, `trash`, `publish`, `share`, `post`, `message`, `comment`, `upload` or `invite`.
 
@@ -248,6 +252,7 @@ subcommand nobody thought of (`gh issue delete`, `gh gist create --public`, `kub
 | account | `gh secret` and `gh variable` `set/delete`, `gh ssh-key`, `gh repo deploy-key`, `gh repo rename`, `gh repo edit` |
 | message | sending, replying to, forwarding or trashing mail; a chat post or ping; a comment, issue, review or pull request on a repository that is not the user's own; command-line mailers |
 | create | `gh repo create`, `gh repo fork`, `gh gist create`, changing a repository's visibility |
+| outward | copying files to or from another host with `scp`, `rsync` or `sftp` |
 | root | `sudo`, `su`, `pkexec`, `doas`, in any position: the inner command must itself be nameable |
 | self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user and managed settings, `~/.claude.json` (connector definitions), `~/.claude/CLAUDE.md`, `~/.claude/agents`, `skills`, `plugins`; every file that a configured hook runs; the shell rc files; and the checkout's own `.claude/settings*.json` |
 
@@ -371,26 +376,49 @@ holds for an agent that works through its tools. It is not a wall against one th
 its own host (D40).
 
 *The checkout's own settings.* A project's `.claude/settings.json` and `settings.local.json`
-are loaded by Claude Code, and they can carry `env` (which could plant a grant), `hooks` and
-`disableAllHooks`. They need no `Edit` call to appear: a `git pull`, a `gh pr checkout` or a
-clone brings them. Two rules, both required:
-1. The wrapper reads both files before every turn, the confirming turn included, and
-   **refuses the turn** (`unsafe_settings`) when either contains `env`, `hooks` or
-   `disableAllHooks`. Jarvis says that the project's settings need the desk. The wrapper
-   checks again after the turn; if they appeared during it, the pending call is dropped and
-   the record says why.
-2. The gate is loaded a second time from Claude Code's **managed settings** on the agent
-   host, which project settings cannot override or switch off. That copy does nothing unless
-   the wrapper's turn marker is in the process environment, so the coding session is not
-   gated. It is there for the case that a settings file changes in the middle of a turn.
-Task 1.17 proves both on the host with the real Claude Code. **If that check fails** (a
-checkout's `env` can still plant a grant, or `disableAllHooks` or a project hook can still
-get a gated call past the gate), phase 1 does not ship: `full` mode is not enabled anywhere
-until the design has an answer that passes.
+are loaded by Claude Code, and they can carry `env`, `hooks` and `disableAllHooks`. They
+need no `Edit` call to appear: a `git pull`, a `git checkout`, a `git merge`, a clone or a
+`gh pr checkout` (a pull request from a fork into one of Mark's repositories included)
+brings them. Said plainly: the grant lives in the process environment, and an `env` entry in
+project settings is added to that same environment. If Claude Code applied a planted `env`,
+the gate would inherit a planted grant. Three checks stop that, and none of them depends on
+whether or when Claude Code re-reads its settings:
+1. **Before the turn**, the confirming turn included, the wrapper reads both files and
+   refuses the turn (`unsafe_settings`) when either contains `env`, `hooks` or
+   `disableAllHooks`. Jarvis says that the project's settings need the desk.
+2. **On every call**, the gate itself re-reads both files of the turn's checkout. While
+   either contains one of the three keys, it denies **every gated call**, with or without a
+   matching grant: "project settings changed, needs the desk". Nothing becomes pending. This
+   is the main defence for a file that arrives in the middle of a turn.
+3. **After the turn**, the wrapper reads them again; if a key appeared, the pending call is
+   dropped and the record says why.
+One of the three keys is different: `disableAllHooks` would stop the gate from running at
+all, so the per-call re-read cannot answer it. The turn settings therefore set
+`disableAllHooks: false` themselves; settings given on the command line rank above project
+settings. Whether that holds for a file that appears mid-turn is exactly what the host
+check must show, and it is the case most likely to fail it.
+Phase 1 is safe with these three and nothing else. Task 1.17 proves it on the host with the
+real Claude Code, with the settings present at the start and appearing mid-turn. **If that
+check fails**, phase 1 does not ship: `full` mode is not enabled anywhere until the design
+has an answer that passes. The mid-turn check is part of the update runbook: it is run again
+on every Claude Code version bump on the agent host, before Jarvis uses the new version.
 
-*Failing closed.* If the gate cannot read its rules, cannot parse the call or crashes, the
-call is denied. A turn that is not started by the wrapper (the coding session itself) does
-not load the gate at all: it is in the turn settings, not in the user's settings.
+*Optional hardening, Mark's own to install.* The gate can also be loaded from Claude Code's
+managed settings on the agent host, which project settings cannot override or switch off.
+That file is the coding session's own configuration, so it is Mark's gate: the installer
+does not touch it and the coding session never installs it. If Mark adds it, the how-to
+gives the entry to **merge** into an existing managed-settings file (never a file to copy
+over it), and the entry behaves like this: its first step is to look for the wrapper's turn
+marker in the environment and exit 0 without reading anything when it is absent; it has a
+short hook timeout; and in the coding session a missing or broken script lets the call
+through (fail open), while in a Jarvis turn the copy from the turn settings stays the one
+that decides and fails closed.
+
+*Failing closed.* In a turn started by the wrapper, if the gate cannot read its rules or the
+checkout's settings, cannot parse the call or crashes, the call is denied. The coding
+session is never gated: without the optional hardening it does not load the gate at all (it
+is in the turn settings, not in the user's settings); with it, the managed entry exits at
+once because the turn marker is absent, and cannot block a call even when it is broken.
 
 *Switching it off.* `confirm = "off"` in `/etc/jarvis-agent/config.toml`, or
 `confirm_skip = ["message", …]` for single classes. Then the gate lets the call through and
@@ -462,7 +490,9 @@ and files can be told things by strangers. The defences are the coding session's
 These hold when the planted text makes the agent *try* a gated action in a shape the rules
 know. A script in the repository, a `make` target, a git alias or a program the rules have
 never heard of does the same thing without matching anything: that road goes around the
-gate, and only the classifier, the hooks and the agent's own judgement stand on it. They do not hold against an agent that has been turned into an attacker of its own
+gate, and only the classifier, the hooks and the agent's own judgement stand on it. Reading
+is not gated either: data can leave in the address of a plain `curl` GET or a web fetch,
+and no read-back will mention it. They do not hold against an agent that has been turned into an attacker of its own
 host; see D40.
 
 **D40. What this trusts, said plainly.**
@@ -485,9 +515,10 @@ host; see D40.
   agent has a shell as their owner, and `sudo`. "Nothing the agent writes can produce a
   grant" and "the read-back cannot be falsified" are true of an agent that works through its
   tools and follows its rules, including one that was misled into *attempting* a gated
-  action. They are not true of an agent that deliberately edits state, kills the gate or
+  action. They are not true of data that leaves by a read (a GET, a web fetch), nor of an
+  agent that deliberately edits state, kills the gate or
   assembles a command the rules do not know. The classes `root` and `self`, the refusal of
-  unsafe checkout settings and the managed-settings copy of the gate close the obvious
+  unsafe checkout settings, before the turn and on every gated call, close the obvious
   roads; they do not make the others impossible.
 - *The classifier.* It does not see calls that match an allow rule (D34).
 - *The agreements.* "Review and green checks before a merge", "Mark's gates are his" and the
@@ -524,7 +555,8 @@ host; see D40.
   or add a rule.
 - **A Claude Code update changes hook or flag behaviour.** The argv, the gate's input shape
   and the memory setting are covered by tests with a recorded sample, and the (host) checks
-  of phase 1 are repeated on every version bump on the agent host.
+  of phase 1, the mid-turn settings check first, are repeated on every version bump on the
+  agent host before Jarvis uses it (the update runbook in the how-to).
 - **The merge read-back needs GitHub.** When the status cannot be fetched it says "status
   unknown"; it never says green by default.
 

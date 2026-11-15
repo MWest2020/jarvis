@@ -127,7 +127,7 @@ The system SHALL read a gated action back in one sentence that consists only of 
 
 The call SHALL run only when the driver's next utterance for that project, within 60 seconds, is exactly an affirmation from a closed list and contains at least a configured minimum of speech. A confirmation SHALL be bound to a hash of the exact call (the tool and its command, or the tool and its canonical input), SHALL release that call once, SHALL expire on the agent host as well as in the bridge, and SHALL be cleared on the agent host by the next request for the project, a spoken no included. The bridge SHALL derive a confirmation only from the transcript of the driver's own audio. A confirmed call SHALL still pass the coding session's permission rules. If the hook cannot decide, the call SHALL be refused. The read-back of a merge SHALL state the review and check status of one commit, and the merge SHALL be pinned to that commit; the read-back of a repository creation SHALL state the visibility, and "public" when it is unknown. After a confirmed call has run, the agent host SHALL notify the user outside the voice channel when a notify command is configured. The user SHALL be able to switch confirmation off, entirely or per class, in the agent host's configuration.
 
-The agent host SHALL NOT start a turn in a checkout whose own Claude Code settings set environment variables, define hooks or disable hooks, and the gate SHALL also be loaded from settings that a project cannot override. These guarantees hold for an agent that acts through its tools with commands the rules know; the system does not claim them against an agent that deliberately alters the agent host's own state, nor for an action hidden behind a script, a build target or an alias.
+The agent host SHALL NOT start a turn in a checkout whose own Claude Code settings set environment variables, define hooks or disable hooks. The hook SHALL read those settings again on every tool call, and while they contain any of the three it SHALL refuse every gated call, with or without a confirmation. The gate SHALL NOT affect the user's coding session. These guarantees hold for an agent that acts through its tools with commands the rules know; the system does not claim them against an agent that deliberately alters the agent host's own state, for an action hidden behind a script, a build target or an alias, or for data that leaves through a read-only request.
 
 #### Scenario: Confirmed
 - **WHEN** Mark says "merge the jarvis pull request", hears "Merge pull request 21 on jarvis. Checks green, one approving review. Say yes to go ahead.", and says "yes"
@@ -184,6 +184,18 @@ The agent host SHALL NOT start a turn in a checkout whose own Claude Code settin
 #### Scenario: Project settings that could defeat the gate
 - **WHEN** the checkout's own Claude Code settings set an environment variable, define a hook or disable hooks, however they got there
 - **THEN** the agent host starts no turn in that checkout and Jarvis says the project's settings need the desk
+
+#### Scenario: Project settings that change during a turn
+- **WHEN** a pull, a checkout of a pull request or a merge brings such settings into the checkout in the middle of a turn, with or without a planted confirmation in them
+- **THEN** every gated call from then on is refused, a confirmed one included, and Jarvis says the project settings changed and it needs the desk
+
+#### Scenario: The coding session
+- **WHEN** the user's own coding session, which is not a voice turn, calls a tool that would be gated in a voice turn
+- **THEN** the gate does not refuse it, whether the gate's script is present, missing or broken
+
+#### Scenario: Copying to another host
+- **WHEN** the agent copies files to or from another host with a file-transfer command
+- **THEN** the call is gated and the read-back names that host
 
 #### Scenario: A target that cannot be named
 - **WHEN** a gated call matches a class but the rules cannot say what it acts on
@@ -273,6 +285,10 @@ Everything a voice turn reads (files, issues, pull requests, web pages, tool out
 #### Scenario: A planted instruction behind a script
 - **WHEN** the planted text makes the agent run a script or build target of the repository that performs the merge itself
 - **THEN** the gate does not see a merge; only the coding session's permission rules apply, and the system does not claim otherwise
+
+#### Scenario: Data leaving through a read
+- **WHEN** the planted text makes the agent fetch a web address that carries data in the address itself
+- **THEN** the gate does not see it; only the coding session's permission rules apply, and the system does not claim otherwise
 
 #### Scenario: A planted instruction to send data out
 - **WHEN** a file the agent reads tells it to mail the contents of a file to an address, and the agent, misled, calls the mail tool
