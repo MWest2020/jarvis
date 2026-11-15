@@ -69,6 +69,7 @@ ERROR_CODES = frozenset({
 FALLBACK_CODES = frozenset({"no_checkout", "disabled", "unsafe_settings"})
 
 NEEDS_THE_DESK = "That one needs the desk."
+OUT_OF_BUDGET = "out_of_budget"
 # The closed list of notices, each with the bridge's own fixed sentence.
 NOTICE_SENTENCES = {
     "needs_desk": NEEDS_THE_DESK,
@@ -280,7 +281,7 @@ class RemoteAdapter:
             code = reply["error"]
             if code in FALLBACK_CODES and confirm is None:
                 raise AgentUnavailable(code)
-            raise AgentTurnFailed(code, turn_id=turn_id)
+            raise AgentTurnFailed(code, turn_id=turn_id, notice=reply["notice"])
 
         pending = reply["confirmation"]
         if pending is None:

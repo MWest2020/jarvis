@@ -25,6 +25,7 @@ from bridge.agent import (
 )
 from bridge.config import ProjectConfig, normalise_utterance
 from bridge.logging_setup import FILE_ONLY
+from bridge.remote_adapter import NOTICE_SENTENCES, OUT_OF_BUDGET
 
 logger = logging.getLogger("bridge.full")
 
@@ -223,6 +224,9 @@ def _code(exc: AgentUnavailable | AgentTurnFailed) -> str:
 def _failure_line(exc: AgentTurnFailed, *, confirmed: bool) -> str:
     if exc.code == "expired":
         return TOOK_TOO_LONG
+    if exc.code == "agent_failed" and exc.notice == OUT_OF_BUDGET:
+        # The usage limit is shared with the coding session (design, Risks).
+        return NOTICE_SENTENCES[OUT_OF_BUDGET]
     if exc.code in NOT_STARTED_LINES:
         line = NOT_STARTED_LINES[exc.code]
         return f"{line} {NOTHING_CONFIRMED}" if confirmed else line

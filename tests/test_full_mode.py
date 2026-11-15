@@ -266,6 +266,12 @@ def test_the_spoken_errors(code, words):
     assert words in rig.say("do something").spoken
 
 
+def test_a_usage_limit_is_said_as_out_of_budget():
+    rig = Rig(AgentTurnFailed("agent_failed", notice="out_of_budget"))
+    assert rig.say("do something").spoken == "The agent is out of budget for now."
+    assert rig.readonly.asked == [] and len(rig.remote.asked) == 1
+
+
 def test_the_bridge_keeps_a_read_back_no_longer_than_the_agent_host_does():
     rig = Rig(AgentTurn(READBACK, "turn-1", PENDING, expires_s=20.0),
               AgentTurn("Yes to what?", "turn-2"))

@@ -92,11 +92,13 @@ class AgentTurnFailed(Exception):
     NO_ANSWER = "no_answer"
     PROTOCOL = "protocol"
 
-    def __init__(self, code: str, detail: str = "", turn_id: str = "") -> None:
+    def __init__(self, code: str, detail: str = "", turn_id: str = "",
+                 notice: str = "") -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
         self.code = code
         self.detail = detail
         self.turn_id = turn_id
+        self.notice = notice   # the agent host's notice code that came with the error
 
 
 class AgentAdapter(Protocol):

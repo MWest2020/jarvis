@@ -188,6 +188,14 @@ def test_a_notice_is_spoken_as_the_bridges_own_fixed_sentence(host, notice, spok
     assert _adapter(host).run_turn(project=DEMO, prompt="x").spoken == expected
 
 
+def test_agent_failed_carries_the_out_of_budget_notice(host):
+    host.scenario(mode="wrapper", error="agent_failed",
+                  error_extra={"turn": "t-3", "notice": "out_of_budget"})
+    with pytest.raises(AgentTurnFailed) as caught:
+        _adapter(host).run_turn(project=DEMO, prompt="hello")
+    assert (caught.value.code, caught.value.notice) == ("agent_failed", "out_of_budget")
+
+
 def test_the_agent_hosts_own_expiry_is_passed_on(host):
     host.scenario(mode="wrapper", gate=True, expires_s=42)
     assert _adapter(host).run_turn(project=DEMO, prompt="merge it").expires_s == 42.0

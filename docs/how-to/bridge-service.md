@@ -183,7 +183,7 @@ the same summary filter as a read-only reply; the full reply never leaves the ag
 | notice `settings_changed` | "The project settings changed. That needs the desk." |
 | notice `new_session` | "I started a new session for this project." |
 | notice `target_changed` | "The push target changed. That one needs the desk." |
-| notice `out_of_budget` | "The agent is out of budget for now." |
+| notice `out_of_budget` (with `agent_failed`: the usage limit shared with the coding session) | "The agent is out of budget for now." |
 
 A notice's sentence comes first, followed by the agent's summary when there is one that
 may be spoken. All of these are ordinary `200` replies with audio: the driver cannot read a
