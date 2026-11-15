@@ -337,7 +337,10 @@ repository and every ref of a push, the namespace as well as the resource. A tar
 missing, does not match its shape, or is one of more than the template can say (a mail to
 thirty people) makes the call **not nameable**. So does a target that is longer than 100
 characters or matches the bridge's secret-shaped pattern (`sk-ant-`, or a run of 32 or more
-token characters) in the form it would be spoken: the read-back skips the free-text filter
+token characters) in the form it would be spoken. For a git ref the pattern is applied to
+each part between `-`, `/` and `_`, so a long hyphenated branch name stays nameable while
+a ref that carries a token does not; the 100 characters still hold for the whole ref. The
+read-back skips the free-text filter
 and is also sent in the notify ping, so nothing shaped like a credential may ride in it. A
 full commit id is not affected, because it is spoken as seven digits. What the read-back therefore promises is
 this and no more: the sentence says truthfully what the released call acts on. It does not
@@ -363,15 +366,23 @@ from the checkout for a `gh` call without `--repo`, no cluster and no namespace 
 current context,
 no upstream for a bare `git push`. (Deciding *that* a call is gated may look at the
 surroundings, such as where a bare push would land; naming it may not.) Two uses of `cwd` remain, neither a substitute:
-- *consistency*: when the `cwd` is a checkout with a GitHub remote, the explicit `--repo`
-  of a `gh` call must be that repository. If it is not, the call is not nameable;
+- *consistency*: when the `cwd` is a checkout whose remote is on the forge host (judged by
+  the same host and exact-form rule as a push address, below), the explicit `--repo` of a
+  `gh` call must be that repository. If it is not, or the remote's address is not in one of
+  those forms, the call is not nameable;
 - *resolving a name that is in the call*: a push names its remote (`origin`), and which
   repository that is depends on git configuration that the call's bytes do not contain: git
   pushes to `remote.<name>.pushurl` when it is set, rewrites addresses with
   `pushInsteadOf`, and may push to several addresses at once. So the wrapper resolves the
   remote with `git remote get-url --push --all <remote>` in the stored `cwd`, which applies
-  those settings. Exactly one address that parses to an `owner/name` repository is nameable;
-  more than one, or one that does not parse, is not. **The resolved address is part of the
+  those settings. An address is nameable only when its **host is the configured forge host**
+  (`forge_host = "github.com"` in the agent host's configuration) and it has exactly one of
+  three forms: `git@<host>:owner/name`, `ssh://git@<host>/owner/name` or
+  `https://<host>/owner/name`, each with an optional `.git`. Another host, another user, a
+  port, credentials in the address, a path with more parts, or any other scheme is not
+  nameable: `git@elsewhere.example:MWest2020/jarvis.git` has the right owner and name and
+  must never be read back as "jarvis". Exactly one such address is nameable; more than one
+  is not. **The resolved address is part of the
   hash** of a push, and the gate resolves it again, the same way, at the moment the call is
   released: if it differs from what was read back (a `git config remote.origin.pushurl …`
   in between is not a gated call), the hash no longer matches, the call is denied and the

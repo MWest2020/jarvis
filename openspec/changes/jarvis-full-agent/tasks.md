@@ -82,7 +82,8 @@ This build carries the change's guarantees and is reviewed on its own.
   shell commands): always desk-only. The fixed `confirm on|off [class]` program and its
   templated read-back as the one exception
 - [ ] 1.7c A target longer than 100 characters, or matching the secret-shaped pattern in
-  its spoken form, makes the call not nameable. Target shapes per kind (D36 table); every target of the call named (mail to, cc
+  its spoken form, makes the call not nameable; for a ref the pattern is applied per part
+  between `-`, `/` and `_`, the length cap to the whole ref. Target shapes per kind (D36 table); every target of the call named (mail to, cc
   and bcc; every repository and ref of a push; namespace and resource); a missing or
   misshapen target, or more targets than the template holds, makes the call not nameable
 - [ ] 1.7e Explicit targets only: no repository, namespace, context, remote, refspec or
@@ -91,7 +92,10 @@ This build carries the change's guarantees and is reviewed on its own.
   `--repo` of a `gh` call must equal the checkout's GitHub remote when there is one, and a
   push's explicit remote name is resolved in the stored `cwd` with
   `git remote get-url --push --all` (so `pushurl` and `pushInsteadOf` apply): exactly one
-  address that parses to `owner/name` or the push is not nameable; the resolved address is
+  address, on the configured `forge_host`, in one of the three exact forms of D36
+  (`git@<host>:owner/name`, `ssh://git@<host>/owner/name`, `https://<host>/owner/name`,
+  optional `.git`), or the push is not nameable; the same rule judges the remote used in
+  the `--repo` consistency check; the resolved address is
   part of the push's hash, and the gate resolves it again on release and denies with
   `target_changed` when it differs. A call that is not nameable
   only for missing explicit targets is denied with the list of exactly those parts; the gate
@@ -165,7 +169,14 @@ This build carries the change's guarantees and is reviewed on its own.
   pod x -n y` without `--context`, with one context configured and with two (refused both
   times, `--context` named); a remote with a `pushurl` (the read-back names the push
   address, not the fetch address); a `pushInsteadOf` rewrite (the rewritten address is
-  named); two push addresses (not nameable); an address that does not parse (not nameable);
+  named); two push addresses (not nameable); an address that does not parse (not nameable); a
+  `pushurl` on another host with the user's own owner and name (not nameable, the name is
+  never spoken); a `pushInsteadOf` that rewrites to another host (not nameable); on the
+  right host: the three exact forms with and without `.git` (nameable), another user, a
+  port, credentials in the address, `git://`, `http://` and an extra path part (each not
+  nameable); a `gh` call whose checkout remote is on another host (not nameable); a
+  60-character hyphenated branch name (nameable), a ref with a 32-character token part and
+  a ref of 101 characters (not nameable);
   a `pushurl` set between read-back and release (denied, `target_changed`, nothing pushed);
   a target of 101 characters and a target of 32 token characters (not nameable); a `--repo` that is
   not the checkout's repository (not nameable); the confirmed bytes from another `cwd`
