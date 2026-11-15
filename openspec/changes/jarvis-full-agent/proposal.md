@@ -89,6 +89,21 @@ Said plainly, because "everything you can do" has a price (design D40):
    shows that auto mode refuses an action even after a yes (a force push, `reset --hard`,
    deleting a namespace), Jarvis does not offer a read-back and says "that one needs the
    desk". Jarvis can do what the coding session can, not more.
+3. **How a gated call gets the targets that are read back: the gate's refusal, helped by the
+   prompt.** A target is named only when it stands explicitly in the call (`--repo`,
+   `--match-head-commit`, `-n`, a remote and a refspec, every recipient). The appended
+   prompt tells the agent this shape. That line is help, not a guarantee. The enforcement
+   is the gate: a call without its explicit targets is refused with the exact missing parts
+   and never becomes pending, and the agent may repeat the same call once with only those
+   added. Nothing is ever filled in from the working directory. A gated call with an
+   implicit target is therefore never confirmable; it is repaired or it needs the desk.
+4. **The directory is part of what is confirmed.** The gate stores the call's working
+   directory, the hash covers it, and the released call must run there.
+5. **A read-back is never filtered into something else.** It is built from fixed words and
+   shape-checked targets and spoken as built; while a call is pending no fallback sentence
+   can take its place. If it cannot be built, nothing is pending.
+6. **Which projects can be asked about is still the bridge's list** (the pod's synced
+   repositories). A project that exists only on the agent host is unreachable by voice.
 
 ## What Jarvis must still never do
 
@@ -131,12 +146,15 @@ branch is not edited here. What #9 should change before it is merged:
 
 ## Phases
 
-One factory build per phase. Tasks marked **(host)** need the agent host itself and are done
+One factory build per phase. Phase 1 is three builds (1a, 1b, 1c): nothing is installed
+before 1c, so the split costs no safety. Tasks marked **(host)** need the agent host itself and are done
 by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 
 | # | Phase | You can then |
 |---|---|---|
-| 1 | Agent host side | run a full turn on the agent host by hand through the wrapper, gate and record included |
+| 1a | Agent host: the wrapper | run one turn through the wrapper in CI with a fake `claude`; no gate yet |
+| 1b | Agent host: the gate | see a gated call refused, read back and released by a grant, in CI; reviewed on its own |
+| 1c | Agent host: installer, docs, host checks | install it; `full` mode stays off everywhere until the host checks pass |
 | 2 | Bridge side | choose `full` mode; a read-back and a yes work end to end against a fake agent host |
 | 3 | Wiring | talk to the full agent from the phone over the tailnet |
 | 4 | Daily line and parked test | see what Jarvis did in the daily notes; merge by voice, parked |

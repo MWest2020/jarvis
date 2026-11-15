@@ -56,11 +56,15 @@ The bridge SHALL support two agent modes, chosen in its configuration: `readonly
 - **THEN** the bridge reports the failure, does not run the turn again in any mode, and the turn on the agent host runs to its end and is recorded
 
 ### Requirement: Remote agent adapter
-In `full` mode the bridge SHALL run each turn through one ssh connection to the agent host, authenticated with a dedicated key whose only permitted use is a fixed wrapper. The request SHALL contain only a project name, the prompt and, when there is one, the answer to a pending confirmation. The wrapper SHALL run headless Claude Code as the coding session's own user, in the project's checkout on the agent host, with the user's settings, instructions, memory and hooks loaded as for the coding session, and with the current instructions on every turn of a resumed session. A project SHALL be a name on the agent host's own list, or a directory directly under its configured root that is not excluded; it SHALL be a git repository with a work tree whose real path lies under that root. Speech-to-text and text-to-speech SHALL stay with the bridge.
+In `full` mode the bridge SHALL run each turn through one ssh connection to the agent host, authenticated with a dedicated key whose only permitted use is a fixed wrapper. The request SHALL contain only a project name, the prompt and, when there is one, the answer to a pending confirmation. The wrapper SHALL run headless Claude Code as the coding session's own user, in the project's checkout on the agent host, with the user's settings, instructions, memory and hooks loaded as for the coding session, and with the current instructions on every turn of a resumed session. A project SHALL be a name on the agent host's own list, or a directory directly under its configured root that is not excluded; it SHALL be a git repository with a work tree whose real path lies under that root. Of the agent's reply only the line marked for speech SHALL leave the agent host. The bridge's own project list SHALL still decide which projects can be asked about: a project that is not on it SHALL be refused before the agent host is contacted. Speech-to-text and text-to-speech SHALL stay with the bridge.
 
 #### Scenario: A turn on the agent host
 - **WHEN** Mark asks something in `full` mode about a project on the agent host's list
 - **THEN** the agent answers from that checkout, with the same instructions and memory as the coding session, and the bridge speaks the summary
+
+#### Scenario: A project only on the agent host
+- **WHEN** a project has a checkout on the agent host but is not on the bridge's own project list
+- **THEN** it cannot be asked about by voice and does not appear in the phone's project list
 
 #### Scenario: A project that is not a work tree
 - **WHEN** the named directory is a bare repository, is excluded, or is a symlink that leads outside the root
@@ -123,9 +127,9 @@ A `full` turn SHALL be bound by everything that binds the user's coding session 
 ### Requirement: Voice confirmation
 Before a `full` turn merges, deploys, deletes, forces, changes something through an API or an account setting, sends mail or a message, creates a repository, runs something as another user, or changes Jarvis's own rules, the system SHALL refuse the tool call by a hook on the call, not by an instruction to the agent. For the command-line tools that can change remote state (the GitHub, cluster, release, secrets and container clients), the hook SHALL gate every subcommand that is not on a fixed list of read-only verbs; it SHALL gate HTTP clients used with a writing method or a data or upload option; it SHALL classify a push by parsing its options and refspecs, not by matching spellings; and it SHALL gate every connector tool whose name says that it sends, posts, shares, uploads, invites or deletes.
 
-The system SHALL read a gated action back in one sentence that consists only of fixed words chosen by rule and of targets taken from the call that each match the strict shape of their kind (a number, an owner and name, a ref name, a commit, a mail address, a DNS label or name, a path under an allowed root). The sentence SHALL name every target of the call. It SHALL contain no other text from the call and none written by the agent, and the reply SHALL speak nothing else. A gated call that no rule can name, or with a target that is missing or outside its shape, SHALL NOT be confirmable by voice. A change to Jarvis's own rules SHALL NOT be confirmable by voice, except the one fixed command that switches confirmation on or off, read back from a fixed template. A gated shell call SHALL be a single command: one that contains a command separator, a pipe, a substitution or a newline anywhere in its text, inside quotes and inside a nested shell or remote command included, SHALL be refused without a read-back.
+The system SHALL read a gated action back in one sentence that consists only of fixed words chosen by rule and of targets taken from the call that each match the strict shape of their kind (a number, an owner and name, a ref name, a commit, a mail address, a DNS label or name, a path under an allowed root). The sentence SHALL name every target of the call. It SHALL contain no other text from the call and none written by the agent, and the reply SHALL speak nothing else. A target SHALL be named only when it stands explicitly in the call; the system SHALL NOT fill in a missing repository, namespace, remote or recipient from the working directory or any other surroundings. A gated call that no rule can name, or with a target that is missing or outside its shape, SHALL NOT be confirmable by voice. When only explicit targets are missing, the refusal SHALL say exactly which, and the agent MAY repeat the same call once in that turn with only those added; any other call after a refusal SHALL be refused. The read-back SHALL reach the bridge in a field of its own and SHALL be spoken as built, not passed through the filter for the agent's free text. While a call is pending, the read-back SHALL NOT be replaced by any other sentence: if it cannot be built or cannot be spoken as built, nothing SHALL be pending and Jarvis SHALL say that it needs the desk. A change to Jarvis's own rules SHALL NOT be confirmable by voice, except the one fixed command that switches confirmation on or off, read back from a fixed template. A gated shell call SHALL be a single command: one that contains a command separator, a pipe, a substitution or a newline anywhere in its text, inside quotes and inside a nested shell or remote command included, SHALL be refused without a read-back.
 
-The call SHALL run only when the driver's next utterance for that project, within 60 seconds, is exactly an affirmation from a closed list and contains at least a configured minimum of speech. A confirmation SHALL be bound to a hash of the exact call (the tool and its command, or the tool and its canonical input), SHALL release that call once, SHALL expire on the agent host as well as in the bridge, and SHALL be cleared on the agent host by the next request for the project, a spoken no included. The bridge SHALL derive a confirmation only from the transcript of the driver's own audio. A confirmed call SHALL still pass the coding session's permission rules. If the hook cannot decide, the call SHALL be refused. The read-back of a merge SHALL state the review and check status of one commit, and the merge SHALL be pinned to that commit; the read-back of a repository creation SHALL state the visibility, and "public" when it is unknown. After a confirmed call has run, the agent host SHALL notify the user outside the voice channel when a notify command is configured. The user SHALL be able to switch confirmation off, entirely or per class, in the agent host's configuration.
+The call SHALL run only when the driver's next utterance for that project, within 60 seconds, is exactly an affirmation from a closed list and contains at least a configured minimum of speech. A confirmation SHALL be bound to a hash of the exact call and of the directory it runs in (the tool, the working directory and the command, or the tool, the working directory and its canonical input), the released call SHALL run in that directory, SHALL release that call once, SHALL expire on the agent host as well as in the bridge, and SHALL be cleared on the agent host by the next request for the project, a spoken no included. The bridge SHALL derive a confirmation only from the transcript of the driver's own audio. A confirmed call SHALL still pass the coding session's permission rules. If the hook cannot decide, the call SHALL be refused. The read-back of a merge SHALL state the review and check status of one commit, and the merge SHALL be pinned to that commit; the read-back of a repository creation SHALL state the visibility, and "public" when it is unknown. After a confirmed call has run, the agent host SHALL notify the user outside the voice channel when a notify command is configured. The user SHALL be able to switch confirmation off, entirely or per class, in the agent host's configuration.
 
 The agent host SHALL NOT start a turn in a checkout whose own Claude Code settings set environment variables, define hooks or disable hooks. The hook SHALL read those settings again on every tool call, for the turn's checkout and for the work tree the call runs in, and while they contain any of the three it SHALL refuse every gated call, with or without a confirmation. The gate SHALL NOT affect the user's coding session. These guarantees hold for an agent that acts through its tools with commands the rules know; the system does not claim them against an agent that deliberately alters the agent host's own state, for an action hidden behind a script, a build target or an alias, or for data that leaves through a read-only request.
 
@@ -211,7 +215,31 @@ The agent host SHALL NOT start a turn in a checkout whose own Claude Code settin
 
 #### Scenario: Two gated actions in one request
 - **WHEN** Mark asks for a merge and a deploy in one sentence
-- **THEN** each is read back and confirmed on its own
+- **THEN** the first gated call is read back, the second is refused in that turn without becoming pending and the agent ends the turn; the second action is read back only when it is asked for again after the first
+
+#### Scenario: A merge without its repository
+- **WHEN** the agent calls the merge command without naming the repository or without pinning the commit
+- **THEN** the refusal names exactly the missing parts, nothing is pending, and the same command repeated once with only those parts added is read back
+
+#### Scenario: Another road after a refusal
+- **WHEN** after a refusal that named missing parts the agent calls a different tool, a different command, or the same command with anything else changed
+- **THEN** that call is refused and Jarvis says that one needs the desk
+
+#### Scenario: The same command from another directory
+- **WHEN** after a confirmation the agent runs the confirmed command, byte for byte, in a directory other than the one it was read back for
+- **THEN** the call is refused
+
+#### Scenario: A target the free-text filter would reject
+- **WHEN** a gated call's targets include a ref with a slash and a full commit id
+- **THEN** the read-back is spoken as built, with the ref's slash spoken as a word and the commit as its first seven digits, and it is not replaced by a fallback sentence
+
+#### Scenario: A read-back that cannot be spoken
+- **WHEN** the read-back for a gated call cannot be built, or reaches the bridge empty or over its length limit
+- **THEN** nothing stays pending on the agent host or in the bridge, and Jarvis says that one needs the desk
+
+#### Scenario: An answer that is too late on the agent host
+- **WHEN** Mark's yes passes the bridge's 60 seconds but the pending call has already expired on the agent host
+- **THEN** nothing runs and Jarvis says that it took too long and to ask again
 
 #### Scenario: Work that needs no yes
 - **WHEN** the agent edits files in its worktree, runs tests, commits to its own branch or opens a pull request on Mark's own repository
