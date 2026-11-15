@@ -10,6 +10,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,6 +27,11 @@ logger = logging.getLogger("bridge.server")
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024   # about ten minutes of 16 kHz WAV; a voice turn is seconds
 NOT_HEARD = "Sorry, I didn't catch that."
+# An early 4xx is sent only after the announced body has been read and thrown
+# away (see Handler._reject). That read stops after this many seconds in total,
+# however slowly the client trickles bytes in.
+DRAIN_DEADLINE_S = 30.0
+DRAIN_CHUNK_BYTES = 64 * 1024
 _project_locks: dict[str, threading.Lock] = {}
 _project_locks_guard = threading.Lock()
 
@@ -33,6 +39,17 @@ _project_locks_guard = threading.Lock()
 def _project_lock(name: str) -> threading.Lock:
     with _project_locks_guard:
         return _project_locks.setdefault(name, threading.Lock())
+
+
+def _parse_content_length(value: str | None) -> int | None:
+    """The announced body length; 0 when absent, None when not a valid number."""
+    if value is None:
+        return 0
+    try:
+        length = int(value)
+    except ValueError:
+        return None
+    return length if length >= 0 else None
 
 
 def is_authorized(auth_header: str | None, expected_token: str) -> bool:
@@ -56,37 +73,40 @@ class Handler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), format % args)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
+        # Read the announced length before any check, but not the body: a
+        # rejection needs it to drain the upload first (_reject).
+        self._body_length = _parse_content_length(self.headers.get("Content-Length"))
+
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path != "/turn":
-            self._respond_error(404, "not found")
+            self._reject(404, "not found")
             return
 
         if not is_authorized(self.headers.get("Authorization"), self.config.token):
-            self._respond_error(401, "missing or invalid token")
+            self._reject(401, "missing or invalid token")
             return
 
         query = urllib.parse.parse_qs(parsed.query)
         project_name = query.get("project", [None])[0]
         if not project_name:
-            self._respond_error(400, "project query parameter is required")
+            self._reject(400, "project query parameter is required")
             return
 
         try:
             project = self.config.project(project_name)
         except ConfigError as exc:
-            self._respond_error(400, str(exc))
+            self._reject(400, str(exc))
             return
 
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            self._respond_error(400, "Content-Length is not a number")
+        length = self._body_length
+        if length is None:
+            self._reject(400, "Content-Length is not a valid number")
             return
-        if length <= 0:
-            self._respond_error(400, "empty request body")
+        if length == 0:
+            self._reject(400, "empty request body")
             return
         if length > MAX_AUDIO_BYTES:
-            self._respond_error(413, "audio too large")
+            self._reject(413, "audio too large")
             return
         audio_bytes = self.rfile.read(length)
 
@@ -147,13 +167,63 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(audio_reply)
 
-    def _respond_error(self, status: int, message: str) -> None:
+    def _reject(self, status: int, message: str) -> None:
+        """Answer a request that is refused before its body was read.
+
+        Closing with the upload still arriving makes the kernel reset the
+        connection, and the client sees a broken pipe instead of the status
+        (jarvis#12: from about 700 KB on loopback, some 22 s of speech). So a
+        body whose announced length is valid and within MAX_AUDIO_BYTES is read
+        and discarded first, in chunks, never kept.
+
+        Trade-off: the token is checked first, but a refused request is drained
+        too, so an unauthenticated client can make the bridge read and discard
+        up to MAX_AUDIO_BYTES (10 MB) per request. It cannot hold the thread long:
+        the drain stops at DRAIN_DEADLINE_S in total (each read also within the
+        30 s socket timeout), and the connection is then closed. A body over the
+        cap (413) or without a valid length is not drained at all: the reply
+        goes out at once with "Connection: close", as before.
+        """
+        length = self._body_length
+        drained = False
+        if length is not None and 0 < length <= MAX_AUDIO_BYTES:
+            drained = self._drain(length)
+        self._respond_error(status, message, close=not drained)
+
+    def _drain(self, length: int) -> bool:
+        """Read and discard `length` body bytes; True if all of them arrived in time."""
+        deadline = time.monotonic() + DRAIN_DEADLINE_S
+        remaining = length
+        try:
+            while remaining > 0:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self.connection.settimeout(min(self.timeout, left))
+                chunk = self.rfile.read1(min(remaining, DRAIN_CHUNK_BYTES))
+                if not chunk:
+                    return False
+                remaining -= len(chunk)
+            return True
+        except OSError:   # includes the socket timeout
+            return False
+        finally:
+            self.connection.settimeout(self.timeout)
+
+    def _respond_error(self, status: int, message: str, *, close: bool = False) -> None:
         body = message.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            if close:
+                self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as exc:
+            # The client went away (or stalled past the drain); nothing to tell it.
+            self.close_connection = True
+            logger.info("could not send %s to %s: %s", status, self.address_string(), exc)
 
 
 def make_server(config: BridgeConfig) -> ThreadingHTTPServer:

@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-14
+last_reviewed: 2026-11-15
 ---
 # Running the bridge service (weekend slice)
 
@@ -96,7 +96,18 @@ recorded audio as the body. Replies:
 | 413 | Audio larger than 10 MB |
 | 502 | The Claude Code turn failed or timed out (details in the log) |
 
-A connection that stalls for 30 seconds is closed. The log and the session file
+A connection that stalls for 30 seconds is closed.
+
+A refused request (404, 401, 400) still gets its status line when the phone is already
+uploading a long question: if the announced `Content-Length` is a valid number of at most
+10 MB, the bridge first reads the body and throws it away (in 64 KB chunks, never kept),
+then answers. Before this, it answered and closed with the upload still arriving, and from
+about 700 KB (some 22 s of speech) the phone saw a broken connection instead of "token
+refused" (jarvis#12). The trade-off: an unauthenticated client can make the bridge read and
+discard up to 10 MB per request. It cannot hold a thread for long with that: the drain
+stops after 30 seconds in total, however slowly the bytes come, and then the connection is
+closed. A body over 10 MB (413), or a missing or invalid `Content-Length`, is not read at
+all: the reply goes out at once with `Connection: close`. The log and the session file
 are created owner-only (`0600`, in a `0700` directory, rotated logs too): the log
 holds full replies, which can quote file contents.
 
