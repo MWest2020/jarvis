@@ -10,9 +10,9 @@ Tasks marked **(Mark)** need Mark's phone, ears or GitHub account. A build leave
 - [x] 1.3 The HTTP exchange with the platform client: no redirects, bounded reads, the
   Tailscale address check before plain HTTP (A2, A6)
 - [x] 1.4 WAV header for 16 kHz mono PCM (A3); the hold-or-tap logic (A4)
+- [x] 1.5 Unit tests for all of the above, the exchange against a loopback HTTP server
 - [x] 1.6 Review finding B1: the connection and the name lookup are injected, a route check
   per resolved address, no proxy; tests for each and for the "Tailscale is off" refusal (A6)
-- [x] 1.5 Unit tests for all of the above, the exchange against a loopback HTTP server
 
 ## 2. App
 - [x] 2.1 Gradle project in `android/`: version catalog with exact versions, wrapper pinned
