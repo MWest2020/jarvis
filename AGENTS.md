@@ -2,7 +2,7 @@
 
 **What this is:** a voice bridge from an Android phone to a coding agent (Claude Code first)
 on the user's own machine. Machine side ships as a Claude Code plugin; the phone client is
-separate (HTTP Shortcuts for the first test, a native Android app later).
+separate (HTTP Shortcuts for the first test; a native Android app in `android/`).
 
 **Working method:** OpenSpec. A change that alters what the bridge promises (who can reach it,
 what it runs, what it speaks) goes propose → apply → archive, and no code is written before
