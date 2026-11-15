@@ -136,3 +136,57 @@ def test_a_second_turn_on_a_busy_project_gets_409(running_server):
         assert response.status == 409
     finally:
         lock.release()
+
+
+# An early 4xx (bad token, unknown project) used to be sent before the body was
+# read; the server then closed with the upload still arriving, the kernel reset
+# the connection, and a client with a long question saw a broken pipe instead of
+# the status (jarvis#12: 700 KB and up on loopback). These send the whole body
+# first, the way a phone does, and only then read.
+BIG_BODY = b"\0" * (4 * 1024 * 1024)
+
+
+def _post_raw_then_read(port, *, project="demo", token="wrong", body=BIG_BODY) -> bytes:
+    import socket
+    head = (f"POST /turn?project={project} HTTP/1.1\r\nHost: x\r\n"
+            f"Authorization: Bearer {token}\r\nContent-Length: {len(body)}\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+        s.sendall(head + body)
+        reply = b""
+        while b"\r\n" not in reply:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+        return reply
+
+
+def test_a_wrong_token_with_a_large_body_gets_the_401(running_server):
+    reply = _post_raw_then_read(running_server, token="wrong")
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_an_unknown_project_with_a_large_body_gets_the_400(running_server):
+    reply = _post_raw_then_read(running_server, project="does-not-exist", token="test-token")
+    assert b" 400 " in reply.split(b"\r\n")[0]
+
+
+def test_draining_a_rejected_body_is_bounded_in_time(running_server, monkeypatch):
+    # A client that announces a large body with a wrong token and then stalls
+    # must not hold the thread longer than the drain deadline.
+    import socket
+    import time
+    monkeypatch.setattr(server, "DRAIN_DEADLINE_S", 1.0)
+    head = (b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+            b"Authorization: Bearer wrong\r\nContent-Length: 5000000\r\n\r\n")
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head + b"x" * 1000)
+        started = time.monotonic()
+        try:
+            reply = s.recv(4096)
+        except ConnectionResetError:
+            reply = b""
+        elapsed = time.monotonic() - started
+    assert elapsed < 5
+    # Best effort: the status still goes out once the deadline has passed.
+    assert reply == b"" or b" 401 " in reply.split(b"\r\n")[0]
