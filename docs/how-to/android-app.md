@@ -23,7 +23,7 @@ what happens under "Test record" below.
   Tailscale switched on.
 - The bridge's address as a Tailscale name, `http://<name>.<tailnet>.ts.net:8787`
   ([`run-in-cluster.md`](run-in-cluster.md) or [`bridge-service.md`](bridge-service.md)),
-  its token (`JARVIS_TOKEN`), and the project names from `JARVIS_PROJECTS`.
+  and its token (`JARVIS_TOKEN`). The project names are fetched from the bridge, or typed.
 
 ## Install (sideload)
 
@@ -60,8 +60,12 @@ settings again. A release key fixes this; see "The signing key" below.
 3. **Token:** the bridge's `JARVIS_TOKEN`. It is stored encrypted with a key in the phone's
    Keystore and is not shown again; to change it, type a new one. "Forget the stored token"
    removes it.
-4. **Projects:** the names the bridge knows, separated by commas. The bridge has no route
-   that lists them, so they are typed once.
+4. **Projects:** leave it empty (or type `*`) and the app asks the bridge for its projects
+   (`GET /projects`): when the app starts, after you save the settings, and when you tap
+   **Refresh** on the main screen. The last list is kept, so the picker is filled at once on
+   the next start. Or type the names the bridge knows, separated by commas: then the app shows
+   exactly those and never asks. A bridge older than 2026-11-15 has no list route; type the
+   names for it.
 5. Save. On the main screen pick a project.
 6. Press the button. The first time, Android asks for the microphone; allow it and press
    again.
@@ -87,7 +91,10 @@ settings again. A release key fixes this; see "The signing key" below.
 | The bridge's name does not point at an address that Tailscale routes. Nothing was sent | The name resolved to something outside the tunnel | Check the address; check the tailnet's DNS |
 | The connection to the bridge broke. Try again; if it keeps happening, check the token | The connection was closed mid-turn. A bridge that refuses the token can do this before the app has read its answer | Try again; then enter the token again |
 | No answer from the bridge in time | No reply within three minutes | Check the bridge's log |
-| The bridge did not accept the request: … | 400, with the bridge's own reason, e.g. an unknown project | Fix the project names in Settings |
+| The bridge did not accept the request: … | 400, with the bridge's own reason, e.g. an unknown project | Fix the project names in Settings, or tap Refresh |
+| The bridge does not offer a project list | 404 on `GET /projects`: the bridge is older than the list route | Update the bridge, or type the project names in Settings |
+| The bridge's project list could not be read | The answer to `GET /projects` was not the expected JSON | Check the address; type the names meanwhile |
+| The bridge lists no projects | The bridge has no project (with `JARVIS_PROJECTS=*`: no checkout under its root) | Check the bridge's projects |
 | The recording is too large | 413 | Ask a shorter question |
 | The agent turn failed on the bridge | 502 | Try again; details are in the bridge's log |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
@@ -119,7 +126,7 @@ names, not address ranges. Use the Tailscale name. `https://` works for any host
 
 | | HTTP Shortcuts | The app |
 |---|---|---|
-| Setup | Build a shortcut by hand: method, URL, header, record and play actions | Three fields |
+| Setup | Build a shortcut by hand: method, URL, header, record and play actions | Three fields; the projects can come from the bridge |
 | The token | In the shortcut, inside a third-party app; exported with the shortcut | Encrypted with a Keystore key, never shown again, not in any backup |
 | Switching project | One shortcut per project, or edit the URL | Tap the project |
 | While waiting | Silence | A beep, then a tick every three seconds |

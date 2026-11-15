@@ -17,6 +17,7 @@ Start here. Agents: read this page and follow the links; there is no need to sca
 | How-to guides (running the bridge, phone setup) | [`how-to/`](how-to/) |
 | Running the bridge in a Kubernetes cluster (image, tailnet-only Service, NetworkPolicy) | [`how-to/run-in-cluster.md`](how-to/run-in-cluster.md) |
 | Change in progress: run the bridge in a cluster | [`openspec/changes/run-bridge-in-cluster/`](../openspec/changes/run-bridge-in-cluster/) |
+| Change in progress: every project (`GET /projects`, `JARVIS_PROJECTS=*`, sync of all of one owner's repositories) | [`openspec/changes/add-project-list/`](../openspec/changes/add-project-list/) |
 | The Android app: install, first run, errors, how it differs from HTTP Shortcuts | [`how-to/android-app.md`](how-to/android-app.md) |
 | Change in progress: the first Android app (code in [`android/`](../android/)) | [`openspec/changes/add-android-client/`](../openspec/changes/add-android-client/) |
 
