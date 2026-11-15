@@ -8,6 +8,9 @@ phases:
   - {id: plugin, name: "Plugin", summary: "machine side as a Claude Code plugin others can install"}
   - {id: android-app, name: "Android app", summary: "a native phone client built on the lessons of the test"}
   - {id: full-agent, name: "Full agent", summary: "Jarvis can do what the coding session can, on its host, under the same rules, with a spoken yes for irreversible actions"}
+  - {id: notifications, name: "Notifications", summary: "Jarvis tells the phone that something needs Mark: a build, a question, a reply, a pending confirmation; self-hosted, tailnet-only, no Google"}
+  - {id: biometric-confirm, name: "Fingerprint confirmation", summary: "an irreversible action can be released by a signature from the phone that needs Mark's fingerprint, verified on the agent host"}
+  - {id: speaker-verification, name: "Speaker check (later)", summary: "Jarvis reacts to Mark's voice and not to another; starts with a measurement, and is no authentication"}
 done_means:
   - {item: "Change add-voice-bridge proposed (proposal, design, tasks, spec)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge"}
   - {item: "Change approved by Mark (2026-11-14), his full tasks and spec in", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/1"}
@@ -28,3 +31,7 @@ done_means:
   - {item: "Full agent wired over the tailnet and proven (key refused for anything but a turn; a merge only after a yes)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-full-agent/tasks.md#3-wiring"}
   - {item: "Full agent: daily line in the notes, and Mark's parked test (merge by voice)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-full-agent/tasks.md#4-daily-line-and-parked-test"}
   - {item: "Every project (Mark, 2026-11-15): bridge GET /projects and JARVIS_PROJECTS=*, sync of every own non-archived repo, the app's picker from the bridge; built in #18, waits on review and deploy", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/18"}
+  - {item: "Changes jarvis-notifications, jarvis-biometric-confirm and jarvis-speaker-verification proposed (proposal, design, tasks, spec deltas); approval waits on Mark: #30 (default: approved as proposed with the stated defaults, nothing is built until the PR is merged)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/29"}
+  - {item: "Notifications: POST /notify on the bridge, the ntfy broker on the tailnet, the app's listener with fixed words on the lock screen, the battery number measured", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-notifications/tasks.md"}
+  - {item: "Fingerprint confirmation: a signed confirmation verified on the agent host, the method per class, the parked test", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-biometric-confirm/tasks.md"}
+  - {item: "Speaker check, phase 0: the measurement of false refusals and false accepts, with a go or no-go", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-speaker-verification/tasks.md#0-the-measurement"}

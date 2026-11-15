@@ -117,7 +117,7 @@ Order: after `jarvis-full-agent` is built through its phase 3 (#22's own default
 ## Open questions
 
 Each has a default. If the pull request is merged without an answer, the default is what
-is built.
+is built. They are put to Mark in https://github.com/MWest2020/jarvis/issues/30.
 
 1. **Next to the spoken yes, or instead of it?** Per class.
    *Default: either, for every class. Nothing that works by voice stops working. My advice,

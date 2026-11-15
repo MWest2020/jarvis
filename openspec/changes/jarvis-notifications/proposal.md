@@ -87,7 +87,7 @@ kinds `reply` and `confirmation` have no sender until background turns exist (#9
 ## Open questions
 
 Each has a default. If the pull request is merged without an answer, the default is what
-is built.
+is built. They are put to Mark in https://github.com/MWest2020/jarvis/issues/30.
 
 1. **May the project name be on the lock screen?** ("A build finished for wordsworth"
    instead of "A build finished".) It is not a secret, but it tells whoever picks up the

@@ -84,7 +84,7 @@ change stops there and says so.
 ## Open questions
 
 Each has a default. If the pull request is merged without an answer, the default is what
-is built.
+is built. They are put to Mark in https://github.com/MWest2020/jarvis/issues/30.
 
 1. **What is good enough to switch `enforce` on?** *Default: Mark is refused in at most 2
    of 100 utterances in the car, and at that threshold the other voices of the household
