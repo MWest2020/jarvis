@@ -45,7 +45,9 @@ jobs:
         run: ./gradlew --no-daemon check :app:assembleDebug
 
       # What the merged manifest really asks for and exposes, libraries included. Fails on
-      # any Android permission beyond the three of design A9.
+      # any Android permission beyond the three of design A9, and on any exported component
+      # beyond the launcher activity and the DUMP-guarded profile receiver (jarvis#16;
+      # the list and its reasons are in android/ci/check_exported.py).
       - name: Permissions and components in the APK
         run: |
           set -eu
@@ -63,6 +65,7 @@ jobs:
           extra=$(echo "$perms" | sed -n "s/^uses-permission: name='\(android\.permission\.[^']*\)'.*/\1/p" \
             | grep -v -x -E 'android\.permission\.(INTERNET|RECORD_AUDIO|ACCESS_NETWORK_STATE)' || true)
           if [ -n "$extra" ]; then echo "Unexpected permissions: $extra"; exit 1; fi
+          echo "$tree" | python3 ci/check_exported.py
 
       - name: Name the APK
         id: apk

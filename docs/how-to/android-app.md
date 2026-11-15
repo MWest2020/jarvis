@@ -96,6 +96,7 @@ settings again. A release key fixes this; see "The signing key" below.
 | The bridge's project list could not be read | The answer to `GET /projects` was not the expected JSON | Check the address; type the names meanwhile |
 | The bridge lists no projects | The bridge has no project (with `JARVIS_PROJECTS=*`: no checkout under its root) | Check the bridge's projects |
 | The recording is too large | 413 | Ask a shorter question |
+| The bridge is busy with other connections | 503: the bridge already serves its maximum of eight connections | Wait a few seconds, try again |
 | The agent turn failed on the bridge | 502 | Try again; details are in the bridge's log |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
 
@@ -113,8 +114,16 @@ app allows plain HTTP in exactly that case:
   name looked up through that network, and only to Tailscale addresses
   (100.64.0.0/10 or fd7a:115c:a1e0::/48) that the network routes. With Tailscale off there
   is no such network and nothing is sent. An address in the right range is not enough:
-  on a hostile Wi-Fi the resolver and the gateway can both pretend;
+  on a hostile Wi-Fi the resolver and the gateway can both pretend. "Routes" means the most
+  specific matching route sends packets into the tunnel: on Android 13 and newer a range
+  that the VPN app excluded from its tunnel does not count;
 - no proxy is ever used, so a proxy configured on the phone does not see the token.
+
+The app cannot tell Tailscale from another VPN. It takes the VPN network whose own address
+is in 100.64.0.0/10 or fd7a:115c:a1e0::/48, and 100.64.0.0/10 is a shared range: another VPN
+that gives the phone such an address (for example Cloudflare WARP Zero Trust) also
+qualifies, and its DNS and its tunnel are then trusted the way Tailscale's are. Run only a
+VPN you trust with the token.
 
 The token is sent to the address you enter, on every turn. Enter the address of your own
 bridge and nothing else.
@@ -144,6 +153,11 @@ The HTTP Shortcuts guide stays valid: both use the same `POST /turn`.
 - No Google Play services, Firebase, analytics, or any library besides AndroidX and Kotlin;
   the build fails if one is added. Three permissions: internet, microphone, and network
   state (to find the Tailscale network); CI fails the build on any other.
+- Nothing another app can call. In the APK as it ships, libraries included, only two
+  components are exported: the launcher activity, and AndroidX's `ProfileInstallReceiver`,
+  which only a holder of `android.permission.DUMP` (the adb shell, not an app) can reach.
+  CI fails the build on any other exported component (`android/ci/check_exported.py`; to
+  expose one on purpose, add it to the list there with the reason).
 - No log output at all.
 
 ## The app icon
@@ -185,6 +199,10 @@ cd android
   by checksum.
 - `:app:checkSovereignDependencies` fails the build on any runtime dependency outside
   AndroidX, Kotlin and kotlinx.
+- The workflow's step "Permissions and components in the APK" reads the merged manifest out
+  of the built APK and fails on an extra permission or an extra exported component. The
+  component check has its own tests, run with the bridge's: `uv run pytest
+  tests/test_check_exported.py`.
 
 ## Test record
 

@@ -21,6 +21,8 @@ class TurnErrorsTest {
     @Test
     fun mapsTheBridgesStatuses() {
         assertEquals(FailureKind.BUSY, TurnErrors.fromStatus(409).kind)
+        assertEquals(FailureKind.BUSY, TurnErrors.fromStatus(503).kind)
+        assertTrue(TurnErrors.fromStatus(503).message.contains("busy"))
         assertEquals(FailureKind.TOO_LARGE, TurnErrors.fromStatus(413).kind)
         assertEquals(FailureKind.AGENT_FAILED, TurnErrors.fromStatus(502).kind)
         assertEquals(FailureKind.BAD_REQUEST, TurnErrors.fromStatus(400).kind)
