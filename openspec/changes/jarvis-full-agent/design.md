@@ -49,8 +49,9 @@ Non-Goals:
 `readonly` (default) or `full`. `readonly` is today's local adapter, unchanged, so someone
 who installs the bridge without an agent host gets what exists now. In `full` mode a turn
 falls back to `readonly` for that one turn, and says so in its first sentence, in exactly
-three cases: the connection to the agent host could not be made, the agent host reports
-that the project is not on its list, or its kill switch is set (D33). Once a request has reached the wrapper and a turn
+four cases, all before any turn has started there: the connection to the agent host could
+not be made, the agent host reports that the project is not on its list, its kill switch is
+set (D33), or the checkout's settings are unsafe for a gated turn (D36). Once a request has reached the wrapper and a turn
 has started there, the bridge never runs the turn again, in either mode: a second run of a
 turn that already merged something is worse than an error.
 Alternative considered: `full` only. Rejected: the agent host can be down or out of memory,
@@ -129,7 +130,7 @@ configuration (`/etc/jarvis-agent/`). It:
 - passes the prompt on stdin, never in argv;
 - answers with one JSON object: `status`, the spoken line, a turn id, and when there is one
   the pending confirmation (D36). Errors are a closed list: `bad_request`, `no_checkout`,
-  `busy`, `low_memory`, `timeout`, `agent_failed`, `disabled`.
+  `busy`, `low_memory`, `timeout`, `agent_failed`, `disabled`, `unsafe_settings`.
 Nothing in the request names a command, a flag, a tool, a permission mode, a path or a
 settings file. From the connection, the key holder can: put a prompt to the agent in a
 listed project, and answer yes or no to a confirmation the agent host itself issued. D40
@@ -208,38 +209,103 @@ name and where his handbook is). The spoken-summary instruction and the bridge's
 **D36. Voice confirmation: a PreToolUse gate plus a grant from the bridge.** Enforced by a
 hook, not asked for in a prompt.
 
-*What is gated.* Classes, each a set of patterns over the tool call. For `Bash` the command
-string is searched as a whole, so a command inside `ssh … '…'` or `bash -c` is seen too.
+*What is gated.* The gate decides per tool call. For `Bash` it parses the command into
+words and looks at the program and its subcommand; a command wrapped in `ssh … '…'`,
+`bash -c`, `sh -c` or `sudo` is unwrapped and the inner command is judged by the same rules.
+There are two kinds of rule.
 
-| Class | Covers |
+*Rules by default, for tools that can change things.* For these programs **every**
+subcommand is gated unless it is on a short list of read verbs: `kubectl`, `helm`, `argocd`,
+the secrets client (`bao`, `vault`), `gh`, cloud CLIs of that kind, and `docker`. The read
+verbs are `get`, `describe`, `logs`, `list`, `ls`, `view`, `status`, `diff`, `top`,
+`version`, `show`, `search`, `checks`, `history`, `explain`, `read` for the secrets client,
+and for `gh` also the work that never needs a yes: `pr create`, `pr checkout`, `pr comment`,
+`issue create`, `issue comment` and `repo clone` on the user's own repositories. So a
+subcommand nobody thought of (`gh issue delete`, `gh gist create --public`, `kubectl cordon`,
+`helm plugin install`) is gated without a rule naming it. The same default holds for:
+- `curl`, `wget` and `http`/`https` (httpie) with a method other than GET or HEAD, or with a
+  data or upload option (`-d`, `--data*`, `-F`, `--form`, `-T`, `--upload-file`, `--json`,
+  `-X`, `--request`, `--post-data`, `--body-data`): class `api`;
+- `git push`, which is parsed by git's own option grammar, never by single spellings:
+  `-d`, `--delete`, `--prune` and a `:ref` refspec are *delete*; `-f`, `--force`,
+  `--force-with-lease`, `--force-if-includes`, any group of short flags that contains `f`
+  (`-fu`), a `+refspec` and `--mirror` are *force*; `--all`, `--tags` and `--mirror` are
+  gated as such; a push that lands on a default branch is *merge*, with or without an
+  explicit refspec (the gate resolves where a bare `git push` goes; if it cannot, the push
+  is gated);
+- connector tools: **any** `mcp__*` tool whose name contains `send`, `reply`, `forward`,
+  `delete`, `trash`, `publish`, `share`, `post`, `message`, `comment`, `upload` or `invite`.
+
+*Rules that name an action*, so that it can be read back. Each belongs to a class:
+
+| Class | Named actions |
 |---|---|
-| merge | `gh pr merge`; a push that lands on a repository's default branch, with or without an explicit refspec (the gate resolves where a bare `git push` goes; if it cannot, the push is gated); changes to branch protection |
+| merge | `gh pr merge`; a push that lands on a default branch; changes to branch protection |
 | deploy | `kubectl apply/patch/scale/rollout/replace/edit`, `helm install/upgrade/rollback`, `argocd app sync`, `ansible-playbook` and ad-hoc `ansible`, `gh workflow run`, `gh release create`, starting a build |
-| delete | `gh repo delete/archive`, `gh release delete`, `git push --delete` and `git push <remote> :<ref>`, `kubectl delete`, `helm uninstall`, `argocd app delete`, secrets-store `delete/destroy/revoke/disable` and its `operator` commands, `rm -r` outside the turn's worktree and the temp directory |
-| force | `git push` with `--force`, `-f`, a short-flag group that contains `f` (`-fu`), `--force-with-lease`, `--force-if-includes`, `--mirror`, or a `+refspec`; `--force` on the cluster and release tools |
-| api | `gh api` with a method other than GET, or with `-f`, `-F`, `--field`, `--raw-field` or `--input` (which make it a POST); any GraphQL `mutation` (`mergePullRequest`, `deleteRef`, …). Classified as merge, delete or create when the endpoint or mutation is recognised; otherwise it stays in this class |
+| delete | `gh repo delete/archive`, `gh release delete`, `gh issue delete`, deleting a remote ref, `kubectl delete`, `helm uninstall`, `argocd app delete`, secrets-store `delete/destroy/revoke/disable` and its `operator` commands, `rm -r` outside the turn's worktree and the temp directory |
+| force | a forced push, `--force` on the cluster and release tools |
+| api | `gh api` with a method other than GET, or with `-f`, `-F`, `--field`, `--raw-field` or `--input`; any GraphQL `mutation`; the HTTP clients above. Named as merge, delete or create only when the endpoint or mutation is recognised |
 | account | `gh secret` and `gh variable` `set/delete`, `gh ssh-key`, `gh repo deploy-key`, `gh repo rename`, `gh repo edit` |
 | message | sending, replying to, forwarding or trashing mail; a chat post or ping; a comment, issue, review or pull request on a repository that is not the user's own; command-line mailers |
-| create | `gh repo create`, `gh repo fork`, changing a repository's visibility |
-| tool | connector (MCP) tools by name: mail send/reply/forward/trash, document delete, artifact delete; and by default **any** `mcp__*` tool whose name contains `send`, `reply`, `forward`, `delete`, `trash`, `publish` or `share` |
-| root | `sudo`, `su`, `pkexec`, `doas`, in any position |
-| self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user settings, `~/.claude.json` (connector definitions), `~/.claude/agents`, `skills`, `plugins` and hooks; the shell rc files; and the checkout's own `.claude/settings*.json` (which could set `env` or `disableAllHooks`) |
+| create | `gh repo create`, `gh repo fork`, `gh gist create`, changing a repository's visibility |
+| root | `sudo`, `su`, `pkexec`, `doas`, in any position: the inner command must itself be nameable |
+| self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user and managed settings, `~/.claude.json` (connector definitions), `~/.claude/CLAUDE.md`, `~/.claude/agents`, `skills`, `plugins`; every file that a configured hook runs; the shell rc files; and the checkout's own `.claude/settings*.json` |
 
-The patterns are data in the repository (`agent_host/gate_rules.toml`) with a test per
-pattern. A host-local directory, `/etc/jarvis-agent/rules.d/`, adds the user's own commands
-that the repository must not know: for Mark the chat ping, the build trigger and the mailer,
-plus the rule that refuses any identity but Jarvis's (D35). Whose repositories are "own" is
-configuration. Matching too much costs one extra yes; matching too little is the failure,
-so the patterns are broad and the `tool` class has a default.
+A gated call that no naming rule covers has no sentence, and therefore **needs the desk**
+(below). The default rules decide *that* a call is gated; the naming rules decide whether it
+can be confirmed by voice. Matching too much costs a trip to the desk; matching too little
+is the failure.
+
+The rules are data in the repository (`agent_host/gate_rules.toml`) with a test per rule. A
+host-local directory, `/etc/jarvis-agent/rules.d/`, adds the user's own commands that the
+repository must not know: for Mark the chat ping, the build trigger and the mailer, plus the
+rule that refuses any identity but Jarvis's (D35). Whose repositories are "own" is
+configuration.
+
+*The class `self` is desk-only.* A write to Jarvis's own rules cannot be read back in a way
+that says what it changes: the sentence could name the file, not the edit. So it is refused
+by voice, always. One exception, because Mark asked for a switch: the fixed command
+`sudo /usr/local/lib/jarvis-agent/confirm on|off [class]`, a root-owned program that changes
+only that one setting. Its read-back is a fixed template ("Switch voice confirmation off for
+everything. Say yes to go ahead."), and no other argument form exists.
+
+*Targets have a strict shape.* The call is written by the agent, so a target is only spoken
+when it matches the shape its kind must have; nothing else from the call is ever spoken.
+
+| Kind | Shape |
+|---|---|
+| pull request, issue, run | digits only |
+| repository | `owner/name`, each part `[A-Za-z0-9._-]`, spoken as "name" when the owner is one of the user's own, otherwise as "name of owner" |
+| git ref | a valid ref name by git's rules, no whitespace |
+| commit | 7 to 40 hex digits |
+| mail address | one address of the form `local@domain`, domain a DNS name |
+| namespace, application, release, resource name | a DNS label |
+| host | a DNS name or an address |
+| path | its real path lies under a root the rules allow for that action |
+
+**Every** target of the call is named: every recipient of a mail (to, cc and bcc), every
+repository and every ref of a push, the namespace as well as the resource. A target that is
+missing, does not match its shape, or is one of more than the template can say (a mail to
+thirty people) makes the call **not nameable**. What the read-back therefore promises is
+this and no more: the sentence says truthfully what the released call acts on. It does not
+say the call is what Mark meant; hearing that is his part.
 
 *What exactly is confirmed.* The confirmation is bound to a hash of the call:
 - `Bash`: SHA-256 over the tool name, a zero byte and the command string, byte for byte;
 - any other tool: SHA-256 over the tool name, a zero byte and the canonical JSON of its
   input (sorted keys, no insignificant whitespace) without the cosmetic field `description`.
-A gated `Bash` call must be one command. If it contains `;`, `&&`, `||`, `|`, `&`, `$(`, a
-backtick or a newline outside the single quoted argument of `ssh` or `bash -c`, it is denied
-with "run it alone" and does not become pending: a read-back of one sentence cannot cover a
-pipeline, and the part that was not read back would run under the same yes.
+A gated `Bash` call must be one command, at every level. If the string contains `;`, `&&`,
+`||`, `|`, `&`, `$(`, `<(`, a backtick or a newline **anywhere, inside quotes or not**, or
+uses `eval`, `xargs` or `source`, it is denied with "run it alone" and does not become
+pending. That includes the quoted argument of `ssh` and `bash -c`:
+`bash -c 'gh pr merge 1; gh repo delete x'` is refused, not read back as a merge. A
+read-back of one sentence cannot cover two commands, and the one that was not read back
+would run under the same yes. The price is that a gated command with such a character in an
+argument (a merge message with a semicolon) must be phrased without it.
+A merge is pinned to what was read back: `gh pr merge` is only nameable with
+`--match-head-commit <sha>`. The wrapper fetches the review and check status for that
+commit and says "the pull request has moved" when it is no longer the head; GitHub refuses
+the merge itself if the head changes between the yes and the call.
 
 *The flow.*
 1. The agent calls a gated tool. The gate finds no grant, writes the call (the tool name and
@@ -251,17 +317,17 @@ pipeline, and the part that was not read back would run under the same yes.
    the state directory, which the agent can write. If the stored call was altered, the
    read-back describes the altered call and the hash releases the altered call: what Mark
    hears and what a yes releases are always the same call.
-3. The read-back is the class's template with the captured targets, and nothing written by
-   the agent: "Merge pull request 21 on jarvis. Checks green, one approving review. Say yes
+3. The read-back is the naming rule's template with the targets that passed their shape,
+   and nothing else from the call or from the agent: "Merge pull request 21 on jarvis. Checks green, one approving review. Say yes
    to go ahead." Several classes on one call are all named ("as root"). Per class:
    - *merge*: the wrapper asks GitHub for the pull request's review decision and check
      roll-up and says them; "checks failing", "no review" and "status unknown" are said as
      plainly as "green". A push to a default branch says how many commits and "no review".
    - *create*: the visibility is said; when it cannot be determined it is read back as
      "public". Anything public needs Mark's explicit yes to the word.
-   - a call whose target the rules cannot name is **not confirmable by voice**: Jarvis says
-     "that one needs the desk" and nothing is pending. A yes to "something will be deleted"
-     is not consent.
+   - a gated call that is not nameable (no naming rule, a target outside its shape, the
+     class `self`) is **not confirmable by voice**: Jarvis says "that one needs the desk"
+     and nothing is pending. A yes to "something will be deleted" is not consent.
 4. The bridge speaks **only the read-back** for that turn; the agent's own spoken line is
    dropped, so nothing the agent wrote sits next to the question. It keeps `id` and `sha256`
    in memory for the project for 60 seconds. The HTTP reply has the header
@@ -278,9 +344,11 @@ pipeline, and the part that was not read back would run under the same yes.
    prompt: "Mark confirmed: ‹read-back›. Run exactly this now: ‹the call›". The gate lets a
    call through when its hash equals the grant, once, and stays silent about it, so the
    allow rules, the classifier and the other hooks still decide as for the coding session.
-6. Anything else cancels. An exact `no` / `nee` is answered with "Cancelled" without an agent
-   turn. Any other utterance is passed to the agent with one line in front saying that the
-   action was not confirmed. A yes that comes too late, or with nothing pending, grants
+6. Anything else cancels, on both sides. An exact `no` / `nee` is sent to the agent host as
+   `confirm: {…, answer: "no"}`: the wrapper clears the pending call and starts no agent
+   turn, and the bridge says "Cancelled". Any other utterance is an ordinary request, which
+   clears the pending call like every request (step 4), and is passed to the agent with one
+   line in front saying that the action was not confirmed. A yes that comes too late, or with nothing pending, grants
    nothing: it is an ordinary utterance.
 7. After a confirmed call ran, the wrapper (not the agent) runs the configured notify
    command with the read-back: for Mark a ping to his phone. A confirmation that he did not
@@ -298,11 +366,27 @@ is built.
 *Why a grant in the process environment.* The agent has a shell as the same user as every
 file the wrapper writes, so a grant in a file could be written by the agent itself. The
 environment of the running `claude` process is set by the wrapper before the agent exists
-and cannot be changed by its tools; the gate, started by that process, inherits it. The
-project checkout's settings could set `env` for the session; that file is in the class
-`self`, and task 1.17 checks that an `env` or `disableAllHooks` from a checkout cannot pass
-the gate. This holds for an agent that works through its tools. It is not a wall against
-one that attacks its own host (D40).
+and cannot be changed by its tools; the gate, started by that process, inherits it. This
+holds for an agent that works through its tools. It is not a wall against one that attacks
+its own host (D40).
+
+*The checkout's own settings.* A project's `.claude/settings.json` and `settings.local.json`
+are loaded by Claude Code, and they can carry `env` (which could plant a grant), `hooks` and
+`disableAllHooks`. They need no `Edit` call to appear: a `git pull`, a `gh pr checkout` or a
+clone brings them. Two rules, both required:
+1. The wrapper reads both files before every turn, the confirming turn included, and
+   **refuses the turn** (`unsafe_settings`) when either contains `env`, `hooks` or
+   `disableAllHooks`. Jarvis says that the project's settings need the desk. The wrapper
+   checks again after the turn; if they appeared during it, the pending call is dropped and
+   the record says why.
+2. The gate is loaded a second time from Claude Code's **managed settings** on the agent
+   host, which project settings cannot override or switch off. That copy does nothing unless
+   the wrapper's turn marker is in the process environment, so the coding session is not
+   gated. It is there for the case that a settings file changes in the middle of a turn.
+Task 1.17 proves both on the host with the real Claude Code. **If that check fails** (a
+checkout's `env` can still plant a grant, or `disableAllHooks` or a project hook can still
+get a gated call past the gate), phase 1 does not ship: `full` mode is not enabled anywhere
+until the design has an answer that passes.
 
 *Failing closed.* If the gate cannot read its rules, cannot parse the call or crashes, the
 call is denied. A turn that is not started by the wrapper (the coding session itself) does
@@ -310,9 +394,9 @@ not load the gate at all: it is in the turn settings, not in the user's settings
 
 *Switching it off.* `confirm = "off"` in `/etc/jarvis-agent/config.toml`, or
 `confirm_skip = ["message", …]` for single classes. Then the gate lets the call through and
-the record says "not confirmed: confirmation is off". The file is in the class `self` and
-writing it needs `sudo` (class `root`), so Mark can switch it off by voice, with a read-back
-and a yes.
+the record says "not confirmed: confirmation is off". The class `self` stays desk-only even
+then. By voice the setting is changed only through the fixed `confirm on|off` command above,
+with its templated read-back and a yes; any other edit of that file is a desk job.
 
 Alternatives considered:
 - *The appended prompt alone* ("always ask before you merge"). Rejected: not enforceable; one
@@ -367,13 +451,18 @@ step include Jarvis's line.
 and files can be told things by strangers. The defences are the coding session's, plus one:
 - the user's permission rules (allow rules, classifier, hooks) decide every tool call, as
   they do for the coding session, with the same gaps (D34);
-- the gate covers the classes where a wrong action cannot be taken back, and its read-back
-  is built from the call, so text the agent read cannot make an action sound like another;
+- the gate covers the classes where a wrong action cannot be taken back. Its read-back holds
+  only fixed template words and targets of the released call that passed a strict shape, all
+  of them, so text the agent read or wrote cannot be spoken inside it and a call cannot be
+  read back with fewer targets than it has. It says what will run; it cannot say whether
+  that is what Mark wanted;
 - the bridge takes a confirmation only from the transcript of the driver's own audio. A
   "yes" in the agent's reply, in a file or in an issue never makes the bridge send one;
 - the appended prompt says it in words.
 These hold when the planted text makes the agent *try* a gated action in a shape the rules
-know. They do not hold against an agent that has been turned into an attacker of its own
+know. A script in the repository, a `make` target, a git alias or a program the rules have
+never heard of does the same thing without matching anything: that road goes around the
+gate, and only the classifier, the hooks and the agent's own judgement stand on it. They do not hold against an agent that has been turned into an attacker of its own
 host; see D40.
 
 **D40. What this trusts, said plainly.**
@@ -387,7 +476,9 @@ host; see D40.
   in the bridge's pod or as the egress proxy, inherits that. Before this change the cluster
   could not reach the agent host; after it, a compromise of the cluster reaches the host
   where the GitHub token, the ssh keys and the secrets client live. This is what "Jarvis can
-  do everything the coding session can" costs, and it is accepted under Mark's decision.
+  do everything the coding session can" costs. It is **accepted by default; Mark is asked
+  explicitly** in https://github.com/MWest2020/jarvis/issues/25. If he says no, the cluster
+  side stays read-only and changes stay desk-only: `full` mode is not wired to the cluster.
   What keeps it narrow: `from=` on the key, the Secret mounted only in the bridge's pod, the
   NetworkPolicy, the kill switch, and the notify ping on every confirmed action.
 - *The same Unix user.* Gate, wrapper, records and pending state live on a host where the
@@ -395,8 +486,9 @@ host; see D40.
   grant" and "the read-back cannot be falsified" are true of an agent that works through its
   tools and follows its rules, including one that was misled into *attempting* a gated
   action. They are not true of an agent that deliberately edits state, kills the gate or
-  assembles a command the rules do not know. The classes `root` and `self` make the obvious
-  roads to that gated and visible; they do not make them impossible.
+  assembles a command the rules do not know. The classes `root` and `self`, the refusal of
+  unsafe checkout settings and the managed-settings copy of the gate close the obvious
+  roads; they do not make the others impossible.
 - *The classifier.* It does not see calls that match an allow rule (D34).
 - *The agreements.* "Review and green checks before a merge", "Mark's gates are his" and the
   never-list are kept by the agent and, where they exist, by hooks. The gate adds an
@@ -408,12 +500,13 @@ host; see D40.
   the wrong issue without a yes: closing is not gated, because it can be undone. The gate is
   drawn at "cannot be taken back or reaches other people". The record shows what happened,
   and the daily line tells Mark.
-- **The gate is patterns over commands.** Built for mistakes and for an agent that follows
-  its rules (D40). A command shape the rules do not know is not gated; the list in D36 is
-  the result of one review and will need more. Every miss found becomes a pattern with a
-  test.
-- **Desk-only actions.** A gated call without a nameable target, a compound command and
-  (if 1.17 shows it) the classifier's own refusals cannot be done by voice. That is a
+- **The gate is rules over commands.** Built for mistakes and for an agent that follows its
+  rules (D40). The tools that can change things are gated by default, so an unknown
+  subcommand is covered; an unknown *program*, a repository script, a `make` target or a git
+  alias is not. Every miss found becomes a rule with a test.
+- **Desk-only actions.** A gated call that is not nameable (most of what the default rules
+  catch), anything in the class `self`, a compound command and (if 1.17 shows it) the
+  classifier's own refusals cannot be done by voice. That is a
   limit Mark will notice; the answer is always the same sentence.
 - **Prompt injection.** Same exposure as the coding session, now reachable while nobody
   looks at a screen. The gate, the notify ping and the record are the additions; the tests

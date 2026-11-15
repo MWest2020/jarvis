@@ -35,23 +35,40 @@ executable. Nothing is installed anywhere in this phase.
 - [ ] 1.6 `agent_host/prompt.md`: the generic appended prompt of D35, with the spoken-line
   instruction; an optional second prompt file from the configuration
 - [ ] 1.7 `agent_host/gate`: the PreToolUse hook, for every tool. Rules from
-  `agent_host/gate_rules.toml` and `/etc/jarvis-agent/rules.d/`; the classes of D36 (merge,
-  deploy, delete, force, api, account, message, create, tool, root, self), including: the
-  short-flag forms of a forced push, `--mirror`, `--force-if-includes`, `--delete` and
-  `:ref`; a bare `git push` resolved to its target or gated; `gh api` with a non-GET method
-  or a field or input option; GraphQL mutations; branch protection; the default rule for
-  `mcp__*` names; writes to the `self` paths by `Edit`, `Write` and shell commands
+  `agent_host/gate_rules.toml` and `/etc/jarvis-agent/rules.d/`. Default rules (D36): for
+  `kubectl`, `helm`, `argocd`, the secrets client, `gh`, cloud CLIs and `docker` every
+  subcommand not on the read-verb list is gated; `curl`, `wget` and httpie with a writing
+  method or a data or upload option; `git push` parsed by its option grammar (`-d`,
+  `--delete`, `--prune`, `:ref`, `-f`, `--force*`, grouped short flags, `+refspec`,
+  `--mirror`, `--all`, `--tags`, a bare push resolved to its target or gated); the `mcp__*`
+  name default. Naming rules for the classes merge, deploy, delete, force, api, account,
+  message, create, root. Unwrapping of `ssh`, `bash -c`, `sh -c` and `sudo`
+- [ ] 1.7b The class `self` (the paths of D36, including the user's instructions file,
+  managed settings and every file a configured hook runs; writes by `Edit`, `Write` and
+  shell commands): always desk-only. The fixed `confirm on|off [class]` program and its
+  templated read-back as the one exception
+- [ ] 1.7c Target shapes per kind (D36 table); every target of the call named (mail to, cc
+  and bcc; every repository and ref of a push; namespace and resource); a missing or
+  misshapen target, or more targets than the template holds, makes the call not nameable
+- [ ] 1.7d The checkout settings rule: the wrapper refuses a turn (`unsafe_settings`) when
+  `.claude/settings.json` or `settings.local.json` of the checkout contains `env`, `hooks`
+  or `disableAllHooks`; checked before every turn (the confirming one too) and again after
+  it. The gate is also installed through managed settings, inert without the turn marker
 - [ ] 1.8 The hash of D36 (tool name, zero byte, command; or canonical input without
   `description`); the grant from the environment matched by that hash and used once; silence
-  on a match; denial on any error; a compound gated `Bash` call denied with "run it alone"
+  on a match; denial on any error; a gated `Bash` call with a separator, pipe, substitution
+  or newline anywhere in its string (quoted, or inside a nested shell or `ssh` argument), or
+  with `eval`, `xargs` or `source`, denied with "run it alone"
 - [ ] 1.9 The pending call: the gate stores the call only; the wrapper re-derives classes,
   targets, hash and read-back from it with the same rules; 60 s expiry on the agent host,
-  single use, cleared by the next request for the project; the grant is the hash the bridge
-  sent, and only when it equals the pending one
+  single use, cleared by the next request for the project (an exact no arrives as a
+  `confirm` with answer `no`, clears it and starts no agent turn); the grant is the hash the
+  bridge sent, and only when it equals the pending one
 - [ ] 1.10 Read-back templates per class, no agent text; all matched classes named; a call
   without a nameable target, and a call marked desk-only, answer "that one needs the desk";
-  merge: review decision and check roll-up fetched by the wrapper, "status unknown" when
-  that fails; create: the visibility, "public" when unknown; every read-back passes the
+  merge: nameable only with `--match-head-commit <sha>`; review decision and check roll-up
+  fetched by the wrapper for that commit, "status unknown" when that fails, "the pull
+  request has moved" when it is no longer the head; create: the visibility, "public" when unknown; every read-back passes the
   spoken filter. While a confirmation is pending the reply carries the read-back only
 - [ ] 1.11 `confirm = "off"` and `confirm_skip`; the record marks such calls as not
   confirmed. The notify command, run by the wrapper after a confirmed call (D36)
@@ -63,14 +80,27 @@ executable. Nothing is installed anywhere in this phase.
   at least `git push -f`, `-fu`, `--mirror`, `--delete`, `origin :branch`, a bare `git push`
   on a default branch and on a feature branch, `gh api -X DELETE`, `gh api -f`, a GraphQL
   `mergePullRequest`, `gh secret set`, `argocd app sync`, `sudo` in second position, an
-  unknown `mcp__x__send_thing`, a write to the checkout's `.claude/settings.local.json`; a
-  command nested in `ssh` and in `bash -c`; a compound command; a grant for another hash; a
+  unknown `mcp__x__send_thing` and `mcp__x__post_comment`, a write to the checkout's
+  `.claude/settings.local.json`; the defaults: `gh issue delete`, `gh gist create --public`,
+  `kubectl cordon`, `helm plugin install`, `bao kv put` gated, `gh pr view`, `kubectl get`,
+  `bao read` not; `curl -d`, `curl -X DELETE`, `wget --post-data` gated, a plain `curl` not;
+  `git push --prune`, `-d`, `--all`, `--tags`, `-uf`; a command nested in `ssh` and in
+  `bash -c`; a compound command; `bash -c 'gh pr merge 1; gh repo delete x'` and the same
+  inside `ssh` refused with "run it alone", and a separator inside a quoted argument; target
+  shapes: a pull request "number" with words, a repository with a space, a ref with a
+  newline, an address without a domain, a path that resolves outside its root (each: not
+  nameable); a mail with cc and bcc names all three or is not nameable; a push of two refs
+  names both; a `self` write is never pending; the `confirm off` command gives the fixed
+  sentence and any other argument form is desk-only; a checkout with `env`, with `hooks` and
+  with `disableAllHooks` in its settings is refused; `gh pr merge` without
+  `--match-head-commit` is not nameable; an exact no clears the pending call; a grant for another hash; a
   reused grant; an expired pending call; a pending call cleared by an unrelated request; a
   pending file altered between gate and wrapper (the read-back and the hash follow the
   altered call); a second gated call in one turn; a request with an extra field, a path as
   project, a symlinked project, a bare repository, an oversized body; the argv
-- [ ] 1.15 `agent_host/install.sh`: installs wrapper, gate, rules, prompt and the turn
-  settings root-owned under `/usr/local/lib/jarvis-agent`; a configuration template, an
+- [ ] 1.15 `agent_host/install.sh`: installs wrapper, gate, the `confirm` switch, rules,
+  prompt and the turn settings root-owned under `/usr/local/lib/jarvis-agent`; the gate's
+  entry in Claude Code's managed settings; a configuration template, an
   environment file and an empty `rules.d/` under `/etc/jarvis-agent`; prints the
   `authorized_keys` line for a given public key and source address; never edits
   `authorized_keys` itself
@@ -89,8 +119,12 @@ executable. Nothing is installed anywhere in this phase.
   - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
     refused without a grant and runs once with one;
   - a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
-  - `env` and `disableAllHooks` in a checkout's `.claude/settings.json` cannot plant a
-    grant or switch the gate off;
+  - with the wrapper's refusal switched off for the test: `env`, `hooks` and
+    `disableAllHooks` in a checkout's `.claude/settings.json`, present at the start and
+    appearing in the middle of a turn, cannot plant a grant, and cannot get a gated call
+    past the managed-settings copy of the gate. **If this fails, phase 1 does not ship**:
+    `full` mode is enabled nowhere and the design is reopened (D36);
+  - the managed-settings copy of the gate does nothing in the coding session;
   - the employer hook refuses in a `-p` turn;
   - `autoMemoryDirectory` from `--settings` gives the turn the coding session's memory; if
     not, the symlink fallback of D34 is set up for each listed checkout;
@@ -110,13 +144,14 @@ executable. Nothing is installed anywhere in this phase.
   missing, is readable by others, or lies inside a project directory (D30, D32)
 - [ ] 2.3 The remote adapter: the ssh argv of D32 fixed by a test, the request on stdin, the
   reply parsed strictly; a fake `ssh` in tests
-- [ ] 2.4 Fallback to `readonly` for one turn on "could not connect", `no_checkout` and
-  `disabled`, with
+- [ ] 2.4 Fallback to `readonly` for one turn on "could not connect", `no_checkout`,
+  `disabled` and `unsafe_settings`, with
   the spoken first sentence; never a second run after the turn started (D30)
 - [ ] 2.5 The pending confirmation per project, in memory, 60 s; the closed affirmation and
   refusal lists matched on the whole normalised transcript; the minimum of detected speech
   for an affirmation (default 0.3 s); only the read-back is spoken while one is pending;
-  `confirm` sent with the next request; "Cancelled" without an agent turn on an exact no; the header
+  `confirm` sent with the next request; on an exact no: `confirm` with answer `no` sent to the agent host, "Cancelled" spoken, no
+  agent turn; the header
   `X-Jarvis-Needs-Confirmation` (D36)
 - [ ] 2.6 Spoken errors for `busy`, `low_memory`, `timeout`, `agent_failed`; the bridge log
   gets the turn id of the agent host, never the key or the request body on stdout
@@ -170,7 +205,8 @@ executable. Nothing is installed anywhere in this phase.
   `agent_host/` with the installer step (D38)
 - [ ] 4.2 Retention: records older than the configured number of days are removed by the
   same timer
-- [ ] 4.3 Switching confirmation off and on by voice (class `self`), with a test
+- [ ] 4.3 Switching confirmation off and on by voice through the fixed `confirm` command
+  only (the rest of the class `self` stays desk-only), with a test
 - [ ] 4.4 **(host)** The timer enabled on the agent host; a first line seen in the notes
 - [ ] 4.4b **(host)** The daily mail: nothing reads the notes file by itself today (the chat
   system's digest step does not). Make the mail step include Jarvis's line, in that
@@ -181,7 +217,10 @@ executable. Nothing is installed anywhere in this phase.
 
 ## What needs Mark's hands
 
-Nothing here is a question; the defaults are what happens.
+One question is open for him, with a default: the trust edge from the cluster to the agent
+host, https://github.com/MWest2020/jarvis/issues/25 (default: accepted, built with the
+stated limits; a no keeps the cluster side read-only, and phase 3 is then not wired). The
+rest is hands, not questions.
 
 1. **The `authorized_keys` line on the agent host** (3.3), only if the classifier refuses it
    to the session. He gets one command to paste. Until then `full` mode cannot connect and

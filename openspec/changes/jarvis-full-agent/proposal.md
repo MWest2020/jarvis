@@ -35,8 +35,12 @@ mouth for the same agent, never a privileged way around it.
   PreToolUse hook refuses such a tool call unless the bridge sent a grant for exactly that
   call (by hash) in this turn. Jarvis reads the action back in one sentence that is built
   from the call by rules, with nothing the agent wrote; a spoken "yes" as the next utterance
-  releases it, once. A merge is read back with its review and check status. What cannot be
-  named in a sentence, and what the classifier refuses anyway, "needs the desk". It is on by
+  releases it, once. The tools that can change things (`gh`, `kubectl`, `helm`, the secrets
+  client, HTTP clients with a write method, `git push`) are gated by default: only a short
+  list of read verbs passes. A target is spoken only when it has the strict shape of its
+  kind, and every target is named. A merge is read back with its review and check status
+  and pinned to the commit that status belongs to. What cannot be named in a sentence, any
+  change to Jarvis's own rules, and what the classifier refuses anyway "needs the desk". It is on by
   default and Mark can switch it off: everything is allowed, this guards against misheard
   speech in a car.
 - **Identity and audit.** Commits use the host's global git identity. Builds and pings go out
@@ -61,13 +65,17 @@ Said plainly, because "everything you can do" has a price (design D40):
   of what can be asked, not the power of what answers.
 - The cluster gets a road to the agent host that did not exist. Anyone who can read the
   Secret with the bridge's key, or run code in the bridge's pod, inherits the line above.
-  Accepted under Mark's decision; kept narrow by `from=` on the key, the NetworkPolicy, a
+  **Accepted by default; Mark is asked explicitly** in
+  https://github.com/MWest2020/jarvis/issues/25 (if he says no, the cluster side stays
+  read-only and changes stay desk-only). Kept narrow by `from=` on the key, the NetworkPolicy, a
   kill switch on the agent host and a ping to Mark's phone on every confirmed action.
 - The gate and its records live on a host where the agent has a shell as their owner, and
   passwordless `sudo`. The guarantees of the gate hold for an agent that works through its
-  tools, including one misled into trying a gated action. They are not a wall against an
-  agent that deliberately attacks its own host. `sudo` and writes to Jarvis's own rules are
-  gated, which makes that road visible, not closed.
+  tools, including one misled into trying a gated action **in a shape the rules know**. A
+  script in a repository, a `make` target or a git alias that does the same thing goes
+  around the gate; there only the classifier, the hooks and the agent's judgement stand. They are not a wall against an
+  agent that deliberately attacks its own host. `sudo` is gated and writes to Jarvis's
+  own rules are refused by voice, which closes the obvious road, not every road.
 - The classifier does not see calls that match one of the user's allow rules (for example
   `ssh` and merging on his own repositories). That is so for the coding session too.
 - Nothing enforces "review and green checks before a merge". The read-back states both, so
@@ -151,4 +159,7 @@ by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 
 ## Open questions
 
-None. Mark decided. What needs his hands is listed at the end of `tasks.md`.
+None in the design. Mark decided the direction. One consequence is put to him explicitly,
+with a default: the trust edge from the cluster to the agent host
+(https://github.com/MWest2020/jarvis/issues/25; default: accepted, built with the stated
+limits). What needs his hands is listed at the end of `tasks.md`.
