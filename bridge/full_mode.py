@@ -34,7 +34,10 @@ logger = logging.getLogger("bridge.full")
 PENDING_TTL_S = 60.0
 
 CANCELLED = "Cancelled."
-NO_CLEAR_YES = "I did not hear a clear yes. Cancelled."
+# The same words as for a silent recording (server.NOT_HEARD).
+NOT_HEARD = "Sorry, I didn't catch that."
+# After a yes was sent and no answer came back that says what happened.
+UNKNOWN_IF_RAN = "I do not know whether it ran. Check at the desk."
 NOTHING_CONFIRMED = "Nothing was confirmed."
 TOOK_TOO_LONG = "That took too long. Ask again."
 # D36, step 6: put in front of an ordinary request that came instead of a yes.
@@ -136,34 +139,38 @@ class FullMode:
                speech_seconds: Callable[[], float]) -> Outcome:
         """One utterance of the driver for one project.
 
-        `speech_seconds` measures the detected speech in the recording; it is only
-        called when a yes is about to count.
+        `speech_seconds` measures the detected speech in the recording. Every
+        utterance needs the minimum, not only a yes.
         """
+        said = normalise_utterance(transcript)
+        if not said:
+            # Dots, a note sign, nothing a person said: silence. No turn, and a
+            # read-back keeps waiting.
+            return Outcome(NOT_HEARD)
+        try:
+            seconds = float(speech_seconds())
+        except Exception:  # noqa: BLE001 - no measurement is no speech
+            logger.exception("project=%s: detected speech could not be measured",
+                             project.name)
+            seconds = 0.0
+        if not seconds >= self._min_speech_s:
+            # Whisper writes short words ("yes", "you") from noise. A full agent
+            # does not act on a sound that may not have been a word, and a noise
+            # does not use up a read-back either.
+            logger.info("project=%s: %.2fs of detected speech (minimum %.2fs): not "
+                        "taken as an utterance", project.name, seconds, self._min_speech_s)
+            return Outcome(NOT_HEARD)
+
         # Taken, not read: whatever this utterance is, the read-back is used up.
         pending = self._pending.take(project.name)
         if pending is None:
             # Nothing waiting, or 60 seconds gone: a "yes" is an ordinary utterance.
             return self._turn(project, transcript)
 
-        said = normalise_utterance(transcript)
         if said in self._no:
             self._cancel(project, pending)
             return Outcome(CANCELLED)
         if said in self._yes:
-            try:
-                seconds = float(speech_seconds())
-            except Exception:  # noqa: BLE001 - no measurement is no confirmation
-                logger.exception("project=%s: detected speech could not be measured",
-                                 project.name)
-                seconds = 0.0
-            if not seconds >= self._min_speech_s:
-                # Whisper writes short words from noise. Cancelled on both sides,
-                # and no agent turn on a sound that may not have been a word.
-                logger.info("project=%s: a yes with %.2fs of detected speech (minimum "
-                            "%.2fs) does not confirm", project.name, seconds,
-                            self._min_speech_s)
-                self._cancel(project, pending)
-                return Outcome(NO_CLEAR_YES)
             return self._turn(project, transcript,
                               ConfirmAnswer(pending.id, pending.sha256, ANSWER_YES))
         # Anything else is an ordinary request. It clears the pending call on the
@@ -230,4 +237,7 @@ def _failure_line(exc: AgentTurnFailed, *, confirmed: bool) -> str:
     if exc.code in NOT_STARTED_LINES:
         line = NOT_STARTED_LINES[exc.code]
         return f"{line} {NOTHING_CONFIRMED}" if confirmed else line
-    return STARTED_LINES.get(exc.code, STARTED_LINES[AgentTurnFailed.PROTOCOL])
+    line = STARTED_LINES.get(exc.code, STARTED_LINES[AgentTurnFailed.PROTOCOL])
+    # A yes went out and it is not known what became of it: never "nothing was
+    # confirmed", the call may have run.
+    return f"{line} {UNKNOWN_IF_RAN}" if confirmed else line

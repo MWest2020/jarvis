@@ -192,9 +192,13 @@ class AgentHostConfig:
 
 
 def normalise_utterance(text: str) -> str:
-    """Lowered, without punctuation or symbols, single spaces (D36, step 5)."""
-    kept = "".join(" " if unicodedata.category(ch)[0] in "PSZC" else ch
-                   for ch in text.casefold())
+    """Lowered, without punctuation or symbols, single spaces (D36, step 5).
+
+    In one Unicode form (NFKC), before and after lowering: Whisper may write "é" as
+    one character and a configuration file as two, and they must compare equal.
+    """
+    folded = unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+    kept = "".join(" " if unicodedata.category(ch)[0] in "PSZC" else ch for ch in folded)
     return " ".join(kept.split())
 
 
@@ -288,7 +292,9 @@ def _word_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
     if not raw:
         return default
-    words = tuple(w.strip() for w in raw.split(",") if w.strip())
+    # Kept in the form the transcript is compared in, however the file spelled it.
+    words = tuple(unicodedata.normalize("NFKC", w.strip()) for w in raw.split(",")
+                  if w.strip())
     if not words:
         raise ConfigError(f"{name} must list at least one word")
     for word in words:

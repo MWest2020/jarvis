@@ -392,3 +392,10 @@ def test_full_mode_takes_its_own_words_port_and_minimum(monkeypatch, tmp_path):
     assert config.confirm_min_speech_s == 0.5
     assert (config.agent_host.port, config.agent_host.host, config.agent_host.timeout_s) == (
         2222, "100.64.0.7", 900)
+
+
+def test_a_confirm_word_is_kept_in_one_unicode_form(monkeypatch, tmp_path):
+    # "sí" written with a combining accent in the configuration: Whisper writes the
+    # single character, and the two must meet.
+    _full_env(monkeypatch, tmp_path, JARVIS_CONFIRM_YES="yes,si\u0301")
+    assert load_config().confirm_yes == ("yes", "s\u00ed")

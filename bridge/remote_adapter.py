@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import unicodedata
 
 from bridge.agent import (
@@ -67,6 +68,8 @@ ERROR_CODES = frozenset({
 })
 # D30: the agent host answers these before any turn has started there.
 FALLBACK_CODES = frozenset({"no_checkout", "disabled", "unsafe_settings"})
+# Answered before a turn exists, so `turn` is null with them (D33).
+NOT_STARTED_CODES = FALLBACK_CODES | {"bad_request", "busy", "low_memory", EXPIRED}
 
 NEEDS_THE_DESK = "That one needs the desk."
 OUT_OF_BUDGET = "out_of_budget"
@@ -92,33 +95,48 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _CLASS = re.compile(r"[a-z][a-z_, -]{0,99}")
 MAX_EXPIRES_S = 60.0
 
-# OpenSSH prints these, on a line of their own, when it gives up before a session
-# exists: no route, no listener, no name, no banner, or a key the agent host does
-# not accept (its `authorized_keys` line is missing, or `from=` does not match).
-# The forced command has not run in any of them. Messages of a connection that
-# broke later ("Connection to … closed by remote host", "client_loop: …",
-# "Timeout, server … not responding") are deliberately not here.
+# Whether a turn can have started is read from ssh's OWN log and from nothing else.
+# `-E <file>` sends that log to a file of the bridge's, so it is separate from the
+# remote command's stderr: whatever the wrapper, the agent or a git or ssh child on
+# the agent host prints (an "ssh: connect to host ..." of its own, say) never
+# reaches it. Checked with OpenSSH 9.6 against a real sshd (docs, "Read-only for
+# one turn").
+#
+# "Never connected" needs all of: exit status 255, nothing on stdout, no
+# "Authenticated to" line (LogLevel=VERBOSE writes one the moment the agent host
+# accepts the key, before the forced command runs), and one of these lines, which
+# OpenSSH only writes before authentication: no route, no listener, no name, no
+# banner, or a key the agent host does not accept. "Connection reset by ..." and
+# "Connection closed by ..." are NOT here: OpenSSH writes them for a session that
+# broke later as well.
 _NOT_CONNECTED = tuple(re.compile(p) for p in (
     r"ssh: connect to host \S+ port \d+: .+",
     r"ssh: Could not resolve hostname \S+: .+",
     r"kex_exchange_identification: .+",
     r"banner exchange: Connection to \S+ port \d+: .+",
     r"Connection timed out during banner exchange",
-    r"Connection (closed|reset) by \S+ port \d+",
     r"\S+@\S+: Permission denied \([a-z0-9,-]+\)\.",
 ))
+_AUTHENTICATED = "Authenticated to "
 _HOST_KEY_FAILED = "Host key verification failed."
 SSH_CONNECT_FAILED_EXIT = 255
+MAX_LOGGED_CHARS = 4000
 
 
-def build_ssh_command(agent: AgentHostConfig) -> list[str]:
-    """The argv of D32, with no remote command. A test fixes it.
+def build_ssh_command(agent: AgentHostConfig, log_file: str) -> list[str]:
+    """The argv of D32, with no remote command, plus where ssh writes its own log.
+    A test fixes it.
 
     `-F /dev/null`: no client configuration file, so no ProxyCommand, SendEnv or
     extra identity from one. `BatchMode`: never a prompt. `IdentitiesOnly` and
     `IdentityAgent=none`: this key and no other. `StrictHostKeyChecking=yes` with
     one pinned file and no global file: an unknown or changed host key ends the
     connection before the request is written (no trust on first use).
+
+    Added to D32's list after review: `LogLevel=VERBOSE` and `-E <log file>`. They
+    change nothing about what the connection may do; they make ssh's own account of
+    it (connected or not, authenticated or not) readable apart from the remote
+    command's stderr, which is what the read-only fallback is decided on.
     """
     return [
         "ssh", "-T", "-F", "/dev/null",
@@ -130,6 +148,8 @@ def build_ssh_command(agent: AgentHostConfig) -> list[str]:
         "-o", "GlobalKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=15",
+        "-o", "LogLevel=VERBOSE",
+        "-E", log_file,
         "-i", str(agent.key_file),
         "-p", str(agent.port),
         f"{agent.user}@{agent.host}",
@@ -254,12 +274,23 @@ def speakable_readback(readback: str) -> str | None:
     return text
 
 
-def _never_connected(returncode: int, stdout: bytes, stderr: str) -> bool:
-    """True only when ssh itself says that no session was ever opened."""
-    if returncode != SSH_CONNECT_FAILED_EXIT or stdout.strip():
-        return False
-    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
-    return any(p.fullmatch(ln) for p in _NOT_CONNECTED for ln in lines)
+def classify_no_reply(returncode: int, ssh_log: str) -> str:
+    """Why nothing came back, from ssh's own log: "unreachable", "host_key" or "lost".
+
+    Only "unreachable" allows the read-only fallback, and only "unreachable" and
+    "host_key" mean that the forced command cannot have run. Everything that is not
+    certain is "lost": a turn may have started.
+    """
+    lines = [ln.strip() for ln in ssh_log.splitlines() if ln.strip()]
+    if returncode != SSH_CONNECT_FAILED_EXIT:
+        return AgentTurnFailed.LOST
+    if any(ln.startswith(_AUTHENTICATED) for ln in lines):
+        return AgentTurnFailed.LOST          # the agent host let the key in
+    if _HOST_KEY_FAILED in lines:
+        return AgentTurnFailed.HOST_KEY
+    if any(p.fullmatch(ln) for p in _NOT_CONNECTED for ln in lines):
+        return AgentUnavailable.UNREACHABLE
+    return AgentTurnFailed.LOST
 
 
 def check_ssh() -> None:
@@ -286,6 +317,11 @@ class RemoteAdapter:
         turn_id = reply["turn"]
         if reply["error"]:
             code = reply["error"]
+            if code in NOT_STARTED_CODES and turn_id:
+                # These codes say "no turn started"; a turn id says one did. A turn
+                # that may have run is never answered read-only and never run again.
+                raise AgentTurnFailed(AgentTurnFailed.PROTOCOL,
+                                      f"{code} with the turn id of a started turn", turn_id)
             if code in FALLBACK_CODES and confirm is None:
                 raise AgentUnavailable(code)
             raise AgentTurnFailed(code, turn_id=turn_id, notice=reply["notice"])
@@ -314,51 +350,71 @@ class RemoteAdapter:
     def _ask(self, project: str, prompt: str, confirm: ConfirmAnswer | None) -> dict:
         """One connection: one request, one parsed reply."""
         request = build_request(project=project, prompt=prompt, confirm=confirm)
-        returncode, stdout, stderr = self._exchange(request)
-        if any(ln.strip() == _HOST_KEY_FAILED for ln in stderr.splitlines()) and not stdout.strip():
-            raise AgentTurnFailed(AgentTurnFailed.HOST_KEY, stderr.strip())
-        if _never_connected(returncode, stdout, stderr):
-            raise AgentUnavailable(AgentUnavailable.UNREACHABLE, stderr.strip())
+        returncode, stdout, ssh_log, remote_stderr = self._exchange(request)
         if not stdout.strip():
-            # Connected, or possibly connected, and no answer: the turn may be
-            # running on the agent host. It is never run again (D30).
-            raise AgentTurnFailed(
-                AgentTurnFailed.LOST, f"ssh exited {returncode} without a reply: {stderr.strip()}")
+            why = classify_no_reply(returncode, ssh_log)
+            detail = (f"ssh exited {returncode} without a reply; its log: "
+                      f"{ssh_log.strip()[:MAX_LOGGED_CHARS]!r}; the remote stderr: "
+                      f"{remote_stderr.strip()[:MAX_LOGGED_CHARS]!r}")
+            if why == AgentUnavailable.UNREACHABLE:
+                raise AgentUnavailable(why, detail)
+            # host_key: nothing was sent. lost: connected, or possibly connected,
+            # and no answer, so the turn may be running on the agent host. Neither
+            # is ever answered by a second run (D30).
+            raise AgentTurnFailed(why, detail)
         try:
             return parse_reply(stdout)
         except ReplyError as exc:
             raise AgentTurnFailed(AgentTurnFailed.PROTOCOL, str(exc)) from exc
 
-    def _exchange(self, request: bytes) -> tuple[int, bytes, str]:
-        command = build_ssh_command(self._agent)
+    def _exchange(self, request: bytes) -> tuple[int, bytes, str, str]:
+        """Run ssh once. Returns its exit status, stdout, its own log, the remote stderr."""
         # ssh gets a path and a home, nothing else: not the phone's token, not the
         # Claude credentials, no agent socket. With -F /dev/null it forwards no
         # variable anyway, so nothing of the pod reaches the agent host.
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "HOME": os.environ.get("HOME", "/")}
         try:
-            proc = subprocess.Popen(
-                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, env=env, start_new_session=True,
-            )
+            fd, log_file = tempfile.mkstemp(prefix="jarvis-ssh-", suffix=".log")   # 0600
+            os.close(fd)
         except OSError as exc:
-            # No ssh client, or it cannot be started: nothing left this machine.
             raise AgentUnavailable(AgentUnavailable.UNREACHABLE,
-                                   f"ssh could not be started: {exc}") from exc
+                                   f"no file for ssh's log: {exc}") from exc
         try:
-            stdout, stderr = proc.communicate(request, timeout=self._agent.timeout_s)
-        except subprocess.TimeoutExpired as exc:
+            command = build_ssh_command(self._agent, log_file)
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                proc = subprocess.Popen(
+                    command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, env=env, start_new_session=True,
+                )
+            except OSError as exc:
+                # No ssh client, or it cannot be started: nothing left this machine.
+                raise AgentUnavailable(AgentUnavailable.UNREACHABLE,
+                                       f"ssh could not be started: {exc}") from exc
+            try:
+                stdout, stderr = proc.communicate(request, timeout=self._agent.timeout_s)
+            except subprocess.TimeoutExpired as exc:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.communicate()
+                # Only the connection is cut. The turn on the agent host runs to its
+                # end or to its own timeout, and is recorded there (D34).
+                raise AgentTurnFailed(
+                    AgentTurnFailed.NO_ANSWER,
+                    f"no reply from the agent host within {self._agent.timeout_s}s") from exc
+            try:
+                with open(log_file, encoding="utf-8", errors="replace") as fh:
+                    ssh_log = fh.read(MAX_MESSAGE_BYTES)
+            except OSError:
+                ssh_log = ""    # no account of the connection: nothing is assumed
+            return proc.returncode, stdout, ssh_log, stderr.decode("utf-8", "replace")
+        finally:
+            try:
+                os.unlink(log_file)
+            except OSError:
                 pass
-            proc.communicate()
-            # Only the connection is cut. The turn on the agent host runs to its
-            # end or to its own timeout, and is recorded there (D34).
-            raise AgentTurnFailed(
-                AgentTurnFailed.NO_ANSWER,
-                f"no reply from the agent host within {self._agent.timeout_s}s") from exc
-        return proc.returncode, stdout, stderr.decode("utf-8", "replace")
 
 
 def _spoken(notice: str, marker_line: str) -> str:

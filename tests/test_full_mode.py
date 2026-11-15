@@ -120,7 +120,6 @@ def test_a_late_yes_is_an_ordinary_utterance():
     rig.now = 60.0                                   # not within 60 seconds any more
     rig.say("yes")
     assert rig.remote.asked[1] == ("demo", "yes", None)
-    assert rig.measured == 0
 
 
 def test_a_yes_just_in_time_confirms():
@@ -142,7 +141,6 @@ def test_a_yes_with_nothing_pending_is_an_ordinary_utterance():
     rig = Rig(AgentTurn("Yes to what?", "turn-1"))
     rig.say("yes")
     assert rig.remote.asked == [("demo", "yes", None)]
-    assert rig.measured == 0
 
 
 def test_a_yes_for_another_project_confirms_nothing_there():
@@ -178,34 +176,100 @@ def test_a_restart_between_read_back_and_yes_forgets_it():
 
 @pytest.mark.parametrize("seconds", [0.0, 0.1, 0.29, float("nan")])
 def test_a_short_noise_transcribed_as_yes_does_not_confirm(seconds):
-    rig = Rig(_read_back(), AgentTurn("ignored", "turn-2"))
+    rig = Rig(_read_back(), AgentTurn("Merged.", "turn-2"))
     rig.say("merge it")
     rig.speech = seconds
     out = rig.say("Yes.")
-    assert out.spoken == "I did not hear a clear yes. Cancelled."
-    # Cancelled on the agent host too, and no agent turn on a noise.
-    assert rig.remote.asked[1] == ("demo", "", ConfirmAnswer("c1", SHA, "no"))
+    assert out.spoken == "Sorry, I didn't catch that." and not out.needs_confirmation
+    assert len(rig.remote.asked) == 1                # nothing was sent, not even a no
+    # A noise is not an utterance: the read-back still waits for a real answer.
     rig.speech = 0.6
     rig.say("yes")
-    assert rig.confirms[2] is None
+    assert rig.confirms[1] == ConfirmAnswer("c1", SHA, "yes")
 
 
-def test_speech_that_cannot_be_measured_does_not_confirm():
+@pytest.mark.parametrize("heard", ["you", "merge the pull request", "Thank you."])
+def test_every_utterance_needs_the_minimum_of_speech_not_only_a_yes(heard):
+    rig = Rig(AgentTurn("Done.", "turn-1"))
+    rig.speech = 0.1
+    out = rig.say(heard)
+    assert out.spoken == "Sorry, I didn't catch that."
+    assert rig.remote.asked == [] and rig.readonly.asked == []
+
+
+@pytest.mark.parametrize("heard", ["...", "\u266a", " . ", "\u2026", "?!", "\u266a\u266a \u266a", "\u200b"])
+def test_a_transcript_that_is_no_word_at_all_is_silence(heard):
+    rig = Rig(_read_back(), AgentTurn("Merged.", "turn-2"))
+    out = rig.say(heard)
+    assert out.spoken == "Sorry, I didn't catch that."
+    assert rig.remote.asked == [] and rig.measured == 0
+    # And it does not use up a read-back.
+    rig.say("merge it")
+    assert rig.say(heard).spoken == "Sorry, I didn't catch that."
+    rig.say("yes")
+    assert rig.confirms == [None, ConfirmAnswer("c1", SHA, "yes")]
+
+
+def test_the_not_heard_line_is_the_servers_own():
+    from bridge import server
+    assert full_mode.NOT_HEARD == server.NOT_HEARD
+
+
+def test_speech_that_cannot_be_measured_is_not_an_utterance():
     rig = Rig(_read_back())
     rig.say("merge it")
 
     def broken():
         raise RuntimeError("no detector")
     out = rig.full.handle(DEMO, "yes", broken)
-    assert out.spoken == "I did not hear a clear yes. Cancelled."
-    assert rig.confirms[1].answer == "no"
+    assert out.spoken == "Sorry, I didn't catch that."
+    assert len(rig.remote.asked) == 1
 
 
 def test_the_minimum_of_speech_is_the_configured_one():
     rig = Rig(_read_back(), min_speech_s=1.0)
-    rig.say("merge it")
     rig.speech = 0.6
-    assert rig.say("yes").spoken == "I did not hear a clear yes. Cancelled."
+    assert rig.say("merge it").spoken == "Sorry, I didn't catch that."
+    rig.speech = 1.0
+    assert rig.say("merge it").needs_confirmation
+
+
+@pytest.mark.parametrize("code", ["lost", "no_answer", "protocol", "timeout", "agent_failed"])
+def test_after_a_yes_an_unknown_outcome_is_never_called_not_confirmed(code):
+    rig = Rig(_read_back(), AgentTurnFailed(code))
+    rig.say("merge it")
+    out = rig.say("yes")
+    assert out.spoken.endswith("I do not know whether it ran. Check at the desk.")
+    assert "Nothing was confirmed" not in out.spoken
+    assert rig.readonly.asked == [] and len(rig.remote.asked) == 2
+
+
+@pytest.mark.parametrize("code", ["lost", "no_answer", "protocol", "timeout", "agent_failed"])
+def test_without_a_yes_the_unknown_outcome_line_is_not_added(code):
+    rig = Rig(AgentTurnFailed(code))
+    assert "Check at the desk" not in rig.say("do something").spoken
+
+
+@pytest.mark.parametrize("code", ["busy", "low_memory", "bad_request", "host_key"])
+def test_after_a_yes_a_refusal_before_any_turn_says_nothing_was_confirmed(code):
+    rig = Rig(_read_back(), AgentTurnFailed(code))
+    rig.say("merge it")
+    assert rig.say("yes").spoken.endswith("Nothing was confirmed.")
+
+
+def test_a_configured_word_matches_in_either_unicode_form():
+    import unicodedata
+    composed = unicodedata.normalize("NFC", "s\u00ed")
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    for heard in (composed, decomposed, "S\u00cd.", "\uff53\u00ed"):      # the last: full-width s
+        rig = Rig(_read_back(), AgentTurn("Merged.", "turn-2"))
+        rig.full = FullMode(remote=rig.remote, readonly=rig.readonly,
+                            confirm_yes=(composed,), confirm_no=("no",), min_speech_s=0.3,
+                            pending=PendingStore(clock=lambda: 0.0))
+        rig.say("merge it")
+        rig.say(heard)
+        assert rig.confirms[1] == ConfirmAnswer("c1", SHA, "yes"), heard
 
 
 def test_a_second_gated_action_gets_its_own_read_back():
@@ -293,7 +357,7 @@ def test_a_yes_that_cannot_be_delivered_confirms_nothing_and_is_not_asked_read_o
 
 def test_every_spoken_line_of_the_bridge_passes_the_spoken_filter():
     from bridge.summary import _SECRET_LIKE, _UNSPEAKABLE
-    lines = [full_mode.CANCELLED, full_mode.NO_CLEAR_YES, full_mode.TOOK_TOO_LONG,
+    lines = [full_mode.CANCELLED, full_mode.UNKNOWN_IF_RAN, full_mode.TOOK_TOO_LONG,
              full_mode.NOTHING_CONFIRMED, *remote_adapter.NOTICE_SENTENCES.values(),
              *full_mode.FALLBACK_SENTENCES.values(), *full_mode.NOT_STARTED_LINES.values(),
              *full_mode.STARTED_LINES.values()]
@@ -304,6 +368,7 @@ def test_every_spoken_line_of_the_bridge_passes_the_spoken_filter():
 @pytest.mark.parametrize("heard,expected", [
     ("Yes.", "yes"), ("  YES!!  ", "yes"), ("Ja…", "ja"), ("yes, yes", "yes yes"),
     ("¡Sí!", "sí"), ("no\n", "no"), ("y-e-s", "y e s"), ("", ""),
+    ("...", ""), ("\u266a", ""), ("Si\u0301", "s\u00ed"), ("\uff39\uff25\uff33", "yes"),
 ])
 def test_normalise_utterance(heard, expected):
     assert normalise_utterance(heard) == expected

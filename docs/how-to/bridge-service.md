@@ -96,7 +96,7 @@ Settings for `full`, all refused at start when they are not what they should be:
 | `JARVIS_AGENT_TIMEOUT_S` | no (default `660`) | Seconds the bridge waits for the agent host. Keep it above the agent host's own turn timeout (600 s by default), so its answer arrives first. |
 | `JARVIS_CONFIRM_YES` | no (default `yes,ja`) | The closed list of affirmations, comma-separated, written as they are compared: lower case, no punctuation. |
 | `JARVIS_CONFIRM_NO` | no (default `no,nee`) | The closed list of refusals. A word cannot be on both lists. |
-| `JARVIS_CONFIRM_MIN_SPEECH_S` | no (default `0.3`) | The least detected speech, in seconds, a recording must hold before a yes counts. |
+| `JARVIS_CONFIRM_MIN_SPEECH_S` | no (default `0.3`) | The least detected speech, in seconds, a recording must hold before it counts as an utterance at all in `full` mode, a yes included. |
 
 The bridge does not start in `full` mode when the key file or the known-hosts file is
 missing, is not a regular file, gives any permission to group or others (so `0400` or
@@ -118,21 +118,43 @@ never sent and is answered read-only too.
 ssh -T -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<known-hosts file>
     -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=15
-    -i <key file> -p <port> <user>@<host>
+    -o LogLevel=VERBOSE -E <a temporary file> -i <key file> -p <port> <user>@<host>
 ```
+
+That is the list of design D32 plus `LogLevel=VERBOSE` and `-E`, added after review. They
+change nothing about what the connection may do. They make ssh write its own account of the
+connection to a file of the bridge's (mode `0600`, in the temporary directory, removed
+after the turn), apart from whatever the remote command prints on stderr.
 
 `ssh` gets `PATH` and `HOME` and no other variable: not the token, not the Claude
 credentials. The request goes over stdin.
 
 **Read-only for one turn.** A `full` turn is answered by the `readonly` adapter instead,
 and its first sentence says why, in exactly four cases, all before a turn can have started
-on the agent host: the connection could not be made (ssh's own message for no route, no
-listener, no name, no banner or a refused key, with exit status 255 and nothing on stdout),
-the agent host does not have the project (`no_checkout`), its kill switch is set
-(`disabled`), or the project's settings are unsafe there (`unsafe_settings`). In every
-other case, a lost connection included, the turn is **never run again**, in either mode:
-the phone hears what went wrong and that it was not run again. A host key that is not the
-pinned one fails the turn and is not answered read-only.
+on the agent host: the connection could not be made, the agent host does not have the
+project (`no_checkout`), its kill switch is set (`disabled`), or the project's settings are
+unsafe there (`unsafe_settings`). In every other case the turn is **never run again**, in
+either mode: the phone hears what went wrong and that it was not run again.
+
+"The connection could not be made" is decided on ssh's own log and on nothing else, and
+needs all of: exit status 255, nothing on stdout, no `Authenticated to` line (ssh writes one
+the moment the agent host accepts the key, before the forced command runs), and one of the
+lines OpenSSH only writes before authentication: `ssh: connect to host …`, `ssh: Could not
+resolve hostname …`, `kex_exchange_identification: …`, a banner-exchange failure, or
+`…: Permission denied (publickey).`. Anything else is "a turn may have started":
+`Connection reset by …` and `Connection closed by …` (OpenSSH writes them for a session
+that broke later too), an empty log, any other exit status. What the wrapper, the agent or
+a git or ssh child on the agent host prints never counts, even when it is one of those
+very lines: it arrives on ssh's stderr, not in ssh's log. Checked with OpenSSH 9.6 against
+a real sshd with a forced command (2026-11-16): a closed port, an unknown name, a refused
+key and a changed host key each left their line in the log and nothing on stderr; a remote
+command that printed `ssh: connect to host … Connection refused` and was then killed left
+only `Authenticated to …` in the log.
+
+A host key that is not the pinned one fails the turn and is not answered read-only. A
+`no_checkout`, `disabled`, `unsafe_settings`, `busy`, `low_memory`, `bad_request` or
+`expired` that comes with a turn id contradicts itself (those codes mean no turn started,
+the id means one did): it is treated as a turn that ran, so never answered read-only.
 
 **Confirmation.** When the agent on the agent host reaches a gated action (a merge, a
 deploy, a delete: design D36), the reply is a read-back and nothing else, with the header
@@ -143,10 +165,17 @@ and from nothing else:
 
 | The transcript, lowered and without punctuation, is | What happens |
 |---|---|
-| exactly a word on the affirmation list, and the recording holds at least the minimum of detected speech | The confirmation is sent with answer `yes`; the reply is the agent's. |
-| exactly a word on the affirmation list, with less detected speech (Whisper writes "yes" from noise) | Cancelled on both sides (answer `no`), no agent turn: "I did not hear a clear yes. Cancelled." |
+| exactly a word on the affirmation list | The confirmation is sent with answer `yes`; the reply is the agent's. |
 | exactly a word on the refusal list | Answer `no` is sent, the agent host clears the call and starts no agent turn: "Cancelled." |
 | anything else ("yes but wait", another question) | An ordinary request with one line in front saying the action was not confirmed; it clears the call on the agent host like every request. |
+
+**Every utterance in `full` mode needs the minimum of detected speech**
+(`JARVIS_CONFIRM_MIN_SPEECH_S`), not only a yes: Whisper writes short words ("yes", "you")
+from noise, and a full agent does not act on a sound. A recording with less, and a
+transcript that holds no word at all once punctuation and symbols are taken out ("...", a
+note sign), is answered like silence: "Sorry, I didn't catch that.", no turn anywhere, and
+a waiting read-back keeps waiting. Transcript and configured words are compared in one
+Unicode form (NFKC), so a word with an accent matches however it was typed.
 
 A yes after the 60 seconds, after a restart of the bridge, for another project, or with
 nothing waiting is an ordinary utterance and releases nothing. A yes that passes the
@@ -158,7 +187,13 @@ break or a control character, or is longer than 500 characters cannot be spoken:
 then cancels the call on the agent host (answer `no`), keeps nothing and says "That one
 needs the desk." Detected speech is measured with the voice activity detector inside
 faster-whisper (a file in the package, nothing is downloaded); if it cannot be measured,
-the yes does not count.
+nothing counts as an utterance.
+
+When a yes was sent and no answer came back that says what happened (the connection broke,
+the agent host did not answer in time, its reply could not be read, `timeout`,
+`agent_failed`), the phone hears the failure and "I do not know whether it ran. Check at
+the desk." It never hears "Nothing was confirmed" in that case; that sentence is kept for
+when it is certain that the agent host started nothing.
 
 **The contract with the agent host** (version 1, design D33, as settled in
 [#27](https://github.com/MWest2020/jarvis/pull/27)). The request is one JSON object of at

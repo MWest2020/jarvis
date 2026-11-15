@@ -129,8 +129,25 @@ def test_a_short_noise_transcribed_as_yes_does_not_confirm(bridge):
     bridge.say("merge it")
     bridge.speech = 0.1
     _, said = bridge.say("Yes.")
-    assert said == "WAV:I did not hear a clear yes. Cancelled."
-    assert bridge.kinds() == ["agent", "cancel"]
+    assert said == "WAV:" + server.NOT_HEARD
+    assert bridge.kinds() == ["agent"] and len(bridge.host.calls()) == 1
+
+
+@pytest.mark.parametrize("heard", ["...", "\u266a", " you"])
+def test_a_noise_or_a_non_word_starts_no_full_turn(bridge, heard):
+    bridge.speech = 0.1 if heard.strip() == "you" else 0.6
+    response, said = bridge.say(heard)
+    assert (response.status, said) == (200, "WAV:" + server.NOT_HEARD)
+    assert bridge.host.calls() == [] and bridge.readonly_prompts == []
+
+
+def test_a_yes_whose_connection_breaks_is_not_called_unconfirmed(bridge):
+    bridge.host.scenario(mode="wrapper", gate=True)
+    bridge.say("merge it")
+    bridge.host.scenario(mode="drop")
+    _, said = bridge.say("yes")
+    assert said.endswith("I do not know whether it ran. Check at the desk.")
+    assert "Nothing was confirmed" not in said and bridge.readonly_prompts == []
 
 
 def test_a_yes_for_another_project_confirms_nothing(bridge):

@@ -2,7 +2,9 @@
 """A fake `ssh` for the tests of the remote adapter, with a fake wrapper behind it.
 
 Copied into a temporary directory as `ssh` (tests/agent_host_fake.py). It never
-opens a connection. It appends what it was called with to `calls.jsonl` next to
+opens a connection. Like the real one with `-E <file>`, it writes its own messages
+to that file and only the remote command's output to stdout and stderr (the lines
+are OpenSSH 9.6's, recorded against a real sshd). It appends what it was called with to `calls.jsonl` next to
 itself, and behaves as `scenario.json` next to itself says:
 
   {"mode": "wrapper"}          the forced command answered: the fake wrapper below
@@ -12,7 +14,10 @@ itself, and behaves as `scenario.json` next to itself says:
   {"mode": "host_key"}         the pinned host key did not match, exit 255
   {"mode": "drop"}             the request was read (a turn started), then the
                                connection broke, exit 255
-  {"mode": "raw", "stdout": …, "stderr": …, "exit": …}
+  {"mode": "raw", "stdout": …, "stderr": …, "log": …, "exit": …}
+                               `stderr` is what the remote command printed, `log`
+                               what ssh itself wrote; without `log`, ssh says it
+                               authenticated
   {"mode": "hang"}             never answers
 
 The fake wrapper speaks version 1 of the contract (design D33, D36) and keeps one
@@ -118,36 +123,51 @@ def wrapper(raw: bytes, scenario: dict) -> int:
         _save("state.json", state)
 
 
+AUTHENTICATED = 'Authenticated to agent.example ([100.64.0.9]:22) using "publickey".\n'
+OWN_MESSAGES = {
+    "refused": "ssh: connect to host agent.example port 22: Connection refused\n",
+    "unresolved": "ssh: Could not resolve hostname agent.example: Name or service not known\n",
+    "denied": "jarvis@agent.example: Permission denied (publickey).\n",
+    "banner": "Connection timed out during banner exchange\n",
+    "host_key": "Host key for agent.example has changed and you have requested strict "
+                "checking.\nHost key verification failed.\n",
+}
+
+
+def _own_log(text: str) -> None:
+    """ssh's own log: the file after -E, as the bridge asked for."""
+    path = sys.argv[sys.argv.index("-E") + 1]
+    with open(path, "a") as fh:
+        fh.write(text)
+
+
 def main() -> int:
     scenario = _load("scenario.json", {"mode": "wrapper"})
     mode = scenario.get("mode", "wrapper")
     entry = {"argv": sys.argv, "env": dict(os.environ), "mode": mode}
-    if mode in ("refused", "unresolved", "denied", "banner", "host_key"):
+    if mode in OWN_MESSAGES:
         _log(entry)   # stdin is never read: the request went nowhere
-        sys.stderr.write({
-            "refused": "ssh: connect to host agent.example port 22: Connection refused\n",
-            "unresolved": "ssh: Could not resolve hostname agent.example: Name or service "
-                          "not known\n",
-            "denied": "jarvis@agent.example: Permission denied (publickey).\n",
-            "banner": "Connection timed out during banner exchange\n",
-            "host_key": "No ED25519 host key is known for agent.example and you have "
-                        "requested strict checking.\nHost key verification failed.\n",
-        }[mode])
+        _own_log(OWN_MESSAGES[mode])
         return 255
     if mode == "hang":
         _log(entry)
+        _own_log(AUTHENTICATED)
         time.sleep(60)
         return 0
     raw = sys.stdin.buffer.read()
     entry["stdin"] = raw.decode("utf-8", "replace")
     _log(entry)
     if mode == "drop":
+        _own_log(AUTHENTICATED)
         sys.stderr.write("Connection to agent.example closed by remote host.\n")
         return 255
     if mode == "raw":
+        _own_log(scenario.get("log", AUTHENTICATED))
         sys.stdout.write(scenario.get("stdout", ""))
         sys.stderr.write(scenario.get("stderr", ""))
         return scenario.get("exit", 0)
+    _own_log(AUTHENTICATED)
+    sys.stderr.write(scenario.get("stderr", ""))
     return wrapper(raw, scenario)
 
 

@@ -33,13 +33,14 @@ def _adapter(host, **kwargs):
     return RemoteAdapter(host.config(**kwargs))
 
 
-# D32: the argv, whole and in order. Changing it means changing the design.
+# D32: the argv, whole and in order, plus the two options that keep ssh's own log
+# apart from the remote command's stderr. Changing it means changing the design.
 
 def test_the_ssh_argv_is_the_one_of_d32():
     agent = AgentHostConfig(host="agent.example", port=2222, user="mark",
                             key_file=Path("/secrets/agent/key"),
                             known_hosts_file=Path("/secrets/agent/known_hosts"), timeout_s=660)
-    assert build_ssh_command(agent) == [
+    assert build_ssh_command(agent, "/tmp/ssh.log") == [
         "ssh", "-T", "-F", "/dev/null",
         "-o", "BatchMode=yes",
         "-o", "IdentitiesOnly=yes",
@@ -49,6 +50,8 @@ def test_the_ssh_argv_is_the_one_of_d32():
         "-o", "GlobalKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=15",
+        "-o", "LogLevel=VERBOSE",
+        "-E", "/tmp/ssh.log",
         "-i", "/secrets/agent/key",
         "-p", "2222",
         "mark@agent.example",
@@ -58,7 +61,9 @@ def test_the_ssh_argv_is_the_one_of_d32():
 def test_the_argv_names_no_remote_command_and_nothing_of_the_turn(host):
     _adapter(host).run_turn(project=DEMO, prompt="--dangerously-skip-permissions please")
     argv = host.calls()[0]["argv"][1:]
-    assert argv == build_ssh_command(host.config())[1:]
+    log_file = argv[argv.index("-E") + 1]
+    assert argv == build_ssh_command(host.config(), log_file)[1:]
+    assert not Path(log_file).exists()                   # ssh's log is removed afterwards
     assert argv[-1] == "jarvis@agent.example"            # the destination is the last word
     assert not any("demo" in a or "dangerously" in a for a in argv)
 
@@ -160,13 +165,14 @@ def test_an_answer_is_never_turned_into_a_fallback(host, code):
     assert caught.value.code == code
 
 
-@pytest.mark.parametrize("code", ["busy", "low_memory", "timeout", "agent_failed",
-                                  "bad_request", "expired"])
-def test_every_other_error_fails_the_turn_with_its_code(host, code):
-    host.scenario(mode="wrapper", error=code, error_extra={"turn": "t-9"})
+@pytest.mark.parametrize("code,turn", [("busy", None), ("low_memory", None),
+                                       ("bad_request", None), ("expired", None),
+                                       ("timeout", "t-9"), ("agent_failed", "t-9")])
+def test_every_other_error_fails_the_turn_with_its_code(host, code, turn):
+    host.scenario(mode="wrapper", error=code, error_extra={"turn": turn})
     with pytest.raises(AgentTurnFailed) as caught:
         _adapter(host).run_turn(project=DEMO, prompt="hello")
-    assert (caught.value.code, caught.value.turn_id) == (code, "t-9")
+    assert (caught.value.code, caught.value.turn_id) == (code, turn or "")
 
 
 @pytest.mark.parametrize("notice,spoken,expected", [
@@ -228,23 +234,74 @@ def test_a_connection_lost_after_the_request_is_not_unavailable(host):
     assert caught.value.code == "lost"
 
 
+AUTH = 'Authenticated to agent.example ([100.64.0.9]:22) using "publickey".\n'
+REFUSED = "ssh: connect to host github.com port 22: Connection refused\n"
+DENIED = "git@github.com: Permission denied (publickey).\n"
+
+
 @pytest.mark.parametrize("scenario", [
-    # The wrapper's own stderr imitating ssh, with the wrapper's exit status.
-    {"stderr": "ssh: connect to host agent.example port 22: Connection refused\n", "exit": 1},
-    # ssh's exit status, but something did come back.
-    {"stderr": "ssh: connect to host agent.example port 22: Connection refused\n",
-     "exit": 255, "stdout": "half a rep"},
-    # Messages of a session that existed.
-    {"stderr": "client_loop: send disconnect: Broken pipe\n", "exit": 255},
-    {"stderr": "Timeout, server agent.example not responding.\n", "exit": 255},
-    {"stderr": "", "exit": 255},
-    {"stderr": "", "exit": 0},
+    # What the wrapper, the agent or a git child prints on the agent host arrives on
+    # ssh's stderr, never in ssh's own log. An OOM kill then gives exit 255 and no
+    # reply: the turn started, whatever those lines look like.
+    {"stderr": REFUSED, "exit": 255},
+    {"stderr": DENIED, "exit": 255},
+    {"stderr": REFUSED + DENIED + "Host key verification failed.\n", "exit": 255},
+    # ssh's own word for never connected, but the agent host had let the key in.
+    {"log": AUTH + REFUSED, "exit": 255},
+    {"log": AUTH + "Host key verification failed.\n", "exit": 255},
+    # ssh's own word, but not ssh's exit status for it, or something did come back.
+    {"log": REFUSED, "exit": 1},
+    {"log": REFUSED, "exit": 0},
+    {"log": REFUSED, "exit": 255, "stdout": "half a rep"},
+    # Lines OpenSSH also writes for a session that broke after it began.
+    {"log": "Connection reset by 100.64.0.9 port 22\n", "exit": 255},
+    {"log": "Connection closed by 100.64.0.9 port 22\n", "exit": 255},
+    {"log": AUTH + "client_loop: send disconnect: Broken pipe\n", "exit": 255},
+    {"log": AUTH + "Timeout, server agent.example not responding.\n", "exit": 255},
+    # No account of the connection at all.
+    {"log": "", "exit": 255},
+    {"log": "", "exit": 0},
 ])
-def test_only_sshs_own_word_for_never_connected_allows_a_fallback(host, scenario):
+def test_only_sshs_own_log_of_a_connection_never_made_allows_a_fallback(host, scenario):
     host.scenario(mode="raw", **scenario)
     with pytest.raises(AgentTurnFailed) as caught:
         _adapter(host).run_turn(project=DEMO, prompt="merge it")
     assert caught.value.code in ("lost", "protocol")
+
+
+@pytest.mark.parametrize("log,expected", [
+    (REFUSED, "unreachable"),
+    ("ssh: Could not resolve hostname agent.example: Name or service not known\n", "unreachable"),
+    ("jarvis@agent.example: Permission denied (publickey).\n", "unreachable"),
+    ("kex_exchange_identification: read: Connection reset by peer\n", "unreachable"),
+    ("Connection timed out during banner exchange\n", "unreachable"),
+    ("Host key for agent.example has changed.\nHost key verification failed.\n", "host_key"),
+    (AUTH, "lost"),
+    (AUTH + REFUSED, "lost"),
+    ("Connection reset by 100.64.0.9 port 22\n", "lost"),
+    ("Connection closed by 100.64.0.9 port 22\n", "lost"),
+    ("prefix ssh: connect to host a port 22: Connection refused\n", "lost"),
+    ("", "lost"),
+])
+def test_classify_no_reply(log, expected):
+    assert remote_adapter.classify_no_reply(255, log) == expected
+    assert remote_adapter.classify_no_reply(1, log) == "lost"
+
+
+def test_the_remote_stderr_of_a_good_turn_changes_nothing(host):
+    host.scenario(mode="wrapper", stderr=REFUSED + DENIED)
+    assert _adapter(host).run_turn(project=DEMO, prompt="x").spoken == "Done on the agent host."
+
+
+# D30: a fallback code is only believed without a turn id.
+
+@pytest.mark.parametrize("code", ["no_checkout", "disabled", "unsafe_settings", "busy",
+                                  "low_memory", "bad_request", "expired"])
+def test_a_not_started_code_with_a_turn_id_is_a_turn_that_ran(host, code):
+    host.scenario(mode="wrapper", error=code, error_extra={"turn": "t-9"})
+    with pytest.raises(AgentTurnFailed) as caught:
+        _adapter(host).run_turn(project=DEMO, prompt="merge it")
+    assert (caught.value.code, caught.value.turn_id) == ("protocol", "t-9")
 
 
 def test_no_answer_within_the_timeout_fails_and_kills_ssh(host):
