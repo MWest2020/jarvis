@@ -41,11 +41,12 @@ def log(message: str) -> None:
 
 def _get(url: str, token: str, timeout: float = 30.0) -> tuple[list, str | None]:
     request = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "jarvis-sync-projects",
     })
+    # Never copied into a redirect (urllib copies normal headers to any 3xx target).
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             page = json.load(response)

@@ -242,3 +242,23 @@ def test_an_explicit_list_still_fails_on_a_missing_repository(tmp_path):
     result = _sync(tmp_path, "Owner/one Owner/missing")
     assert result.returncode == 1
     assert (tmp_path / "work" / "one" / "README").exists()
+
+
+def test_the_token_is_never_copied_into_a_redirect(monkeypatch):
+    """Review of #18: urllib copies normal headers into any 3xx target, so the
+    PAT goes in as an unredirected header only."""
+    seen = {}
+
+    class Done(Exception):
+        pass
+
+    def fake_urlopen(request, timeout=None):
+        seen["headers"] = dict(request.headers)
+        seen["unredirected"] = dict(request.unredirected_hdrs)
+        raise Done
+
+    monkeypatch.setattr(list_repos.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(Done):
+        list_repos._get("https://api.github.com/user/repos", "secret-token")
+    assert "Authorization" not in seen["headers"]
+    assert seen["unredirected"]["Authorization"] == "Bearer secret-token"

@@ -139,7 +139,7 @@ the count and the total size. A first clone that fails is logged and skipped; th
 container fails only when no repository is available at all. When the list cannot be read
 (GitHub down, a revoked token), the copies already on the volume are refreshed and kept.
 When it can, a copy whose repository is no longer on it (archived, excluded, deleted) is
-removed, so the bridge stops offering it. On the bridge container set `JARVIS_PROJECTS=*`
+removed, so the bridge stops offering it. Narrowing the PAT (for example to public repos only) counts as "left the list": the private copies are removed on the next start. An empty list (everything excluded, or a token of another user) removes nothing. On the bridge container set `JARVIS_PROJECTS=*`
 and `JARVIS_PROJECTS_ROOT=/work`: every copy is a project, and `GET /projects` lists them.
 Egress stays DNS and 443: the API is `api.github.com` on 443.
 
