@@ -34,11 +34,27 @@ The app SHALL confirm with a tone that the recording was sent and SHALL keep sig
 - **THEN** Mark hears an acknowledgement at once and a soft tick every few seconds until the reply starts
 
 ### Requirement: Project picker
-The app SHALL show the configured project names on the main screen, SHALL send each turn for the selected one, and SHALL remember the selection.
+The app SHALL show the project names on the main screen, SHALL send each turn for the selected one, and SHALL remember the selection. The names are the ones typed in the settings, or, when the projects field is empty or `*`, the list the bridge returns on `GET /projects`, fetched with the same client and route rules as a turn when the app starts and when Mark asks for a refresh.
 
 #### Scenario: Switching project
 - **WHEN** Mark selects another project and asks a question
 - **THEN** the turn is sent for that project, and the same project is selected the next time the app opens
+
+#### Scenario: Projects from the bridge
+- **WHEN** the projects field is empty or `*` and the app starts
+- **THEN** the app asks the bridge for its projects and shows them in the picker
+
+#### Scenario: Refreshing the list
+- **WHEN** Mark taps Refresh on the main screen
+- **THEN** the app fetches the list again, keeps the selected project if it is still there, and otherwise selects the first
+
+#### Scenario: The list cannot be fetched
+- **WHEN** the bridge refuses the token, does not offer the route, or cannot be reached
+- **THEN** the app says so in a sentence and keeps the last list it had
+
+#### Scenario: Typed names
+- **WHEN** the projects field holds names
+- **THEN** the app shows exactly those names and does not ask the bridge
 
 ### Requirement: Summary on screen
 The app SHALL show the summary text the bridge returns with a reply, in large type.

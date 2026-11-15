@@ -9,7 +9,11 @@ import androidx.lifecycle.viewModelScope
 import io.github.mwest2020.jarvis.core.BridgeClient
 import io.github.mwest2020.jarvis.core.BridgeUrl
 import io.github.mwest2020.jarvis.core.Built
+import io.github.mwest2020.jarvis.core.ListOutcome
+import io.github.mwest2020.jarvis.core.ListRequest
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.ProjectList
+import io.github.mwest2020.jarvis.core.ProjectSetting
 import io.github.mwest2020.jarvis.core.TalkAction
 import io.github.mwest2020.jarvis.core.TalkGesture
 import io.github.mwest2020.jarvis.core.TurnErrors
@@ -37,10 +41,14 @@ data class UiState(
     val bridgeUrl: String = "",
     val hasToken: Boolean = false,
     val needsMicrophone: Boolean = false,
+    /** The projects field was left empty or `*`: the list comes from the bridge (`GET /projects`). */
+    val projectsFromBridge: Boolean = false,
+    /** True while `GET /projects` runs. */
+    val refreshing: Boolean = false,
     /** False until the stored settings have been read (the Keystore is not asked on the main thread). */
     val loaded: Boolean = false,
 ) {
-    val configured: Boolean get() = bridgeUrl.isNotBlank() && hasToken && projects.isNotEmpty()
+    val configured: Boolean get() = bridgeUrl.isNotBlank() && hasToken && (projects.isNotEmpty() || projectsFromBridge)
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -60,22 +68,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     init {
-        viewModelScope.launch { reload() }
+        // App start: read the settings, then ask the bridge for its projects if that is the setting.
+        viewModelScope.launch {
+            reload()
+            refreshProjects()
+        }
     }
 
     /** Reads the stored settings off the main thread; the summary on screen is kept. */
     private suspend fun reload() {
         val stored = withContext(Dispatchers.IO) {
-            val projects = settings.projects
+            val setting = settings.projectSetting
+            val projects = when (setting) {
+                ProjectSetting.FromBridge -> settings.fetchedProjects
+                is ProjectSetting.Named -> setting.names
+            }
             UiState(
                 projects = projects,
+                projectsFromBridge = setting == ProjectSetting.FromBridge,
                 project = settings.project.takeIf { it in projects } ?: projects.firstOrNull().orEmpty(),
                 bridgeUrl = settings.bridgeUrl,
                 hasToken = tokens.hasToken(),
                 loaded = true,
             )
         }
-        _state.update { stored.copy(summary = it.summary) }
+        _state.update { stored.copy(summary = it.summary, refreshing = it.refreshing) }
+    }
+
+    /**
+     * Asks the bridge for its projects (`GET /projects`) when the setting says so: at app
+     * start, after saving the settings, and from the refresh button. The same client as a
+     * turn: plain http only bound to the Tailscale network, no proxy, no redirects.
+     */
+    fun refreshProjects() {
+        val current = state.value
+        if (!current.loaded || !current.projectsFromBridge || current.refreshing) return
+        if (current.bridgeUrl.isBlank() || !current.hasToken) return
+        _state.update { it.copy(refreshing = true) }
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                // The token is read here, used for this one request, and not kept.
+                when (val built = ProjectList.request(current.bridgeUrl, tokens.load())) {
+                    is Built.Refused -> ListOutcome.Failed(built.failure)
+                    is Built.Ok -> list(built.value)
+                }
+            }
+            when (outcome) {
+                is ListOutcome.Failed -> _state.update { it.copy(refreshing = false, error = outcome.failure.message) }
+                is ListOutcome.Projects -> {
+                    val names = outcome.names
+                    val pick = state.value.project.takeIf { it in names } ?: names.firstOrNull().orEmpty()
+                    withContext(Dispatchers.IO) {
+                        settings.fetchedProjects = names
+                        settings.project = pick
+                    }
+                    _state.update {
+                        it.copy(
+                            refreshing = false,
+                            projects = names,
+                            // A turn in flight keeps its project; the pick changes only when idle.
+                            project = if (it.phase == Phase.IDLE) pick else it.project,
+                            error = if (names.isEmpty()) "The bridge lists no projects." else null,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun list(request: ListRequest): ListOutcome {
+        val client = if (request.cleartext) {
+            route.boundClient() ?: return ListOutcome.Failed(TurnErrors.tailscaleOff())
+        } else {
+            BridgeClient()
+        }
+        return client.projects(request)
     }
 
     fun onPress() = act(gesture.onPress(state.value.phase, SystemClock.elapsedRealtime()))
@@ -204,15 +271,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (token.isNotEmpty() && !TurnRequests.isValidToken(token)) {
             return onResult("The token must not contain spaces or unusual characters.")
         }
-        val projects = SettingsStore.parseProjects(projectsText)
-        if (projects.isEmpty()) return onResult("Add at least one project name.")
+        val setting = ProjectSetting.parse(projectsText)
         viewModelScope.launch {
             val refused = withContext(Dispatchers.IO) {
                 try {
                     if (token.isNotEmpty()) tokens.save(token)
                     settings.bridgeUrl = url
-                    settings.projects = projects
-                    if (settings.project !in projects) settings.project = projects.first()
+                    settings.projectSetting = setting
+                    if (setting is ProjectSetting.Named && settings.project !in setting.names) {
+                        settings.project = setting.names.first()
+                    }
                     null
                 } catch (_: GeneralSecurityException) {
                     KEYSTORE_REFUSED
@@ -222,6 +290,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (refused == null) reload()
             onResult(refused)
+            if (refused == null) refreshProjects()
         }
     }
 

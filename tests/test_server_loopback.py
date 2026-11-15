@@ -190,3 +190,131 @@ def test_draining_a_rejected_body_is_bounded_in_time(running_server, monkeypatch
     assert elapsed < 5
     # Best effort: the status still goes out once the deadline has passed.
     assert reply == b"" or b" 401 " in reply.split(b"\r\n")[0]
+
+
+# add-project-list: GET /projects, behind the same gate as /turn.
+
+def _get(port, path="/projects", *, token="test-token"):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    conn.request("GET", path, headers=headers)
+    response = conn.getresponse()
+    data = response.read()
+    conn.close()
+    return response, data
+
+
+def test_lists_the_projects_as_sorted_names(tmp_path):
+    import json
+    config = BridgeConfig(
+        bind_host="127.0.0.1", port=0, token="test-token",
+        projects={
+            "zeta": ProjectConfig(name="zeta", working_dir=tmp_path / "z"),
+            "alpha": ProjectConfig(name="alpha", working_dir=tmp_path / "a"),
+        },
+        allowed_tools=("Read",), session_store_path=tmp_path / "s.json",
+        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="af_heart",
+        claude_timeout_s=30,
+    )
+    httpd = server.make_server(config)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response, data = _get(httpd.server_address[1])
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert response.status == 200
+    assert response.getheader("Content-Type") == "application/json"
+    assert json.loads(data) == {"projects": ["alpha", "zeta"]}
+    assert str(tmp_path).encode() not in data   # names only, never paths
+
+
+def test_the_project_list_needs_the_token(running_server):
+    response, data = _get(running_server, token=None)
+    assert response.status == 401
+    assert b"demo" not in data
+
+
+def test_the_project_list_refuses_a_wrong_token(running_server):
+    response, data = _get(running_server, token="wrong")
+    assert response.status == 401
+    assert b"demo" not in data
+
+
+def test_the_project_list_with_a_non_ascii_token_is_a_plain_401(running_server):
+    reply = _raw(running_server, "GET /projects HTTP/1.1\r\nHost: x\r\n"
+                 "Authorization: Bearer ték\r\n\r\n".encode("latin-1"))
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_a_get_on_another_path_is_404(running_server):
+    response, _ = _get(running_server, "/turn")
+    assert response.status == 404
+    response, _ = _get(running_server, "/projects/../etc")
+    assert response.status == 404
+
+
+def test_post_to_the_project_list_is_404(running_server):
+    conn = http.client.HTTPConnection("127.0.0.1", running_server, timeout=5)
+    conn.request("POST", "/projects", body=b"x",
+                 headers={"Authorization": "Bearer test-token", "Content-Length": "1"})
+    assert conn.getresponse().status == 404
+    conn.close()
+
+
+def test_a_refused_project_list_with_a_large_body_gets_the_401(running_server):
+    import socket
+    head = (f"GET /projects HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\n"
+            f"Content-Length: {len(BIG_BODY)}\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head + BIG_BODY)
+        reply = s.recv(4096)
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_an_authorized_project_list_with_a_body_still_answers(running_server):
+    import json
+    import socket
+    head = (b"GET /projects HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-token\r\n"
+            b"Content-Length: 5\r\n\r\nhello")
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head)
+        reply = b""
+        while chunk := s.recv(4096):
+            reply += chunk
+    status, _, body = reply.partition(b"\r\n\r\n")
+    assert b" 200 " in status.split(b"\r\n")[0]
+    assert json.loads(body) == {"projects": ["demo"]}
+
+
+def test_the_project_list_follows_the_root_with_a_wildcard(tmp_path):
+    import json
+    from bridge.config import ProjectScanner
+    root = tmp_path / "work"
+    (root / "one" / ".git").mkdir(parents=True)
+    clock = [0.0]
+    config = BridgeConfig(
+        bind_host="127.0.0.1", port=0, token="test-token", projects={},
+        allowed_tools=("Read",), session_store_path=tmp_path / "s.json",
+        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="af_heart",
+        claude_timeout_s=30,
+        project_scanner=ProjectScanner(root, ttl_s=10, clock=lambda: clock[0]),
+    )
+    httpd = server.make_server(config)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_address[1]
+        assert json.loads(_get(port)[1]) == {"projects": ["one"]}
+        (root / "two" / ".git").mkdir(parents=True)
+        assert json.loads(_get(port)[1]) == {"projects": ["one"]}      # cached
+        clock[0] = 11.0
+        assert json.loads(_get(port)[1]) == {"projects": ["one", "two"]}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)

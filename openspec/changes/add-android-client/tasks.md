@@ -52,3 +52,13 @@ Tasks marked **(Mark)** need Mark's phone, ears or GitHub account. A build leave
   the button usable in the mount
 - [ ] 5.4 Fix what 5.1 to 5.3 show (through the factory)
 - [ ] 5.5 Roadmap; archive the change
+
+## 6. Projects from the bridge (Mark, 2026-11-15; with the change `add-project-list`)
+- [x] 6.1 Core: the projects setting (empty or `*` means "ask the bridge"), the
+  `GET /projects` request with the turn's address and token rules, the reply parsed without
+  a library and bounded, the errors (401, 404 from an older bridge, unreadable reply)
+- [x] 6.2 Core: `BridgeClient.projects` with the same route check, no proxy, no redirects;
+  tests against the loopback server
+- [x] 6.3 App: the list fetched at start, after saving the settings and with a Refresh
+  button; the last list kept for the next start; typed names unchanged
+- [ ] 6.4 **(Mark)** On the phone: leave the projects field empty, see the list, refresh
