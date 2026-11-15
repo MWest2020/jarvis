@@ -56,7 +56,8 @@ executable. Nothing is installed anywhere in this phase.
   `.claude/settings.json` or `settings.local.json` of the checkout contains `env`, `hooks`
   or `disableAllHooks`; checked before every turn (the confirming one too) and again after
   it. And in the gate, on every call: both files of the turn's checkout are re-read, and
-  while either contains one of the three keys every gated call is denied, with or without a
+  both files at the git top level of the hook input's `cwd` (the agent's own worktree), and
+  while any of them contains one of the three keys every gated call is denied, with or without a
   grant, with "project settings changed, needs the desk"; nothing becomes pending
 - [ ] 1.8 The hash of D36 (tool name, zero byte, command; or canonical input without
   `description`); the grant from the environment matched by that hash and used once; silence
@@ -98,7 +99,8 @@ executable. Nothing is installed anywhere in this phase.
   sentence and any other argument form is desk-only; a checkout with `env`, with `hooks` and
   with `disableAllHooks` in its settings is refused; `gh pr merge` without
   `--match-head-commit` is not nameable; an exact no clears the pending call; settings that gain `env`, `hooks` or
-  `disableAllHooks` after the turn started (as a `git pull` or `gh pr checkout` would bring
+  `disableAllHooks` after the turn started, in the turn checkout and at the top level of a
+  worktree named by the call's `cwd` (as a `git pull` or `gh pr checkout` would bring
   them): the next gated call is denied even with a matching grant, an ungated call still
   runs, and removing the key lifts the denial; an unreadable settings file denies; `scp` and
   `rsync` to another host are gated and name the host, a local copy is not `outward`;
@@ -118,7 +120,9 @@ executable. Nothing is installed anywhere in this phase.
   `authorized_keys` line, how to read the records, how to switch confirmation off, the
   update runbook (which checks to repeat on a Claude Code version bump, the mid-turn
   settings check first), the optional managed-settings hardening as an entry to merge into
-  an existing file, and the trust statement of D40 in plain words); `AGENTS.md` hard rule on the allow-list rewritten
+  an existing file, with the plain statement that it adds nothing against
+  `disableAllHooks` (a failed mid-turn check stops phase 1, hardening or not), and the
+  trust statement of D40 in plain words); `AGENTS.md` hard rule on the allow-list rewritten
   as in the proposal
 - [ ] 1.17 **(host)** Canary checks with the real Claude Code, written into the how-to with
   the version, and their outcome into design D36 where it says so:
@@ -133,6 +137,7 @@ executable. Nothing is installed anywhere in this phase.
   - the checkout settings, with the wrapper's start check switched off for the test: `env`
     (a planted grant included), `hooks` and `disableAllHooks` in a checkout's
     `.claude/settings.json`, present at the start and appearing in the middle of a turn,
+    in the turn checkout and in a worktree the agent entered during the turn,
     never get a gated call through: the gate's per-call re-read denies it, and
     `disableAllHooks: false` in the turn settings keeps the gate running against a project
     file that says `true`. **If this fails,
@@ -249,4 +254,6 @@ rest is hands, not questions.
    the entry to merge into an existing managed-settings file, never to overwrite one. The
    entry checks the turn marker first and exits 0 without reading anything when it is
    absent, has a short hook timeout, and a broken or missing script fails open in the
-   coding session; Jarvis turns stay closed through the turn-settings copy.
+   coding session; Jarvis turns stay closed through the turn-settings copy. It adds nothing
+   against `disableAllHooks`: if the mid-turn check of 1.17 fails, phase 1 does not ship,
+   with or without it.

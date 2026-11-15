@@ -386,8 +386,11 @@ whether or when Claude Code re-reads its settings:
 1. **Before the turn**, the confirming turn included, the wrapper reads both files and
    refuses the turn (`unsafe_settings`) when either contains `env`, `hooks` or
    `disableAllHooks`. Jarvis says that the project's settings need the desk.
-2. **On every call**, the gate itself re-reads both files of the turn's checkout. While
-   either contains one of the three keys, it denies **every gated call**, with or without a
+2. **On every call**, the gate itself re-reads both files of the turn's checkout, and also
+   both files at the git top level of the working directory that the call itself reports
+   (the hook input's `cwd`). Jarvis works in its own worktrees, so the files that matter for
+   a call are often not the turn checkout's. While any of them contains one of the three
+   keys, it denies **every gated call**, with or without a
    matching grant: "project settings changed, needs the desk". Nothing becomes pending. This
    is the main defence for a file that arrives in the middle of a turn.
 3. **After the turn**, the wrapper reads them again; if a key appeared, the pending call is
@@ -412,7 +415,8 @@ over it), and the entry behaves like this: its first step is to look for the wra
 marker in the environment and exit 0 without reading anything when it is absent; it has a
 short hook timeout; and in the coding session a missing or broken script lets the call
 through (fail open), while in a Jarvis turn the copy from the turn settings stays the one
-that decides and fails closed.
+that decides and fails closed. The hardening adds nothing against `disableAllHooks`: if the
+mid-turn check of task 1.17 fails, phase 1 does not ship, hardening or not.
 
 *Failing closed.* In a turn started by the wrapper, if the gate cannot read its rules or the
 checkout's settings, cannot parse the call or crashes, the call is denied. The coding
@@ -520,6 +524,8 @@ host; see D40.
   assembles a command the rules do not know. The classes `root` and `self`, the refusal of
   unsafe checkout settings, before the turn and on every gated call, close the obvious
   roads; they do not make the others impossible.
+- *A copy to another host.* The read-back of an `outward` call names the host, not the
+  files. After a yes, whatever the command copies leaves to that host.
 - *The classifier.* It does not see calls that match an allow rule (D34).
 - *The agreements.* "Review and green checks before a merge", "Mark's gates are his" and the
   never-list are kept by the agent and, where they exist, by hooks. The gate adds an
