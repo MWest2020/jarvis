@@ -40,6 +40,21 @@ def _clean(text: str) -> str:
     return " ".join(text.split())
 
 
+def last_marker_line(reply_text: str) -> str:
+    """The last line of `reply_text` that starts with the marker, verbatim.
+
+    Used by the agent host (D33's `spoken` field): it sends this one line
+    back to the bridge, unprocessed, so that running it through
+    extract_summary gives the same result as running the full reply
+    through extract_summary would.
+    """
+    lines = reply_text.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if _MARKER.match(lines[i]):
+            return lines[i]
+    return ""
+
+
 def extract_summary(reply_text: str) -> str:
     lines = reply_text.splitlines()
     for i in range(len(lines) - 1, -1, -1):
