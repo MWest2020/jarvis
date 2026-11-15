@@ -146,6 +146,10 @@ The HTTP Shortcuts guide stays valid: both use the same `POST /turn`.
   state (to find the Tailscale network); CI fails the build on any other.
 - No log output at all.
 
+## The app icon
+
+The icon is a voice waveform whose last bar bends into a J: mint bars, a white J, on deep navy. It is an adaptive icon made of three vector drawables in `android/app/src/main/res/drawable/`: `ic_launcher_background`, `ic_launcher_foreground` and `ic_launcher_monochrome` (for Android 13+ themed icons). The source drawing is `docs/assets/jarvis-logo.svg`. Change the SVG and the three drawables together, and keep the mark inside the 66 dp safe zone (21 to 87 in the 108 viewport).
+
 ## The signing key (Mark, once)
 
 So that updates install over the old version, CI needs a key that stays the same. Create it
