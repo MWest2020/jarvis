@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""The forced ssh command for one agent turn (1.1, D33).
+
+Installed root-owned at /usr/local/lib/jarvis-agent/turn (1.15, phase 1c).
+Ignores SSH_ORIGINAL_COMMAND and sys.argv entirely - the only road in is the
+one JSON object on stdin that agent_host.request parses. When the kill
+switch is set, it answers `disabled` without reading stdin at all.
+"""
+from __future__ import annotations
+
+import json
+import signal
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent_host import wrapper  # noqa: E402 - after the sys.path fix-up above
+from agent_host.request import MAX_REQUEST_BYTES  # noqa: E402
+
+
+def main() -> int:
+    # No pty is ever allocated here (the authorized_keys `restrict` option,
+    # D32), so there is no controlling terminal to deliver SIGHUP from a
+    # dropped connection - this is belt and suspenders for "a turn survives
+    # the caller going away" (D34).
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+    config = wrapper.load_runtime_config()
+    if not config.enabled:
+        reply = wrapper.disabled_reply()
+    else:
+        raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+        reply = wrapper.handle_request(raw, config)
+
+    try:
+        sys.stdout.write(json.dumps(reply))
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
