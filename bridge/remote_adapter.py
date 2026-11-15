@@ -75,6 +75,8 @@ NOTICE_SENTENCES = {
     "run_alone": "That command has to be run on its own, so it was refused.",
     "settings_changed": "The project settings changed. That needs the desk.",
     "new_session": "I started a new session for this project.",
+    "target_changed": "The push target changed. That one needs the desk.",
+    "out_of_budget": "The agent is out of budget for now.",
 }
 
 # A read-back is fixed words plus shape-checked targets, built on the agent host.

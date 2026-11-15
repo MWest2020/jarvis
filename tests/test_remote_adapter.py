@@ -177,6 +177,8 @@ def test_every_other_error_fails_the_turn_with_its_code(host, code):
     ("settings_changed", "", "The project settings changed. That needs the desk."),
     ("new_session", "SPOKEN SUMMARY: Two are open.",
      "I started a new session for this project. Two are open."),
+    ("target_changed", "", "The push target changed. That one needs the desk."),
+    ("out_of_budget", "", "The agent is out of budget for now."),
     # A summary that may not be spoken leaves the fixed sentence alone.
     ("needs_desk", "SPOKEN SUMMARY: see `gate.py`", "That one needs the desk."),
     (None, "", "Done. Check the log for details."),
