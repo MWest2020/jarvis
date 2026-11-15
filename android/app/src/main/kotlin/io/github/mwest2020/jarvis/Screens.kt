@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.ProjectSetting
 
 private val Background = Color(0xFF0B0F14)
 private val Panel = Color(0xFF16202B)
@@ -88,6 +89,7 @@ fun TalkScreen(
     onRelease: () -> Unit,
     onSelectProject: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onRefreshProjects: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -98,9 +100,23 @@ fun TalkScreen(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Jarvis", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            if (state.projectsFromBridge) {
+                // The list comes from the bridge (GET /projects): fetched at start, and here.
+                TextButton(onClick = onRefreshProjects, enabled = state.phase == Phase.IDLE && !state.refreshing) {
+                    Text(if (state.refreshing) "Refreshing" else "Refresh", fontSize = 18.sp)
+                }
+            }
             TextButton(onClick = onOpenSettings, enabled = state.phase == Phase.IDLE) {
                 Text("Settings", fontSize = 18.sp)
             }
+        }
+
+        if (state.projects.isEmpty() && state.projectsFromBridge) {
+            Text(
+                if (state.refreshing) "Asking the bridge for its projects…" else "No projects yet. Tap Refresh.",
+                color = Color(0xFF9FB0C0),
+                fontSize = 18.sp,
+            )
         }
 
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -195,7 +211,9 @@ fun SettingsScreen(
     var url by rememberSaveable { mutableStateOf(state.bridgeUrl) }
     // Not saveable on purpose: a typed token is not written into the saved instance state.
     var token by remember { mutableStateOf("") }
-    var projects by rememberSaveable { mutableStateOf(state.projects.joinToString(", ")) }
+    var projects by rememberSaveable {
+        mutableStateOf(if (state.projectsFromBridge) ProjectSetting.FROM_BRIDGE else state.projects.joinToString(", "))
+    }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
 
     Column(
@@ -242,6 +260,11 @@ fun SettingsScreen(
             onValueChange = { projects = it },
             label = { Text("Projects (names on the bridge, comma-separated)") },
             modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Leave it empty or type * to get the list from the bridge; it is fetched when the " +
+                "app starts and with Refresh on the main screen.",
+            color = Color(0xFF9FB0C0),
         )
 
         error?.let { Text(it, color = ErrorText, fontSize = 18.sp) }

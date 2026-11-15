@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-14
+last_reviewed: 2026-11-15
 ---
 # Running the bridge in a Kubernetes cluster
 
@@ -116,15 +116,44 @@ An init container runs `jarvis-sync-projects` from the same image at every start
 
 | Variable | Meaning |
 |---|---|
-| `JARVIS_SYNC_REPOS` | Space-separated GitHub `owner/name` list. |
+| `JARVIS_SYNC_REPOS` | Space-separated GitHub `owner/name` list, or `*` for every repository of `JARVIS_SYNC_OWNER` (below). |
 | `JARVIS_SYNC_DIR` | Where the copies go, one directory per repo name (default `/work`). |
-| `GIT_PAT` | Optional token for private repos. Read by a git credential helper from the environment, never written to `.git/config`. Set it on the init container only, never on the bridge container: Claude Code's Read tool could read the process environment. |
+| `GIT_PAT` | Token for private repos; required with `*`, where it also lists the repositories. Read by a git credential helper from the environment, never written to `.git/config`. Set it on the init container only, never on the bridge container: Claude Code's Read tool could read the process environment. |
+| `JARVIS_SYNC_OWNER` | With `*`: the GitHub account whose repositories are synced. |
+| `JARVIS_SYNC_MAX_KB` | With `*`: skip repositories larger than this many KB, as the API's `size` counts them (default `512000`, 500 MB). |
+| `JARVIS_SYNC_EXCLUDE` | With `*`: names (or `owner/name`) never to sync, space- or comma-separated. |
 
-Copies are shallow and reset to the remote default branch at every start. A repo that cannot
-be refreshed keeps its old copy (warning in the init container's log); a repo with no copy
-at all fails the init container. `JARVIS_PROJECTS` on the bridge container then points at
-them, e.g. `demo=/work/demo,other=/work/other`. Mount the copies read-only in the bridge
-container; Claude Code's tools are read-only anyway (`Read`, `Glob`, `Grep`).
+Copies are shallow (depth 1) and reset to the remote default branch at every start. A repo
+that cannot be refreshed keeps its old copy (warning in the init container's log).
+
+**An explicit list:** a repo with no copy at all fails the init container.
+`JARVIS_PROJECTS` on the bridge container then points at them, e.g.
+`demo=/work/demo,other=/work/other`.
+
+**Every repository (`*`):** `jarvis-list-repos` asks the GitHub API for
+`GET /user/repos?affiliation=owner` with the PAT, page by page, and keeps a repository only
+when its owner's login is `JARVIS_SYNC_OWNER`: an organisation's repositories are never
+cloned, whatever else the token can read. Archived repositories, forks, excluded names and
+repositories over the size limit are skipped, each with a line in the log; the log ends with
+the count and the total size. A first clone that fails is logged and skipped; the init
+container fails only when no repository is available at all. When the list cannot be read
+(GitHub down, a revoked token), the copies already on the volume are refreshed and kept.
+When it can, a copy whose repository is no longer on it (archived, excluded, deleted) is
+removed, so the bridge stops offering it. Narrowing the PAT (for example to public repos only) counts as "left the list": the private copies are removed on the next start. An empty list (everything excluded, or a token of another user) removes nothing. On the bridge container set `JARVIS_PROJECTS=*`
+and `JARVIS_PROJECTS_ROOT=/work`: every copy is a project, and `GET /projects` lists them.
+Egress stays DNS and 443: the API is `api.github.com` on 443.
+
+Mount the copies read-only in the bridge container; Claude Code's tools are read-only anyway
+(`Read`, `Glob`, `Grep`).
+
+**Volume size.** Count about twice the size of each repository's checked-out files: the
+shallow pack plus the working tree (measured 2026-11-15: a 28 MB tree took 53 MB). The API's
+`size` is the whole history, compressed, and can be far off either way: one repository of
+44 MB had a 237 MB tree, another of 274 MB a 28 MB tree. Leave room for growth and the
+state directory. On `local-path` the requested size is not enforced and a PVC cannot be
+resized; what counts is the free space on the node's disk. To get a larger volume elsewhere,
+create a new PVC and let the init container clone into it (the copies are disposable; copy
+`state/` across to keep the sessions).
 
 ## State and Claude Code
 
@@ -150,7 +179,7 @@ initContainers:
     command: ["jarvis-sync-projects"]
     env:
       - { name: JARVIS_SYNC_DIR, value: /data/repos }
-      - { name: JARVIS_SYNC_REPOS, value: "you/demo you/other" }
+      - { name: JARVIS_SYNC_REPOS, value: "you/demo you/other" }   # or "*" with JARVIS_SYNC_OWNER
       - name: GIT_PAT
         valueFrom: { secretKeyRef: { name: git-pat, key: GIT_PAT } }
     volumeMounts:
@@ -162,7 +191,7 @@ containers:
       - { name: JARVIS_BEHIND_TAILSCALE_PROXY, value: "1" }
       - name: JARVIS_BIND_HOST
         valueFrom: { fieldRef: { fieldPath: status.podIP } }
-      - { name: JARVIS_PROJECTS, value: "demo=/work/demo,other=/work/other" }
+      - { name: JARVIS_PROJECTS, value: "demo=/work/demo,other=/work/other" }   # or "*" with JARVIS_PROJECTS_ROOT=/work
       - { name: JARVIS_STATE_DIR, value: /state/jarvis }
       - { name: HOME, value: /state/home }
       - name: JARVIS_TOKEN

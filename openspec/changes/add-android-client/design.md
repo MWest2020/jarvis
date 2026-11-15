@@ -24,7 +24,8 @@ Non-Goals:
 - Use while driving. That needs the screen-off service, the wheel button and the tones of
   `add-drive-mode`, and its parked tests first.
 - The drive protocol, QR pairing, Bluetooth routing, a release key, a Play Store listing.
-- Any change to the bridge.
+- Any change to the bridge (the project list, `GET /projects`, came later with the change
+  `add-project-list`).
 
 ## Decisions
 
@@ -124,8 +125,9 @@ and the wrapper are pinned by checksum.
 
 **A10. Distribution: an APK from CI, sideloaded.** No Play Store (open question 5 of
 `add-drive-mode`). Until Mark has created a signing key as GitHub secrets, the APK is
-debug-signed with a key made on the runner. The project names are typed in the settings;
-nothing of Mark's setup (host name, project names) is in the app or the docs.
+debug-signed with a key made on the runner. The project names are typed in the settings,
+or, with the field empty or `*`, fetched from the bridge's `GET /projects` (change
+`add-project-list`); nothing of Mark's setup (host name, project names) is in the app or the docs.
 
 ## Risks / Trade-offs
 

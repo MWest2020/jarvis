@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
                         onRelease = viewModel::onRelease,
                         onSelectProject = viewModel::selectProject,
                         onOpenSettings = { showSettings = true },
+                        onRefreshProjects = viewModel::refreshProjects,
                     )
                 }
             }

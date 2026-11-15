@@ -8,7 +8,8 @@ FROM node:22.23.5-bookworm-slim
 # uv (pinned), copied from the official distroless image.
 COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
 
-# git: the project sync (deploy/sync-projects.sh). ca-certificates: HTTPS to
+# git: the project sync (deploy/sync-projects.sh; its repository list, with
+# JARVIS_SYNC_REPOS=*, is deploy/list_repos.py on the venv's Python). ca-certificates: HTTPS to
 # GitHub and the Anthropic API. libsndfile comes with the soundfile wheel and
 # espeak-ng with the espeakng-loader wheel, so no other system packages.
 RUN apt-get update \
@@ -51,7 +52,8 @@ stt.warm_up(sys.argv[1]); [tts.synthesize('Ready.', voice=v) for v in sys.argv[2
  && chmod -R a+rX /opt/jarvis /opt/python
 
 COPY deploy/sync-projects.sh /usr/local/bin/jarvis-sync-projects
-RUN chmod 755 /usr/local/bin/jarvis-sync-projects \
+COPY deploy/list_repos.py /usr/local/bin/jarvis-list-repos
+RUN chmod 755 /usr/local/bin/jarvis-sync-projects /usr/local/bin/jarvis-list-repos \
  && useradd -m -u 10001 jarvis
 
 # At run time: models from the image only, no hub calls, no Claude Code

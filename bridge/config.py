@@ -8,7 +8,11 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from dataclasses import dataclass
+import re
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # 1.3 (weekend slice): a fixed, read-only allow-list. No approval flow yet,
@@ -99,6 +103,60 @@ class ProjectConfig:
     working_dir: Path
 
 
+# JARVIS_PROJECTS=* (add-project-list): every git checkout directly under
+# JARVIS_PROJECTS_ROOT is a project, named after its directory. Hidden directories,
+# symlinks and names outside this pattern are skipped, so a project name can never
+# be a path ("..", "a/b") and never leads out of the root.
+ALL_PROJECTS = "*"
+SCAN_TTL_S = 10.0
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+
+
+class ProjectScanner:
+    """The projects under a root directory, re-scanned at most every `ttl_s` seconds.
+
+    Thread-safe: the bridge serves requests on several threads.
+    """
+
+    def __init__(self, root: Path, *, ttl_s: float = SCAN_TTL_S,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.root = root
+        self._ttl_s = ttl_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._scanned_at: float | None = None
+        self._projects: dict[str, ProjectConfig] = {}
+
+    def projects(self) -> dict[str, ProjectConfig]:
+        with self._lock:
+            now = self._clock()
+            if self._scanned_at is None or now - self._scanned_at >= self._ttl_s:
+                self._projects = scan_projects(self.root)
+                self._scanned_at = now
+            return self._projects
+
+
+def scan_projects(root: Path) -> dict[str, ProjectConfig]:
+    """Every directory directly under `root` that is a git checkout, by directory name."""
+    found: dict[str, ProjectConfig] = {}
+    try:
+        entries = sorted(root.iterdir())
+    except OSError as exc:
+        logger.warning("cannot list projects under %s: %s", root, exc)
+        return found
+    for entry in entries:
+        name = entry.name
+        if not _PROJECT_NAME.fullmatch(name):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir() or not (entry / ".git").exists():
+                continue
+        except OSError:
+            continue
+        found[name] = ProjectConfig(name=name, working_dir=entry)
+    return found
+
+
 @dataclass(frozen=True)
 class BridgeConfig:
     bind_host: str
@@ -112,10 +170,20 @@ class BridgeConfig:
     kokoro_voice: str
     claude_timeout_s: int
     behind_tailscale_proxy: bool = False
+    # Set with JARVIS_PROJECTS=*: the projects come from this scanner, not `projects`.
+    project_scanner: ProjectScanner | None = field(default=None, compare=False)
+
+    def current_projects(self) -> dict[str, ProjectConfig]:
+        if self.project_scanner is not None:
+            return self.project_scanner.projects()
+        return self.projects
+
+    def project_names(self) -> list[str]:
+        return sorted(self.current_projects())
 
     def project(self, name: str) -> ProjectConfig:
         try:
-            return self.projects[name]
+            return self.current_projects()[name]
         except KeyError:
             raise ConfigError(f"unknown project {name!r}") from None
 
@@ -136,6 +204,28 @@ def _parse_projects(raw: str) -> dict[str, ProjectConfig]:
     return projects
 
 
+def _projects_from_env() -> tuple[dict[str, ProjectConfig], ProjectScanner | None]:
+    raw = _require("JARVIS_PROJECTS")
+    root_raw = os.environ.get("JARVIS_PROJECTS_ROOT", "")
+    if raw.strip() != ALL_PROJECTS:
+        if root_raw:
+            raise ConfigError("JARVIS_PROJECTS_ROOT is only used with JARVIS_PROJECTS=*")
+        return _parse_projects(raw), None
+    if not root_raw:
+        raise ConfigError(
+            "JARVIS_PROJECTS=* needs JARVIS_PROJECTS_ROOT, the directory that holds the checkouts"
+        )
+    root = Path(root_raw).expanduser()
+    if not root.is_absolute():
+        raise ConfigError(f"JARVIS_PROJECTS_ROOT={root_raw!r} must be an absolute path")
+    if not root.is_dir():
+        raise ConfigError(f"JARVIS_PROJECTS_ROOT={root_raw!r} is not a directory")
+    scanner = ProjectScanner(root)
+    if not scanner.projects():
+        logger.warning("JARVIS_PROJECTS=*: no git checkouts under %s yet", root)
+    return {}, scanner
+
+
 def load_config() -> BridgeConfig:
     behind_proxy = _behind_tailscale_proxy()
     bind_host = _check_private_host(_require("JARVIS_BIND_HOST"), behind_proxy=behind_proxy)
@@ -145,7 +235,7 @@ def load_config() -> BridgeConfig:
         logger.warning(BEHIND_PROXY_WARNING, bind_host)
     token = _require("JARVIS_TOKEN")
     port = int(os.environ.get("JARVIS_PORT", "8787"))
-    projects = _parse_projects(_require("JARVIS_PROJECTS"))
+    projects, scanner = _projects_from_env()
     state_dir = Path(os.environ.get("JARVIS_STATE_DIR", "~/.jarvis")).expanduser()
 
     return BridgeConfig(
@@ -160,4 +250,5 @@ def load_config() -> BridgeConfig:
         kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "af_heart"),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
+        project_scanner=scanner,
     )

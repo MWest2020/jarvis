@@ -34,17 +34,7 @@ class BridgeClient(
     fun turn(request: TurnRequest, wav: ByteArray): TurnOutcome {
         var connection: HttpURLConnection? = null
         return try {
-            if (request.cleartext && requireTailnetForCleartext) {
-                val addresses = resolve(request.url.host)
-                if (addresses.isEmpty() || !addresses.all { Tailnet.isTailscaleAddress(it) && routed(it) }) {
-                    return TurnOutcome.Failed(
-                        TurnFailure(
-                            FailureKind.NOT_A_TAILNET_ADDRESS,
-                            "The bridge's name does not point at an address that Tailscale routes. Nothing was sent.",
-                        ),
-                    )
-                }
-            }
+            if (request.cleartext) notRouted(request.url)?.let { return TurnOutcome.Failed(it) }
             connection = (open(request.url) as HttpURLConnection).apply {
                 requestMethod = "POST"
                 instanceFollowRedirects = false
@@ -80,6 +70,53 @@ class BridgeClient(
         }
     }
 
+    /**
+     * `GET /projects` (add-project-list): the project names the bridge serves. The same
+     * route rules as [turn]: for plain http every resolved address must be a routed
+     * Tailscale address, no proxy, no redirects; the token goes to the configured host only.
+     */
+    fun projects(request: ListRequest): ListOutcome {
+        var connection: HttpURLConnection? = null
+        return try {
+            if (request.cleartext) notRouted(request.url)?.let { return ListOutcome.Failed(it) }
+            connection = (open(request.url) as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+                useCaches = false
+                connectTimeout = connectTimeoutMs
+                readTimeout = LIST_READ_TIMEOUT_MS
+                request.headers.forEach { (name, value) -> setRequestProperty(name, value) }
+            }
+            val status = connection.responseCode
+            if (status != 200) {
+                val body = connection.errorStream?.use { readLimited(it, ERROR_BODY_LIMIT) }
+                return ListOutcome.Failed(ProjectList.fromStatus(status, body?.toString(Charsets.UTF_8).orEmpty()))
+            }
+            val body = connection.inputStream.use { readLimited(it, ProjectList.BODY_LIMIT + 1) }
+            if (body.size > ProjectList.BODY_LIMIT) {
+                return ListOutcome.Failed(
+                    TurnFailure(FailureKind.BAD_REPLY, "The bridge's project list could not be read."),
+                )
+            }
+            ProjectList.parse(body.toString(Charsets.UTF_8))
+        } catch (error: IOException) {
+            ListOutcome.Failed(TurnErrors.fromException(error))
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    /** Null when a plain-http request to [url] may go out; otherwise why not. Throws on a failed lookup. */
+    private fun notRouted(url: URL): TurnFailure? {
+        if (!requireTailnetForCleartext) return null
+        val addresses = resolve(url.host)
+        if (addresses.isNotEmpty() && addresses.all { Tailnet.isTailscaleAddress(it) && routed(it) }) return null
+        return TurnFailure(
+            FailureKind.NOT_A_TAILNET_ADDRESS,
+            "The bridge's name does not point at an address that Tailscale routes. Nothing was sent.",
+        )
+    }
+
     private fun readLimited(stream: InputStream, limit: Int): ByteArray {
         val out = ByteArrayOutputStream()
         val chunk = ByteArray(16 * 1024)
@@ -94,5 +131,6 @@ class BridgeClient(
     companion object {
         const val ERROR_BODY_LIMIT = 2_048
         const val REPLY_LIMIT = 32 * 1024 * 1024
+        const val LIST_READ_TIMEOUT_MS = 20_000
     }
 }

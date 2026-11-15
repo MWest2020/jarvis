@@ -5,6 +5,7 @@ of a headless Claude Code reply.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import socket
@@ -71,6 +72,47 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib signature
         logger.info("%s - %s", self.address_string(), format % args)
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler name
+        """`GET /projects`: the project names, sorted, as JSON (add-project-list).
+
+        The same gate as /turn: the route, then the token in constant time, and a
+        refusal drains an announced body first (_reject). Names only, never paths.
+        """
+        self._body_length = _parse_content_length(self.headers.get("Content-Length"))
+
+        if urllib.parse.urlparse(self.path).path != "/projects":
+            self._reject(404, "not found")
+            return
+
+        if not is_authorized(self.headers.get("Authorization"), self.config.token):
+            self._reject(401, "missing or invalid token")
+            return
+
+        # A GET has no body; one that announces one anyway is read and thrown away
+        # like a refused upload, so the connection stays in step.
+        length = self._body_length
+        keep_alive = length == 0 or (length is not None and length <= MAX_AUDIO_BYTES
+                                     and self._drain(length))
+        try:
+            names = self.config.project_names()
+        except Exception:  # noqa: BLE001 - the list is best effort, never a traceback to the phone
+            logger.exception("listing the projects failed")
+            self._respond_error(500, "internal error", close=not keep_alive)
+            return
+        body = json.dumps({"projects": names}).encode("utf-8")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            if not keep_alive:
+                self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as exc:
+            self.close_connection = True
+            logger.info("could not send the project list to %s: %s", self.address_string(), exc)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
         # Read the announced length before any check, but not the body: a

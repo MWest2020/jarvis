@@ -138,3 +138,83 @@ def test_opt_in_0_means_off(monkeypatch, tmp_path):
     )
     with pytest.raises(ConfigError):
         load_config()
+
+
+# add-project-list: JARVIS_PROJECTS=* with JARVIS_PROJECTS_ROOT.
+
+def _checkout(root, name):
+    (root / name / ".git").mkdir(parents=True)
+    return root / name
+
+
+def test_wildcard_finds_every_git_checkout_under_the_root(monkeypatch, tmp_path):
+    root = tmp_path / "work"
+    _checkout(root, "bravo")
+    _checkout(root, "alpha")
+    (root / "not-a-repo").mkdir()
+    (root / "a-file").write_text("x")
+    _checkout(root, ".hidden")
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS="*", JARVIS_PROJECTS_ROOT=str(root))
+    config = load_config()
+    assert config.project_names() == ["alpha", "bravo"]
+    assert config.project("alpha").working_dir == root / "alpha"
+    with pytest.raises(ConfigError):
+        config.project("not-a-repo")
+    with pytest.raises(ConfigError):
+        config.project("..")
+
+
+def test_wildcard_skips_symlinks(monkeypatch, tmp_path):
+    root = tmp_path / "work"
+    root.mkdir()
+    outside = _checkout(tmp_path, "outside")
+    (root / "link").symlink_to(outside)
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS="*", JARVIS_PROJECTS_ROOT=str(root))
+    assert load_config().project_names() == []
+
+
+def test_wildcard_needs_a_root(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS="*")
+    monkeypatch.delenv("JARVIS_PROJECTS_ROOT", raising=False)
+    with pytest.raises(ConfigError, match="JARVIS_PROJECTS_ROOT"):
+        load_config()
+
+
+@pytest.mark.parametrize("root", ["relative/path", "/does/not/exist"])
+def test_wildcard_root_must_be_an_existing_absolute_directory(monkeypatch, tmp_path, root):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS="*", JARVIS_PROJECTS_ROOT=root)
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_root_without_the_wildcard_is_refused(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS_ROOT=str(tmp_path))
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_wildcard_with_an_empty_root_starts_and_warns(monkeypatch, tmp_path, caplog):
+    root = tmp_path / "work"
+    root.mkdir()
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS="*", JARVIS_PROJECTS_ROOT=str(root))
+    with caplog.at_level("WARNING", logger="bridge.config"):
+        config = load_config()
+    assert config.project_names() == []
+    assert any("no git checkouts" in r.getMessage() for r in caplog.records)
+
+
+def test_wildcard_rescans_after_the_cache_expires(tmp_path):
+    from bridge.config import ProjectScanner
+    clock = [100.0]
+    scanner = ProjectScanner(tmp_path, ttl_s=10, clock=lambda: clock[0])
+    assert scanner.projects() == {}
+    _checkout(tmp_path, "new")
+    clock[0] = 105.0
+    assert scanner.projects() == {}
+    clock[0] = 110.0
+    assert list(scanner.projects()) == ["new"]
+
+
+def test_explicit_projects_are_listed_sorted(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS=f"zed={tmp_path},abc={tmp_path}")
+    assert load_config().project_names() == ["abc", "zed"]

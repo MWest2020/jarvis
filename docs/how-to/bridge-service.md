@@ -46,7 +46,8 @@ your process manager.
 | `JARVIS_BIND_HOST` | yes | The Tailscale IP to listen on, e.g. `100.x.y.z` (IPv4 100.64.0.0/10 or IPv6 fd7a:115c:a1e0::/48). Loopback is allowed for local tests. Every other address is refused at start, wildcards and public addresses included (Network exposure, AGENTS.md). |
 | `JARVIS_BEHIND_TAILSCALE_PROXY` | no | Only for a pod behind the Tailscale operator: `1` allows a private (RFC 1918 or CGNAT) bind address. See [`run-in-cluster.md`](run-in-cluster.md). Leave it unset on a workstation. |
 | `JARVIS_TOKEN` | yes | The shared secret the phone sends as `Authorization: Bearer <token>`. Generate one with `openssl rand -hex 32`. Never commit it. |
-| `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/mark/code/demo`. The phone selects a project by name in the request. |
+| `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/mark/code/demo`. The phone selects a project by name in the request. Or `*`: every git checkout directly under `JARVIS_PROJECTS_ROOT` is a project, named after its directory (see "Every checkout under a root" below). |
+| `JARVIS_PROJECTS_ROOT` | with `*` only | The absolute directory that holds the checkouts, e.g. `/work`. Must exist at start. Refused when `JARVIS_PROJECTS` is a list. |
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |
 | `JARVIS_STATE_DIR` | no (default `~/.jarvis`) | Where the per-project session id and the log file are stored. Outside the repo, never in git. |
 | `JARVIS_WHISPER_MODEL` | no (default `base`) | faster-whisper model size; CPU-friendly sizes are `tiny`, `base`, `small`. |
@@ -82,9 +83,32 @@ stdout gets the request lines, the summaries and short error lines; error detail
 and keeps three old files. Both redact the token, the Claude credentials and anything
 shaped like `sk-ant-…`, tracebacks included.
 
-## What the endpoint does
+## Every checkout under a root
 
-One route: `POST /turn?project=<name>` with `Authorization: Bearer <token>` and the
+With `JARVIS_PROJECTS=*` and `JARVIS_PROJECTS_ROOT=/work`, each directory directly under
+`/work` that is a git checkout (it has a `.git`) is a project with the directory's name.
+Skipped: plain directories, files, symlinks, and names that start with a dot or contain
+anything but letters, digits, `.`, `_` and `-`. So a project name never leads out of the
+root. The bridge looks again at most every 10 seconds, so a checkout that appears or goes
+away shows up in the list and in turns without a restart. With no checkouts at start it
+still starts, logs a warning and lists nothing.
+
+## What the endpoints do
+
+Two routes, both behind the same token check (constant time) and the same rules for a
+refused request (below).
+
+`GET /projects` with `Authorization: Bearer <token>`: the project names, sorted, as
+`application/json`:
+
+```json
+{"projects": ["bazibo", "jarvis", "wordsworth"]}
+```
+
+Names only, never paths. 401 without a valid token, 404 on any other path. The phone app
+uses it when its projects field is empty or `*` ([`android-app.md`](android-app.md)).
+
+`POST /turn?project=<name>` with `Authorization: Bearer <token>` and the
 recorded audio as the body. Replies:
 
 | Status | When |
