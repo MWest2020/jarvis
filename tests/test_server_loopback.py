@@ -310,6 +310,102 @@ def test_many_connections_over_the_cap_do_not_queue(capped_server):
         assert _wait_for_status(capped_server, 200) == 200
 
 
+# jarvis#15: the request line and headers have a total deadline, so trickling them
+# cannot hold a slot.
+
+def _read_all(sock) -> bytes:
+    data = b""
+    try:
+        while chunk := sock.recv(4096):
+            data += chunk
+    except OSError:
+        pass
+    return data
+
+
+def test_eight_clients_trickling_headers_lose_their_slots_at_the_deadline(running_server, monkeypatch):
+    import socket
+    import time
+    monkeypatch.setattr(server, "HEAD_DEADLINE_S", 1.0)
+    assert server.MAX_CONNECTIONS == 8
+    tricklers = [socket.create_connection(("127.0.0.1", running_server), timeout=5)
+                 for _ in range(server.MAX_CONNECTIONS)]
+    head = b"GET /projects HTTP/1.1\r\nHost: x\r\nX-Slow: " + b"a" * 1000
+    statuses = []   # (seconds since the start, status the ninth client got)
+    try:
+        started = time.monotonic()
+        for s in tricklers:
+            s.sendall(b"G")
+        position = 1
+        while time.monotonic() - started < 6:
+            # A byte each, every 100 ms: every single read is far inside the 30 s
+            # socket timeout, so only the total deadline can end these.
+            for s in tricklers:
+                try:
+                    s.sendall(head[position:position + 1])
+                except OSError:
+                    pass
+            position += 1
+            status = _get(running_server)[0].status
+            statuses.append((time.monotonic() - started, status))
+            if statuses[-1][1] == 200:
+                break
+            time.sleep(0.1)
+        replies = [_read_all(s) for s in tricklers]
+    finally:
+        for s in tricklers:
+            s.close()
+    served_at, last = statuses[-1]
+    # The ninth client was refused while the slots were held, and served once the
+    # deadline had taken them back: not before it, and not long after.
+    assert last == 200, statuses
+    assert [status for _, status in statuses[:-1]] == [503] * (len(statuses) - 1)
+    assert len(statuses) > 1
+    assert 0.9 <= served_at < 3.0
+    # Each trickler was told why, then closed.
+    for reply in replies:
+        assert reply.startswith(b"HTTP/1.1 408 "), reply
+        assert reply.endswith(server.TIMEOUT_MESSAGE)
+
+
+def test_a_client_that_connects_and_says_nothing_gets_a_408(running_server, monkeypatch):
+    import socket
+    import time
+    monkeypatch.setattr(server, "HEAD_DEADLINE_S", 0.5)
+    started = time.monotonic()
+    with socket.create_connection(("127.0.0.1", running_server), timeout=5) as s:
+        reply = _read_all(s)
+    assert 0.5 <= time.monotonic() - started < 2.0
+    assert reply.startswith(b"HTTP/1.1 408 ")
+    assert b"connection: close" in reply.lower()
+
+
+def test_the_head_deadline_does_not_cut_a_slow_body(running_server, monkeypatch):
+    # The deadline covers the request line and headers only: a body that takes
+    # longer than it is still a turn.
+    import socket
+    import time
+    monkeypatch.setattr(server, "HEAD_DEADLINE_S", 0.5)
+    body = b"fake-audio"
+    head = (f"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-token\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", running_server), timeout=5) as s:
+        s.sendall(head + body[:4])
+        time.sleep(1.0)
+        s.sendall(body[4:])
+        reply = _read_all(s)
+    assert b" 200 " in reply.split(b"\r\n")[0]
+    assert reply.endswith(b"FAKE-WAV-The answer is four.")
+
+
+def test_the_head_deadline_setting():
+    assert server._head_deadline_from_env({}) == server.HEAD_DEADLINE_S
+    assert server._head_deadline_from_env({server.HEAD_DEADLINE_ENV: " 2.5 "}) == 2.5
+    for bad in ["0", "-1", "abc", "nan", "inf", "301"]:
+        with pytest.raises(server.ConfigError):
+            server._head_deadline_from_env({server.HEAD_DEADLINE_ENV: bad})
+
+
 # add-project-list: GET /projects, behind the same gate as /turn.
 
 def _get(port, path="/projects", *, token="test-token"):
