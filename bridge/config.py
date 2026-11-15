@@ -9,8 +9,10 @@ import ipaddress
 import logging
 import os
 import re
+import stat
 import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,6 +159,172 @@ def scan_projects(root: Path) -> dict[str, ProjectConfig]:
     return found
 
 
+# jarvis-full-agent. D30: two modes, `readonly` is the default and the fallback.
+MODE_READONLY = "readonly"
+MODE_FULL = "full"
+
+# D36: the closed lists a whole, normalised transcript is compared with, and the
+# least detected speech a recording must hold before a yes counts.
+DEFAULT_CONFIRM_YES: tuple[str, ...] = ("yes", "ja")
+DEFAULT_CONFIRM_NO: tuple[str, ...] = ("no", "nee")
+DEFAULT_CONFIRM_MIN_SPEECH_S = 0.3
+
+# The agent host's own turn timeout is 600 s by default (D34); the bridge waits a
+# little longer, so the wrapper's `timeout` answer normally arrives first.
+DEFAULT_AGENT_TIMEOUT_S = 660
+
+# What may stand in the ssh argv (D32). A host is a DNS name or an address, a user
+# a Unix login; neither can start with "-" and so neither can be read as an option.
+_AGENT_HOST = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|[0-9A-Fa-f:]{2,39}")
+_AGENT_USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+
+
+@dataclass(frozen=True)
+class AgentHostConfig:
+    """Where `full` turns run and how the bridge gets there (D32)."""
+
+    host: str
+    port: int
+    user: str
+    key_file: Path
+    known_hosts_file: Path
+    timeout_s: int
+
+
+def normalise_utterance(text: str) -> str:
+    """Lowered, without punctuation or symbols, single spaces (D36, step 5)."""
+    kept = "".join(" " if unicodedata.category(ch)[0] in "PSZC" else ch
+                   for ch in text.casefold())
+    return " ".join(kept.split())
+
+
+def _agent_mode() -> str:
+    raw = os.environ.get("JARVIS_AGENT_MODE", "")
+    if raw in ("", MODE_READONLY):
+        return MODE_READONLY
+    if raw == MODE_FULL:
+        return MODE_FULL
+    raise ConfigError(f"JARVIS_AGENT_MODE must be readonly or full, not {raw!r}")
+
+
+def _positive_int(name: str, default: int, *, maximum: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= maximum:
+        raise ConfigError(f"{name}={raw!r} must be a whole number from 1 to {maximum}")
+    return value
+
+
+def _private_file(name: str, project_dirs: list[Path]) -> Path:
+    """A file the ssh client is pointed at: the key, or the pinned host key.
+
+    Refused when it is missing, when anyone but its owner has any permission on it,
+    when the bridge cannot read it, or when it lies inside a project directory (the
+    read-only agent may read everything there, and nothing else).
+    """
+    raw = _require(name)
+    if any(ch.isspace() for ch in raw):
+        # ssh splits an option value on spaces: a second path would be read as
+        # another known-hosts file.
+        raise ConfigError(f"{name} must not contain whitespace")
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ConfigError(f"{name}={raw!r} must be an absolute path")
+    try:
+        real = path.resolve(strict=True)
+        info = real.stat()
+    except OSError as exc:
+        raise ConfigError(f"{name}={raw!r} cannot be read: {exc.strerror or exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigError(f"{name}={raw!r} is not a regular file")
+    if info.st_mode & 0o077:
+        raise ConfigError(
+            f"{name}={raw!r} has mode {stat.S_IMODE(info.st_mode):04o}: it must give "
+            f"nothing to group or others (0400 or 0600)"
+        )
+    if not os.access(real, os.R_OK):
+        raise ConfigError(f"{name}={raw!r} is not readable by the bridge's own user")
+    for directory in project_dirs:
+        try:
+            inside = real.is_relative_to(directory.resolve())
+        except OSError:
+            inside = False
+        if inside or path.is_relative_to(directory):
+            raise ConfigError(
+                f"{name}={raw!r} lies inside the project directory {directory}: the "
+                f"read-only agent could read it. Keep it outside every project."
+            )
+    return path
+
+
+def _agent_host_from_env(projects: dict[str, ProjectConfig],
+                         scanner: ProjectScanner | None) -> AgentHostConfig:
+    host = _require("JARVIS_AGENT_HOST")
+    if not _AGENT_HOST.fullmatch(host):
+        raise ConfigError(f"JARVIS_AGENT_HOST={host!r} is not a host name or an address")
+    user = _require("JARVIS_AGENT_USER")
+    if not _AGENT_USER.fullmatch(user):
+        raise ConfigError(f"JARVIS_AGENT_USER={user!r} is not a login name")
+    project_dirs = [p.working_dir for p in projects.values()]
+    if scanner is not None:
+        project_dirs.append(scanner.root)
+    return AgentHostConfig(
+        host=host,
+        port=_positive_int("JARVIS_AGENT_PORT", 22, maximum=65535),
+        user=user,
+        key_file=_private_file("JARVIS_AGENT_KEY_FILE", project_dirs),
+        known_hosts_file=_private_file("JARVIS_AGENT_KNOWN_HOSTS_FILE", project_dirs),
+        timeout_s=_positive_int("JARVIS_AGENT_TIMEOUT_S", DEFAULT_AGENT_TIMEOUT_S,
+                                maximum=24 * 3600),
+    )
+
+
+def _word_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    words = tuple(w.strip() for w in raw.split(",") if w.strip())
+    if not words:
+        raise ConfigError(f"{name} must list at least one word")
+    for word in words:
+        if normalise_utterance(word) != word:
+            raise ConfigError(
+                f"{name}: {word!r} must be written as it is compared: lower case, "
+                f"no punctuation, single spaces"
+            )
+    return words
+
+
+def _confirm_words() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    yes = _word_list("JARVIS_CONFIRM_YES", DEFAULT_CONFIRM_YES)
+    no = _word_list("JARVIS_CONFIRM_NO", DEFAULT_CONFIRM_NO)
+    both = sorted(set(yes) & set(no))
+    if both:
+        raise ConfigError(f"{both[0]!r} is in JARVIS_CONFIRM_YES and in JARVIS_CONFIRM_NO")
+    return yes, no
+
+
+def _confirm_min_speech_s() -> float:
+    raw = os.environ.get("JARVIS_CONFIRM_MIN_SPEECH_S", "")
+    if not raw:
+        return DEFAULT_CONFIRM_MIN_SPEECH_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not 0.0 < value <= 10.0:   # also refuses nan
+        raise ConfigError(
+            f"JARVIS_CONFIRM_MIN_SPEECH_S={raw!r} must be a number of seconds above 0, "
+            f"at most 10"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class BridgeConfig:
     bind_host: str
@@ -172,6 +340,13 @@ class BridgeConfig:
     behind_tailscale_proxy: bool = False
     # Set with JARVIS_PROJECTS=*: the projects come from this scanner, not `projects`.
     project_scanner: ProjectScanner | None = field(default=None, compare=False)
+    # jarvis-full-agent (D30): `readonly` unless JARVIS_AGENT_MODE=full, and then
+    # `agent_host` says where the turns run.
+    agent_mode: str = MODE_READONLY
+    agent_host: AgentHostConfig | None = None
+    confirm_yes: tuple[str, ...] = DEFAULT_CONFIRM_YES
+    confirm_no: tuple[str, ...] = DEFAULT_CONFIRM_NO
+    confirm_min_speech_s: float = DEFAULT_CONFIRM_MIN_SPEECH_S
 
     def current_projects(self) -> dict[str, ProjectConfig]:
         if self.project_scanner is not None:
@@ -237,6 +412,17 @@ def load_config() -> BridgeConfig:
     port = int(os.environ.get("JARVIS_PORT", "8787"))
     projects, scanner = _projects_from_env()
     state_dir = Path(os.environ.get("JARVIS_STATE_DIR", "~/.jarvis")).expanduser()
+    # jarvis-full-agent: nothing below is read unless JARVIS_AGENT_MODE=full.
+    full: dict = {}
+    if _agent_mode() == MODE_FULL:
+        confirm_yes, confirm_no = _confirm_words()
+        full = {
+            "agent_mode": MODE_FULL,
+            "agent_host": _agent_host_from_env(projects, scanner),
+            "confirm_yes": confirm_yes,
+            "confirm_no": confirm_no,
+            "confirm_min_speech_s": _confirm_min_speech_s(),
+        }
 
     return BridgeConfig(
         bind_host=bind_host,
@@ -251,4 +437,5 @@ def load_config() -> BridgeConfig:
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,
+        **full,
     )

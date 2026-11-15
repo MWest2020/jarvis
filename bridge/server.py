@@ -14,14 +14,21 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
-from bridge import claude_adapter, stt, tts
-from bridge.config import BEHIND_PROXY_WARNING, BridgeConfig, ConfigError, load_config
+from bridge import claude_adapter, remote_adapter, stt, tts
+from bridge.config import (
+    BEHIND_PROXY_WARNING,
+    MODE_FULL,
+    BridgeConfig,
+    ConfigError,
+    ProjectConfig,
+    load_config,
+)
+from bridge.full_mode import FullMode
 from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
 from bridge.logging_setup import configure as configure_logging
+from bridge.readonly_adapter import ReadonlyAdapter
 from bridge.sessions import SessionStore
-from bridge.summary import extract_summary
 
 logger = logging.getLogger("bridge.server")
 
@@ -65,6 +72,9 @@ def is_authorized(auth_header: str | None, expected_token: str) -> bool:
 class Handler(BaseHTTPRequestHandler):
     config: BridgeConfig
     sessions: SessionStore
+    readonly: ReadonlyAdapter
+    # Set in `full` mode only (jarvis-full-agent D30); None means `readonly`.
+    full: FullMode | None = None
 
     server_version = "jarvis-bridge/0.1"
     # A client that stalls mid-request does not hold a thread forever.
@@ -158,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_error(409, "this project is busy with another turn")
             return
         try:
-            self._handle_turn(project_name, project.working_dir, audio_bytes)
+            self._handle_turn(project, audio_bytes)
         except claude_adapter.ClaudeTurnError as exc:
             # The error can quote Claude Code's stderr or its whole JSON reply:
             # details to the file only, a short line to stdout.
@@ -172,7 +182,8 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             lock.release()
 
-    def _handle_turn(self, project_name: str, working_dir: Path, audio_bytes: bytes) -> None:
+    def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes) -> None:
+        project_name = project.name
         transcript = stt.transcribe(audio_bytes, model_size=self.config.whisper_model)
         logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
         if not transcript.strip():
@@ -180,32 +191,34 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_audio(tts.synthesize(NOT_HEARD, voice=self.config.kokoro_voice), NOT_HEARD, "")
             return
 
-        session_id = self.sessions.get(project_name)
-        reply_text, new_session_id = claude_adapter.run_turn(
-            prompt=transcript,
-            working_dir=working_dir,
-            session_id=session_id,
-            allowed_tools=self.config.allowed_tools,
-            timeout_s=self.config.claude_timeout_s,
-        )
-        self.sessions.set(project_name, new_session_id)
-        logger.info(
-            "project=%s session=%s full_reply=%r", project_name, new_session_id, reply_text,
-            extra=FILE_ONLY,
-        )
+        if self.full is not None:
+            # The pending confirmation, the fallback and the spoken errors of
+            # `full` mode. A yes is only ever read from this transcript.
+            outcome = self.full.handle(project, transcript,
+                                       lambda: stt.speech_seconds(audio_bytes))
+            logger.info("project=%s summary=%r", project_name, outcome.spoken)
+            audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
+            self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
+                                needs_confirmation=outcome.needs_confirmation)
+            return
 
-        summary = extract_summary(reply_text)
+        turn = self.readonly.run_turn(project=project, prompt=transcript)
+        summary = turn.spoken
         logger.info("project=%s summary=%r", project_name, summary)
 
         audio_reply = tts.synthesize(summary, voice=self.config.kokoro_voice)
-        self._respond_audio(audio_reply, summary, new_session_id)
+        self._respond_audio(audio_reply, summary, turn.ref)
 
-    def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str) -> None:
+    def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
+                       needs_confirmation: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(audio_reply)))
         self.send_header("X-Jarvis-Session-Id", session_id)
         self.send_header("X-Jarvis-Summary", urllib.parse.quote(summary))
+        if needs_confirmation:
+            # D36: this reply is a read-back; the next utterance is the answer.
+            self.send_header("X-Jarvis-Needs-Confirmation", "1")
         self.end_headers()
         self.wfile.write(audio_reply)
 
@@ -271,6 +284,22 @@ class Handler(BaseHTTPRequestHandler):
 def make_server(config: BridgeConfig) -> ThreadingHTTPServer:
     Handler.config = config
     Handler.sessions = SessionStore(config.session_store_path)
+    Handler.readonly = ReadonlyAdapter(
+        sessions=Handler.sessions,
+        allowed_tools=config.allowed_tools,
+        timeout_s=config.claude_timeout_s,
+    )
+    Handler.full = None
+    if config.agent_mode == MODE_FULL:
+        if config.agent_host is None:
+            raise ConfigError("JARVIS_AGENT_MODE=full without an agent host")
+        Handler.full = FullMode(
+            remote=remote_adapter.RemoteAdapter(config.agent_host),
+            readonly=Handler.readonly,
+            confirm_yes=config.confirm_yes,
+            confirm_no=config.confirm_no,
+            min_speech_s=config.confirm_min_speech_s,
+        )
     server_cls = ThreadingHTTPServer
     if ":" in config.bind_host:   # a Tailscale IPv6 address
         server_cls = type("ThreadingHTTPServerV6", (ThreadingHTTPServer,),
@@ -296,6 +325,15 @@ def main() -> None:
     except claude_adapter.ClaudeTurnError as exc:
         logger.error("%s", exc)
         raise SystemExit(1) from exc
+    if config.agent_mode == MODE_FULL:
+        try:
+            remote_adapter.check_ssh()
+        except RuntimeError as exc:
+            logger.error("%s", exc)
+            raise SystemExit(1) from exc
+        agent = config.agent_host
+        logger.info("agent mode full: turns run on %s@%s port %s; read-only is the fallback",
+                    agent.user, agent.host, agent.port)
     # Load both speech models before the first turn: on a small CPU the first
     # Kokoro load alone took over two minutes (2026-11-14 tailnet test).
     logger.info("loading speech models (whisper %s, kokoro)", config.whisper_model)

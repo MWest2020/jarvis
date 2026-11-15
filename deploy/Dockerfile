@@ -12,8 +12,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
 # JARVIS_SYNC_REPOS=*, is deploy/list_repos.py on the venv's Python). ca-certificates: HTTPS to
 # GitHub and the Anthropic API. libsndfile comes with the soundfile wheel and
 # espeak-ng with the espeakng-loader wheel, so no other system packages.
+# openssh-client: the one ssh connection per turn to the agent host in `full`
+# mode (jarvis-full-agent, D32). Unused, and never started, in `readonly` mode.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 # Claude Code headless, pinned: the version the bridge's argv (--tools,
