@@ -228,7 +228,14 @@ def parse_reply(raw: bytes) -> dict:
         raise ReplyError("confirm id is not what it should be")
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
         raise ReplyError("confirm sha256 is not 64 lower-case hex digits")
-    if not isinstance(confirm["class"], str) or not _CLASS.fullmatch(confirm["class"]):
+    # D33 names the field, D36 says a call can have several classes; whether those
+    # come as one string or as a list is not settled, so both are read. The bridge
+    # does nothing with the value.
+    classes = confirm["class"]
+    if isinstance(classes, str):
+        classes = [classes]
+    if (not isinstance(classes, list) or not 1 <= len(classes) <= 16
+            or not all(isinstance(c, str) and _CLASS.fullmatch(c) for c in classes)):
         raise ReplyError("confirm class is not what it should be")
     if type(expires_s) not in (int, float) or not 0 < expires_s <= MAX_EXPIRES_S:
         raise ReplyError("confirm expires_s is not a number of seconds up to 60")

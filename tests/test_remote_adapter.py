@@ -307,6 +307,8 @@ def test_parse_reply_accepts_the_agreed_shapes():
     assert parsed["confirmation"] == PendingConfirmation("c1", SHA)
     assert parsed["spoken"] == ""          # the agent's line is dropped while one is pending
     assert parse_reply(_reply(status="error", error="busy", turn=None, spoken=""))["error"] == "busy"
+    for classes in ("merge", "merge, root", ["merge"], ["merge", "root"]):
+        assert parse_reply(_pending(confirm={**CONFIRM, "class": classes}))["confirmation"]
 
 
 @pytest.mark.parametrize("raw", [
@@ -334,6 +336,10 @@ def test_parse_reply_accepts_the_agreed_shapes():
     _pending(confirm={**CONFIRM, "sha256": "ab"}),
     _pending(confirm={**CONFIRM, "class": "Merge; rm"}),
     _pending(confirm={**CONFIRM, "class": None}),
+    _pending(confirm={**CONFIRM, "class": []}),
+    _pending(confirm={**CONFIRM, "class": ["merge", 7]}),
+    _pending(confirm={**CONFIRM, "class": ["rm -rf /"]}),
+    _pending(confirm={**CONFIRM, "class": {"merge": True}}),
     _pending(confirm={**CONFIRM, "expires_s": 0}),
     _pending(confirm={**CONFIRM, "expires_s": 3600}),
     _pending(confirm={**CONFIRM, "expires_s": True}),
