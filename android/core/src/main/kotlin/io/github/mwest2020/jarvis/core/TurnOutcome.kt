@@ -50,6 +50,12 @@ object TurnErrors {
         else -> TurnFailure(FailureKind.SERVER_ERROR, "The bridge answered with an error ($status).")
     }
 
+    /** Plain http was asked for and the phone has no Tailscale VPN network up. Nothing is sent. */
+    fun tailscaleOff(): TurnFailure = TurnFailure(
+        FailureKind.NO_TAILNET,
+        "Tailscale is off. Switch it on and try again. Nothing was sent.",
+    )
+
     /** Maps a failure before or during the exchange to a message. */
     fun fromException(error: IOException): TurnFailure = when {
         error is UnknownHostException -> TurnFailure(
@@ -68,7 +74,12 @@ object TurnErrors {
             FailureKind.CLEARTEXT_NOT_ALLOWED,
             "Plain http is only allowed for a Tailscale name (*.ts.net).",
         )
-        else -> TurnFailure(FailureKind.NETWORK, "The connection to the bridge broke. Try again.")
+        // A bridge that refuses the token can close the connection while the recording is
+        // still being sent, which arrives here as a reset rather than as a 401.
+        else -> TurnFailure(
+            FailureKind.NETWORK,
+            "The connection to the bridge broke. Try again; if it keeps happening, check the token.",
+        )
     }
 
     /** The bridge sends `X-Jarvis-Summary` percent-encoded (Python's `urllib.parse.quote`). */

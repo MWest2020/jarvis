@@ -12,7 +12,9 @@ import io.github.mwest2020.jarvis.core.Built
 import io.github.mwest2020.jarvis.core.Phase
 import io.github.mwest2020.jarvis.core.TalkAction
 import io.github.mwest2020.jarvis.core.TalkGesture
+import io.github.mwest2020.jarvis.core.TurnErrors
 import io.github.mwest2020.jarvis.core.TurnOutcome
+import io.github.mwest2020.jarvis.core.TurnRequest
 import io.github.mwest2020.jarvis.core.TurnRequests
 import io.github.mwest2020.jarvis.core.Wav
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +37,8 @@ data class UiState(
     val bridgeUrl: String = "",
     val hasToken: Boolean = false,
     val needsMicrophone: Boolean = false,
+    /** False until the stored settings have been read (the Keystore is not asked on the main thread). */
+    val loaded: Boolean = false,
 ) {
     val configured: Boolean get() = bridgeUrl.isNotBlank() && hasToken && projects.isNotEmpty()
 }
@@ -42,28 +46,36 @@ data class UiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val settings = SettingsStore(application)
     private val tokens = TokenStore(application)
-    private val client = BridgeClient()
+    private val route = TailnetRoute(application)
     private val gesture = TalkGesture()
     private val tone = WaitTone()
-    private val player = ReplyPlayer(application.cacheDir)
+    private val player = ReplyPlayer()
     private val recorder = Recorder(onLimitReached = {
         viewModelScope.launch(Dispatchers.Main) {
             if (state.value.phase == Phase.RECORDING) stopAndSend()
         }
     })
 
-    private val _state = MutableStateFlow(loadState())
+    private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    private fun loadState(): UiState {
-        val projects = settings.projects
-        val project = settings.project.takeIf { it in projects } ?: projects.firstOrNull().orEmpty()
-        return UiState(
-            projects = projects,
-            project = project,
-            bridgeUrl = settings.bridgeUrl,
-            hasToken = tokens.hasToken(),
-        )
+    init {
+        viewModelScope.launch { reload() }
+    }
+
+    /** Reads the stored settings off the main thread; the summary on screen is kept. */
+    private suspend fun reload() {
+        val stored = withContext(Dispatchers.IO) {
+            val projects = settings.projects
+            UiState(
+                projects = projects,
+                project = settings.project.takeIf { it in projects } ?: projects.firstOrNull().orEmpty(),
+                bridgeUrl = settings.bridgeUrl,
+                hasToken = tokens.hasToken(),
+                loaded = true,
+            )
+        }
+        _state.update { stored.copy(summary = it.summary) }
     }
 
     fun onPress() = act(gesture.onPress(state.value.phase, SystemClock.elapsedRealtime()))
@@ -123,7 +135,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // The token is read here, used for this one request, and not kept.
                 when (val built = TurnRequests.build(current.bridgeUrl, tokens.load(), current.project)) {
                     is Built.Refused -> TurnOutcome.Failed(built.failure)
-                    is Built.Ok -> client.turn(built.value, Wav.encode(pcm))
+                    is Built.Ok -> send(built.value, Wav.encode(pcm))
                 }
             }
             ticking.cancel()
@@ -131,15 +143,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 is TurnOutcome.Failed -> fail(outcome.failure.message)
                 is TurnOutcome.Reply -> {
                     _state.update { it.copy(phase = Phase.PLAYING, summary = outcome.summary, error = null) }
-                    val started = player.play(outcome.wav) {
-                        _state.update { if (it.phase == Phase.PLAYING) it.copy(phase = Phase.IDLE) else it }
-                    }
-                    if (!started) {
-                        _state.update { it.copy(phase = Phase.IDLE, error = "The reply could not be played. The summary is above.") }
+                    player.play(outcome.wav) { played ->
+                        _state.update {
+                            when {
+                                it.phase != Phase.PLAYING -> it
+                                played -> it.copy(phase = Phase.IDLE)
+                                else -> it.copy(phase = Phase.IDLE, error = "The reply could not be played.")
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Plain http goes out bound to the Tailscale VPN network, or not at all. https is
+     * authenticated by its certificate and uses the default network; neither uses a proxy.
+     */
+    private fun send(request: TurnRequest, wav: ByteArray): TurnOutcome {
+        val client = if (request.cleartext) {
+            route.boundClient() ?: return TurnOutcome.Failed(TurnErrors.tailscaleOff())
+        } else {
+            BridgeClient()
+        }
+        return client.turn(request, wav)
     }
 
     private fun fail(message: String) {
@@ -163,39 +191,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Saves the settings, or returns the reason they were refused. An empty [newToken] keeps
-     * the stored one.
+     * Saves the settings and reports null, or the reason they were refused. An empty
+     * [newToken] keeps the stored one. The Keystore and the files are used off the main
+     * thread; [onResult] runs on it.
      */
-    fun saveSettings(bridgeUrl: String, newToken: String, projectsText: String): String? {
+    fun saveSettings(bridgeUrl: String, newToken: String, projectsText: String, onResult: (String?) -> Unit) {
         val url = when (val checked = BridgeUrl.validate(bridgeUrl)) {
-            is Built.Refused -> return checked.failure.message
+            is Built.Refused -> return onResult(checked.failure.message)
             is Built.Ok -> checked.value.toString()
         }
         val token = newToken.trim()
         if (token.isNotEmpty() && !TurnRequests.isValidToken(token)) {
-            return "The token must not contain spaces or unusual characters."
+            return onResult("The token must not contain spaces or unusual characters.")
         }
         val projects = SettingsStore.parseProjects(projectsText)
-        if (projects.isEmpty()) return "Add at least one project name."
-        if (token.isNotEmpty()) {
-            try {
-                tokens.save(token)
-            } catch (_: GeneralSecurityException) {
-                return KEYSTORE_REFUSED
-            } catch (_: ProviderException) {
-                return KEYSTORE_REFUSED
+        if (projects.isEmpty()) return onResult("Add at least one project name.")
+        viewModelScope.launch {
+            val refused = withContext(Dispatchers.IO) {
+                try {
+                    if (token.isNotEmpty()) tokens.save(token)
+                    settings.bridgeUrl = url
+                    settings.projects = projects
+                    if (settings.project !in projects) settings.project = projects.first()
+                    null
+                } catch (_: GeneralSecurityException) {
+                    KEYSTORE_REFUSED
+                } catch (_: ProviderException) {
+                    KEYSTORE_REFUSED
+                }
             }
+            if (refused == null) reload()
+            onResult(refused)
         }
-        settings.bridgeUrl = url
-        settings.projects = projects
-        _state.update { loadState().copy(summary = it.summary) }
-        settings.project = state.value.project
-        return null
     }
 
     fun forgetToken() {
-        tokens.clear()
-        _state.update { it.copy(hasToken = false) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { tokens.clear() }
+            _state.update { it.copy(hasToken = false) }
+        }
     }
 
     /** The app left the screen: a recording in progress is dropped, never sent later. */

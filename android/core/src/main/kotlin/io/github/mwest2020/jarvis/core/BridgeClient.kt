@@ -5,17 +5,28 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.Proxy
+import java.net.URL
+import java.net.URLConnection
 
 /**
  * Sends one turn with the platform's own HTTP client; no third-party library. Blocking:
  * call it off the main thread.
  *
- * For a plain-http request the host must resolve to Tailscale addresses only, otherwise
- * nothing is sent. This is a check before the connection, not a pin on it: the connection
- * resolves the name again (see the design, "Risks").
+ * The address range alone proves nothing: on a hostile network with Tailscale off, a
+ * resolver can answer a `*.ts.net` name with 100.64.0.1 and the gateway can claim that
+ * address. So the caller decides the route. On Android the app passes [resolve] and [open]
+ * bound to the Tailscale VPN network and [routed] from that network's routes, and refuses
+ * before it gets here when there is no such network. No proxy is ever used: a proxy would
+ * read a plain-http `Authorization` header.
+ *
+ * For a plain-http request every resolved address must be a Tailscale address and be
+ * [routed]; otherwise nothing is sent.
  */
 class BridgeClient(
     private val resolve: (String) -> List<InetAddress> = { InetAddress.getAllByName(it).toList() },
+    private val open: (URL) -> URLConnection = { it.openConnection(Proxy.NO_PROXY) },
+    private val routed: (InetAddress) -> Boolean = { true },
     private val requireTailnetForCleartext: Boolean = true,
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 180_000,
@@ -25,16 +36,16 @@ class BridgeClient(
         return try {
             if (request.cleartext && requireTailnetForCleartext) {
                 val addresses = resolve(request.url.host)
-                if (addresses.isEmpty() || !addresses.all(Tailnet::isTailscaleAddress)) {
+                if (addresses.isEmpty() || !addresses.all { Tailnet.isTailscaleAddress(it) && routed(it) }) {
                     return TurnOutcome.Failed(
                         TurnFailure(
                             FailureKind.NOT_A_TAILNET_ADDRESS,
-                            "The bridge's name does not point at a Tailscale address. Nothing was sent. Is Tailscale on?",
+                            "The bridge's name does not point at an address that Tailscale routes. Nothing was sent.",
                         ),
                     )
                 }
             }
-            connection = (request.url.openConnection() as HttpURLConnection).apply {
+            connection = (open(request.url) as HttpURLConnection).apply {
                 requestMethod = "POST"
                 instanceFollowRedirects = false
                 useCaches = false

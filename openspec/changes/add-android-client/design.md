@@ -74,18 +74,30 @@ the assignment. Rejected: the library is deprecated, and it brings Google's Tink
 third-party crypto library at runtime. Sixty lines against the platform Keystore do the
 same without it.
 
-**A6. Plain HTTP only for `*.ts.net`, and only to a Tailscale address.** Three layers:
+**A6. Plain HTTP only for `*.ts.net`, and only through the Tailscale tunnel.** Three layers:
 1. The settings refuse an `http://` address whose host is not under `.ts.net`. `https://`
    is accepted for any host (for a bridge behind `tailscale serve`).
 2. The network security config switches cleartext off for the whole app and on for
    `ts.net` and its subdomains, so the platform enforces the same rule under the code.
-3. Before a plain-HTTP request the client resolves the name and sends nothing unless every
-   address is in 100.64.0.0/10 or fd7a:115c:a1e0::/48. A `*.ts.net` name answered by a
-   hostile Wi-Fi's DNS while Tailscale is off would otherwise receive the token and the
-   recording in the clear.
+3. A plain-HTTP turn is bound to the Tailscale VPN network (`TailnetRoute.kt`). The app
+   looks for a network with the VPN transport whose own interface address is a Tailscale
+   address; without one it refuses with "Tailscale is off" and sends nothing. With one, the
+   name is resolved by that network's DNS, the socket is opened on that network
+   (`Network.openConnection`), and every resolved address must be a Tailscale address
+   (100.64.0.0/10 or fd7a:115c:a1e0::/48) and be covered by one of that network's routes.
+4. No request uses a proxy (`Proxy.NO_PROXY`): a system or device-management HTTP proxy
+   would otherwise read the cleartext `Authorization` header.
+
+The first version of this change only checked the address range, and the security review
+showed why that is not enough: with Tailscale off on a hostile Wi-Fi, the resolver answers
+the bridge's name with 100.64.0.1, the phone has no route for it but the default one, and
+the gateway takes the token and the recording in the clear. A carrier that uses
+100.64.0.0/10 for its own network is the same case. The range says where a packet claims
+to go; only the network binding says how it travels.
+
 The assignment asked for 100.64.0.0/10 in the network security config. That file takes
 domain names only, no address ranges, so a bare `http://100.x.y.z` address is not accepted;
-the MagicDNS name is. Layer 3 is where the range is enforced.
+the MagicDNS name is.
 
 **A7. Errors are sentences.** 401: the bridge refused the token, check it in Settings. 409:
 this project is busy, try again in a moment. 413: too large. 400: the bridge's own first
@@ -104,8 +116,10 @@ the debug and release runtime classpaths and fails on any module outside `androi
 `org.jetbrains.kotlin` and `org.jetbrains.kotlinx`, with three named exceptions that
 AndroidX itself pulls in and that contain only annotations or one interface
 (`org.jetbrains:annotations`, `org.jspecify:jspecify`, `com.google.guava:listenablefuture`).
-It is part of `check`, so CI runs it. The app asks for two permissions: internet and the
-microphone. All versions are exact, in `gradle/libs.versions.toml`; the Gradle distribution
+It is part of `check`, so CI runs it. The app asks for three permissions: internet, the microphone, and
+`ACCESS_NETWORK_STATE`, which A6 needs to find the VPN network and read its routes. It
+reads network state only (no location, no Wi-Fi names). CI fails when the built APK asks
+for any other Android permission. All versions are exact, in `gradle/libs.versions.toml`; the Gradle distribution
 and the wrapper are pinned by checksum.
 
 **A10. Distribution: an APK from CI, sideloaded.** No Play Store (open question 5 of
@@ -119,12 +133,16 @@ nothing of Mark's setup (host name, project names) is in the app or the docs.
   compiles, passes lint and the `core` tests; the microphone, playback, Keystore and
   screens are untested until Mark installs it (task 5.1). The first install may show
   problems no test here could.
-- **The address check of A6 is a check, not a pin.** `HttpURLConnection` resolves the name
-  again when it connects, so an attacker who controls DNS and answers differently within
-  the same second could pass. Closing that needs a client that connects to the checked
-  address itself. Also, 100.64.0.0/10 is carrier-grade NAT space: a mobile operator's own
-  network can use it. Both need Tailscale to be off and a hostile resolver at the same
-  time. For the security review.
+- **What A6 still trusts.** Any VPN app that gives its interface a Tailscale-range address
+  passes as "the Tailscale network"; the phone's owner chooses which VPN runs, and Android
+  shows a prompt before an app may become one. The connection resolves the name a second
+  time, but through the VPN network's DNS and on a socket bound to that network, so a
+  different answer still cannot leave the tunnel. Inside the tunnel the bridge is
+  identified by its tailnet name and the token only; there is no certificate.
+- **A6 is untested on a phone.** That Tailscale's network reports the VPN transport, a
+  Tailscale interface address and routes that cover its peers is how Android VPNs work,
+  but it has not been observed on the device. If the app says "Tailscale is off" while it
+  is on, this is where to look (task 5.2).
 - **`targetSdk 37` and local-network rules.** Recent Android versions restrict apps from
   reaching local networks without a permission. A VPN such as Tailscale should be exempt;
   not verified on the phone. If the app cannot connect while a browser on the same phone

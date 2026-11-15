@@ -82,8 +82,10 @@ settings again. A release key fixes this; see "The signing key" below.
 |---|---|---|
 | The bridge refused the token | 401: the token differs from `JARVIS_TOKEN` | Enter the token again in Settings |
 | This project is busy with another turn | 409: a turn for this project is still running | Wait for it, try again |
-| The bridge's name does not resolve / cannot be reached. Is Tailscale on? | No tailnet, or the bridge is down | Switch Tailscale on; check the bridge |
-| The bridge's name does not point at a Tailscale address. Nothing was sent | The name resolved, but not to 100.64.0.0/10: usually Tailscale is off and some other DNS answered | Switch Tailscale on |
+| Tailscale is off. Nothing was sent | The address is plain `http://` and the phone has no Tailscale VPN network up | Switch Tailscale on |
+| The bridge's name does not resolve / cannot be reached. Is Tailscale on? | The name is unknown on the tailnet, or the bridge is down | Check the address and the bridge |
+| The bridge's name does not point at an address that Tailscale routes. Nothing was sent | The name resolved to something outside the tunnel | Check the address; check the tailnet's DNS |
+| The connection to the bridge broke. Try again; if it keeps happening, check the token | The connection was closed mid-turn. A bridge that refuses the token can do this before the app has read its answer | Try again; then enter the token again |
 | No answer from the bridge in time | No reply within three minutes | Check the bridge's log |
 | The bridge did not accept the request: … | 400, with the bridge's own reason, e.g. an unknown project | Fix the project names in Settings |
 | The recording is too large | 413 | Ask a shorter question |
@@ -100,8 +102,15 @@ app allows plain HTTP in exactly that case:
 - the settings accept `http://` only for a `*.ts.net` name;
 - Android itself blocks cleartext for the app everywhere else
   (`android/app/src/main/res/xml/network_security_config.xml`);
-- before sending, the app checks that the name resolves to Tailscale addresses
-  (100.64.0.0/10 or fd7a:115c:a1e0::/48), and sends nothing otherwise.
+- a plain-HTTP turn is sent on a connection bound to the Tailscale VPN network, with the
+  name looked up through that network, and only to Tailscale addresses
+  (100.64.0.0/10 or fd7a:115c:a1e0::/48) that the network routes. With Tailscale off there
+  is no such network and nothing is sent. An address in the right range is not enough:
+  on a hostile Wi-Fi the resolver and the gateway can both pretend;
+- no proxy is ever used, so a proxy configured on the phone does not see the token.
+
+The token is sent to the address you enter, on every turn. Enter the address of your own
+bridge and nothing else.
 
 A bare `http://100.x.y.z` address is not accepted: Android's network security config takes
 names, not address ranges. Use the Tailscale name. `https://` works for any host.
@@ -126,7 +135,8 @@ The HTTP Shortcuts guide stays valid: both use the same `POST /turn`.
 - Nothing with the screen off, no steering-wheel or headset button, no Bluetooth routing
   choices, no long replies in parts: all of that is `add-drive-mode`.
 - No Google Play services, Firebase, analytics, or any library besides AndroidX and Kotlin;
-  the build fails if one is added. Two permissions: internet and microphone.
+  the build fails if one is added. Three permissions: internet, microphone, and network
+  state (to find the Tailscale network); CI fails the build on any other.
 - No log output at all.
 
 ## The signing key (Mark, once)

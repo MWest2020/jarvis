@@ -27,8 +27,9 @@ is the base that phase can later build on.
   part of any backup.
 - **Errors in words**: a refused token says "check the token", a busy project says so, an
   unreachable bridge asks whether Tailscale is on.
-- **Plain HTTP only on the tailnet**: allowed for `*.ts.net` names only, and only when the
-  name resolves to a Tailscale address. Everything else needs HTTPS.
+- **Plain HTTP only through the Tailscale tunnel**: allowed for `*.ts.net` names only, sent
+  on a connection bound to the Tailscale VPN network, never through a proxy, and refused
+  when Tailscale is off. Everything else needs HTTPS.
 - **Sovereignty (D9) enforced by the build**: only AndroidX, Kotlin and kotlinx at runtime.
   No Google Play services, no Firebase, no analytics, no HTTP or crypto library. The build
   fails when anything else appears.

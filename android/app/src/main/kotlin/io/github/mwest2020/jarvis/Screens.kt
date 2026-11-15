@@ -188,7 +188,7 @@ private fun TalkButton(phase: Phase, onPress: () -> Unit, onRelease: () -> Unit,
 @Composable
 fun SettingsScreen(
     state: UiState,
-    onSave: (url: String, token: String, projects: String) -> String?,
+    onSave: (url: String, token: String, projects: String, done: (String?) -> Unit) -> Unit,
     onForgetToken: () -> Unit,
     onClose: (() -> Unit)?,
 ) {
@@ -249,8 +249,10 @@ fun SettingsScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = {
-                    error = onSave(url, token, projects)
-                    if (error == null) token = ""
+                    onSave(url, token, projects) { refused ->
+                        error = refused
+                        if (refused == null) token = ""
+                    }
                 },
                 contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
             ) { Text("Save", fontSize = 18.sp) }

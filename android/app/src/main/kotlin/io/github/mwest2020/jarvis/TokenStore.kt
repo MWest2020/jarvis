@@ -23,7 +23,12 @@ import javax.crypto.spec.GCMParameterSpec
 class TokenStore(context: Context) {
     private val prefs = context.getSharedPreferences("secrets", Context.MODE_PRIVATE)
 
-    fun hasToken(): Boolean = prefs.contains(KEY_TOKEN)
+    /**
+     * True only when the stored token can still be decrypted (a restored or invalidated
+     * Keystore key leaves ciphertext that cannot). Uses the Keystore: call it off the main
+     * thread.
+     */
+    fun hasToken(): Boolean = load() != null
 
     /** Throws [GeneralSecurityException] or [ProviderException] when the Keystore refuses. */
     fun save(token: String) {

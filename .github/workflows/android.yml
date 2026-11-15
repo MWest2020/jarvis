@@ -44,6 +44,26 @@ jobs:
       - name: Lint, dependency check (D9), debug APK
         run: ./gradlew --no-daemon check :app:assembleDebug
 
+      # What the merged manifest really asks for and exposes, libraries included. Fails on
+      # any Android permission beyond the three of design A9.
+      - name: Permissions and components in the APK
+        run: |
+          set -eu
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          aapt2=$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -1)
+          perms=$("$aapt2" dump permissions "$apk")
+          tree=$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk")
+          {
+            echo '### Permissions'; echo '```'; echo "$perms"; echo '```'
+            echo '### Components (name, exported, permission)'; echo '```'
+            echo "$tree" | grep -E 'E: (activity|activity-alias|service|receiver|provider)|A: .*android:(name|exported|permission|authorities)\(' \
+              | sed -E 's/^ +//; s/\(0x[0-9a-f]+\)//; s/ \(Raw: .*//'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          extra=$(echo "$perms" | sed -n "s/^uses-permission: name='\(android\.permission\.[^']*\)'.*/\1/p" \
+            | grep -v -x -E 'android\.permission\.(INTERNET|RECORD_AUDIO|ACCESS_NETWORK_STATE)' || true)
+          if [ -n "$extra" ]; then echo "Unexpected permissions: $extra"; exit 1; fi
+
       - name: Name the APK
         id: apk
         run: |

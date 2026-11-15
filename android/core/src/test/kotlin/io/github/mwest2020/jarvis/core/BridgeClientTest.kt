@@ -9,7 +9,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
+import java.io.IOException
 import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ProxySelector
+import java.net.SocketAddress
 import java.net.URI
 import java.net.UnknownHostException
 
@@ -178,5 +182,72 @@ class BridgeClientTest {
         val base = serve { respond(it, 200, wavReply) }
         val client = BridgeClient(resolve = { listOf(InetAddress.getByName("100.101.102.103")) })
         assertTrue(client.turn(request(base), ByteArray(100)) is TurnOutcome.Reply)
+    }
+
+    @Test
+    fun sendsNothingWhenATailscaleAddressIsNotRouted() {
+        // Tailscale off on a hostile network: the resolver answers with 100.64.0.1, but no
+        // VPN route covers it, so the packets would go to the default gateway.
+        val base = serve { respond(it, 200, wavReply) }
+        var opened = 0
+        val client = BridgeClient(
+            resolve = { listOf(InetAddress.getByName("100.64.0.1")) },
+            open = { opened++; it.openConnection(Proxy.NO_PROXY) },
+            routed = { false },
+        )
+        val outcome = client.turn(request(base), ByteArray(100)) as TurnOutcome.Failed
+        assertEquals(FailureKind.NOT_A_TAILNET_ADDRESS, outcome.failure.kind)
+        assertEquals(0, opened)
+        assertNull(seen)
+    }
+
+    @Test
+    fun asksTheRouteCheckAboutEveryResolvedAddress() {
+        val base = serve { respond(it, 200, wavReply) }
+        val asked = mutableListOf<String>()
+        val client = BridgeClient(
+            resolve = { listOf(InetAddress.getByName("100.101.102.103"), InetAddress.getByName("fd7a:115c:a1e0::7")) },
+            routed = { asked += it.hostAddress; it.hostAddress == "100.101.102.103" },
+        )
+        val outcome = client.turn(request(base), ByteArray(100)) as TurnOutcome.Failed
+        assertEquals(FailureKind.NOT_A_TAILNET_ADDRESS, outcome.failure.kind)
+        assertEquals(2, asked.size)
+        assertNull(seen)
+    }
+
+    @Test
+    fun connectsThroughTheInjectedOpenWithTheNameFromTheInjectedResolve() {
+        val base = serve { respond(it, 200, wavReply) }
+        val resolved = mutableListOf<String>()
+        val openedUrls = mutableListOf<String>()
+        val client = BridgeClient(
+            resolve = { resolved += it; listOf(InetAddress.getByName("100.101.102.103")) },
+            open = { openedUrls += it.toString(); it.openConnection(Proxy.NO_PROXY) },
+            routed = { true },
+        )
+        assertTrue(client.turn(request(base), ByteArray(100)) is TurnOutcome.Reply)
+        assertEquals(listOf("127.0.0.1"), resolved)
+        assertEquals(listOf("$base/turn?project=demo"), openedUrls)
+    }
+
+    @Test
+    fun neverAsksForAProxyByDefault() {
+        val base = serve { respond(it, 200, wavReply) }
+        val before = ProxySelector.getDefault()
+        var asked = 0
+        ProxySelector.setDefault(object : ProxySelector() {
+            override fun select(uri: URI?): List<Proxy> {
+                asked++
+                return listOf(Proxy.NO_PROXY)
+            }
+
+            override fun connectFailed(uri: URI?, address: SocketAddress?, error: IOException?) = Unit
+        })
+        try {
+            assertTrue(loopbackClient.turn(request(base), ByteArray(100)) is TurnOutcome.Reply)
+        } finally {
+            ProxySelector.setDefault(before)
+        }
+        assertEquals(0, asked)
     }
 }

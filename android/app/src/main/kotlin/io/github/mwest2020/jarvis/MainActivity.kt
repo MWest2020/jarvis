@@ -36,13 +36,16 @@ class MainActivity : ComponentActivity() {
                 if (state.needsMicrophone) askMicrophone.launch(Manifest.permission.RECORD_AUDIO)
             }
             JarvisTheme {
-                if (showSettings || !state.configured) {
+                if (!state.loaded) {
+                    // The stored settings are being read; a moment of the dark background.
+                } else if (showSettings || !state.configured) {
                     BackHandler(enabled = showSettings && state.configured) { showSettings = false }
                     SettingsScreen(
                         state = state,
-                        onSave = { url, token, projects ->
-                            viewModel.saveSettings(url, token, projects).also { error ->
+                        onSave = { url, token, projects, done ->
+                            viewModel.saveSettings(url, token, projects) { error ->
                                 if (error == null) showSettings = false
+                                done(error)
                             }
                         },
                         onForgetToken = viewModel::forgetToken,

@@ -74,15 +74,23 @@ The app SHALL keep the token encrypted with a key held in the Android Keystore, 
 - **THEN** neither the message on the screen nor any log output contains the token
 
 ### Requirement: Plain HTTP only on the tailnet
-The app SHALL send over plain HTTP only to a `*.ts.net` name that resolves to Tailscale addresses, SHALL require HTTPS for every other address, and SHALL NOT follow redirects.
+The app SHALL send over plain HTTP only to a `*.ts.net` name, only on a connection bound to the Tailscale VPN network, and only when every address the name resolves to is a Tailscale address that this network routes. It SHALL require HTTPS for every other address, SHALL NOT use a proxy, and SHALL NOT follow redirects.
 
 #### Scenario: A plain HTTP address outside the tailnet
 - **WHEN** Mark enters an `http://` address whose host is not under `.ts.net`
 - **THEN** the settings refuse it
 
-#### Scenario: The name resolves elsewhere
-- **WHEN** Tailscale is off and the bridge's `*.ts.net` name resolves to an address outside the Tailscale ranges
-- **THEN** nothing is sent and the app asks whether Tailscale is on
+#### Scenario: Tailscale is off on a hostile network
+- **WHEN** Tailscale is off and the network's own resolver answers the bridge's `*.ts.net` name with an address inside the Tailscale range
+- **THEN** nothing is sent and the app says that Tailscale is off
+
+#### Scenario: The name resolves outside the tunnel's routes
+- **WHEN** Tailscale is on and the bridge's name resolves to an address that the Tailscale network does not route
+- **THEN** nothing is sent
+
+#### Scenario: A proxy is configured on the phone
+- **WHEN** the phone has a system HTTP proxy configured
+- **THEN** the turn does not go through it
 
 ### Requirement: Client sovereignty
 The app SHALL contact no host other than the configured bridge and SHALL contain no Google Play services, Firebase, analytics or other third-party library beyond AndroidX, Kotlin and kotlinx.

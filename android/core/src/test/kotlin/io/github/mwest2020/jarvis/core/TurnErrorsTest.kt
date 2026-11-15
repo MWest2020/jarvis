@@ -58,6 +58,21 @@ class TurnErrorsTest {
     }
 
     @Test
+    fun noVpnNetworkReadsAsTailscaleOff() {
+        val failure = TurnErrors.tailscaleOff()
+        assertEquals(FailureKind.NO_TAILNET, failure.kind)
+        assertTrue(failure.message.contains("Tailscale is off"))
+        assertTrue(failure.message.contains("Nothing was sent"))
+    }
+
+    @Test
+    fun aBrokenConnectionHintsAtTheToken() {
+        val failure = TurnErrors.fromException(java.net.SocketException("Broken pipe"))
+        assertEquals(FailureKind.NETWORK, failure.kind)
+        assertTrue(failure.message.contains("check the token"))
+    }
+
+    @Test
     fun anErrorMessageNeverCarriesTheExceptionText() {
         val failure = TurnErrors.fromException(IOException("Bearer s3cret-token"))
         assertFalse(failure.message.contains("s3cret"))

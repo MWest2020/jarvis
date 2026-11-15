@@ -5,13 +5,12 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.MediaDataSource
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.ToneGenerator
 import io.github.mwest2020.jarvis.core.Wav
 import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.IOException
 import kotlin.concurrent.thread
 
 /**
@@ -137,48 +136,48 @@ class WaitTone {
     }
 }
 
-/** Plays the bridge's WAV reply from a file in the app's cache, and removes it afterwards. */
-class ReplyPlayer(private val cacheDir: File) {
+/**
+ * Plays the bridge's WAV reply straight from memory: nothing is written to storage, and
+ * preparing happens off the main thread (`prepareAsync`).
+ */
+class ReplyPlayer {
     private var player: MediaPlayer? = null
-    private var file: File? = null
 
-    /** False when the reply cannot be played. [onDone] runs on the main thread. */
-    fun play(wav: ByteArray, onDone: () -> Unit): Boolean {
+    /** [onDone] runs on the main thread: true after the reply played, false when it could not. */
+    fun play(wav: ByteArray, onDone: (played: Boolean) -> Unit) {
         stop()
-        val target = File(cacheDir, "reply.wav")
         val created = MediaPlayer()
-        return try {
-            target.writeBytes(wav)
+        try {
             created.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
-            created.setDataSource(target.absolutePath)
+            created.setDataSource(InMemorySource(wav))
+            created.setOnPreparedListener { it.start() }
             created.setOnCompletionListener {
                 stop()
-                onDone()
+                onDone(true)
             }
             created.setOnErrorListener { _, _, _ ->
                 stop()
-                onDone()
+                onDone(false)
                 true
             }
-            created.prepare()
-            created.start()
             player = created
-            file = target
-            true
-        } catch (_: IOException) {
-            created.release()
-            target.delete()
-            false
+            created.prepareAsync()
         } catch (_: IllegalStateException) {
-            created.release()
-            target.delete()
-            false
+            fail(created, onDone)
+        } catch (_: IllegalArgumentException) {
+            fail(created, onDone)
         }
+    }
+
+    private fun fail(created: MediaPlayer, onDone: (Boolean) -> Unit) {
+        player = null
+        created.release()
+        onDone(false)
     }
 
     fun stop() {
@@ -191,7 +190,18 @@ class ReplyPlayer(private val cacheDir: File) {
             it.release()
         }
         player = null
-        file?.delete()
-        file = null
+    }
+
+    private class InMemorySource(private val bytes: ByteArray) : MediaDataSource() {
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+            if (position >= bytes.size) return -1
+            val count = minOf(size, bytes.size - position.toInt())
+            System.arraycopy(bytes, position.toInt(), buffer, offset, count)
+            return count
+        }
+
+        override fun getSize(): Long = bytes.size.toLong()
+
+        override fun close() = Unit
     }
 }

@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The only two permissions: reach the bridge, and record a question. -->
+    <!-- The only three permissions: reach the bridge, record a question, and look up which
+         network is the Tailscale VPN, so a plain-http turn can be bound to the tunnel and
+         refused when Tailscale is off (TailnetRoute.kt). ACCESS_NETWORK_STATE reads network
+         state only; it grants no location or Wi-Fi details. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
