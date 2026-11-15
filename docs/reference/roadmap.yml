@@ -7,6 +7,7 @@ phases:
   - {id: weekend-test, name: "Weekend test", summary: "spoken round trip from the phone (HTTP Shortcuts) to headless Claude Code, local STT/TTS"}
   - {id: plugin, name: "Plugin", summary: "machine side as a Claude Code plugin others can install"}
   - {id: android-app, name: "Android app", summary: "a native phone client built on the lessons of the test"}
+  - {id: full-agent, name: "Full agent", summary: "Jarvis can do what the coding session can, on its host, under the same rules, with a spoken yes for irreversible actions"}
 done_means:
   - {item: "Change add-voice-bridge proposed (proposal, design, tasks, spec)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge"}
   - {item: "Change approved by Mark (2026-11-14), his full tasks and spec in", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/1"}
@@ -21,4 +22,9 @@ done_means:
   - {item: "Android app: a spoken round trip on Mark's phone, recorded in the how-to", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/android-app.md#test-record"}
   - {item: "Android app: release-signed APK from CI (needs Mark's signing key as GitHub secrets: #13)", status: open, evidence: "https://github.com/MWest2020/jarvis/issues/13"}
   - {item: "Change add-drive-mode (the next phase) proposed (#9); approval waits on Mark: #10 (default: nothing is built until the PR is merged)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/9"}
+  - {item: "Change jarvis-full-agent proposed (proposal, design, tasks, spec delta); Mark decided 2026-11-15, nothing is built until the PR is reviewed and merged", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/20"}
+  - {item: "Full agent, agent host side: wrapper behind a forced-command key, confirmation gate, per-turn record", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-full-agent/tasks.md#1-agent-host-side"}
+  - {item: "Full agent, bridge side: readonly and full modes, remote adapter over ssh, read-back and spoken yes", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-full-agent/tasks.md#2-bridge-side"}
+  - {item: "Full agent wired over the tailnet and proven (key refused for anything but a turn; a merge only after a yes)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-full-agent/tasks.md#3-wiring"}
+  - {item: "Full agent: daily line in the notes, and Mark's parked test (merge by voice)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/jarvis-full-agent/tasks.md#4-daily-line-and-parked-test"}
   - {item: "Every project (Mark, 2026-11-15): bridge GET /projects and JARVIS_PROJECTS=*, sync of every own non-archived repo, the app's picker from the bridge; built in #18, waits on review and deploy", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/18"}
