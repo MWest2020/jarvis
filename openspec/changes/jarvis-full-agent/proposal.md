@@ -146,14 +146,16 @@ branch is not edited here. What #9 should change before it is merged:
 
 ## Phases
 
-One factory build per phase. Phase 1 is three builds (1a, 1b, 1c): nothing is installed
-before 1c, so the split costs no safety. Tasks marked **(host)** need the agent host itself and are done
+One factory build per phase. Phase 1 is four builds (1a, 1b1, 1b2, 1c): nothing is installed
+before 1c, so the split costs no safety. 1b was split after the architect's FAIL on it as one
+build (jarvis#36): 1b1 is built first, then the rest of 1b, so each build fits one merge. Tasks marked **(host)** need the agent host itself and are done
 by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 
 | # | Phase | You can then |
 |---|---|---|
 | 1a | Agent host: the wrapper | run one turn through the wrapper in CI with a fake `claude`; no gate yet |
-| 1b | Agent host: the gate | see a gated call refused, read back and released by a grant, in CI; reviewed on its own |
+| 1b1 | Agent host: gate rules, hash and grant | see calls classified as gated or desk-only and a grant release a call once, in CI; reviewed on its own |
+| 1b2 | Agent host: pending calls, read-back, targets, checkout settings | see a gated call refused, read back and released by a grant, in CI; reviewed on its own |
 | 1c | Agent host: installer, docs, host checks | install it; `full` mode stays off everywhere until the host checks pass |
 | 2 | Bridge side | choose `full` mode; a read-back and a yes work end to end against a fake agent host |
 | 3 | Wiring | talk to the full agent from the phone over the tailnet |
@@ -180,4 +182,6 @@ by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 None in the design. Mark decided the direction. One consequence is put to him explicitly,
 with a default: the trust edge from the cluster to the agent host
 (https://github.com/MWest2020/jarvis/issues/25; default: accepted, built with the stated
-limits). What needs his hands is listed at the end of `tasks.md`.
+limits). One point is open for the architect, not for Mark: the cut between 1b1 and 1b2 in
+`tasks.md` is the writer's proposal, because the architect's findings in jarvis#36 were not
+in the channel; the architect may move tasks between the two. What needs his hands is listed at the end of `tasks.md`.

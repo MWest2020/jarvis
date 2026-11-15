@@ -1,9 +1,10 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 1b (The gate, the hash and grant, the read-back)
+## Current phase: 1b1 (The gate rules, the hash and grant)
 
-One build does one phase: the phase named in this heading. Phase 1 is three builds (1a, 1b,
-1c). The last task of every phase
+One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
+1b2, 1c); 1b is split because the architect failed it as one build (jarvis#36), so 1b1 is
+built first and then the rest of 1b. The last task of every phase
 moves the heading and updates `docs/reference/roadmap.yml` (an item is done only with
 evidence). Every phase updates `docs/` in the same pull request (AGENTS.md).
 
@@ -14,7 +15,7 @@ evidence). Every phase updates `docs/` in the same pull request (AGENTS.md).
 ## 1. Agent host side
 
 Everything in `agent_host/`, Python standard library only, tested in CI with a fake `claude`
-executable. Three builds: 1a, 1b, 1c. Nothing is installed anywhere before 1c, and 1c only
+executable. Four builds: 1a, 1b1, 1b2, 1c. Nothing is installed anywhere before 1c, and 1c only
 adds the installer: running it is phase 3.
 
 **`full` mode is enabled nowhere until every check of task 1.17 has passed on the agent
@@ -62,9 +63,21 @@ mid-turn settings check reopens the design (D36).
   `bridge/summary.extract_summary` gives the same summary for it as for the full reply
 - [x] 1.6c Phase heading to 1b
 
-### 1b. The gate, the hash and grant, the read-back
+### 1b. The gate, the hash and grant, the read-back: two builds, 1b1 then 1b2
 
-This build carries the change's guarantees and is reviewed on its own.
+The architect failed 1b as one build (jarvis#36); it is split so that each build fits one
+merge, 1b1 first. Each carries part of the change's guarantees and is reviewed on its own.
+
+- **1b1, the gate rules, the hash and grant:** tasks 1.7, 1.7b, 1.8, with the tests of 1.14
+  listed there as 1b1's, then 1.14a (phase heading to 1b2). Until 1b2 is merged nothing
+  becomes pending.
+- **1b2, pending calls, read-back, nameable targets, checkout settings:** tasks 1.7c, 1.7e,
+  1.7d, 1.9, 1.10, 1.11, 1.12b, with the rest of the tests of 1.14 (as 1.14c), then 1.14b.
+- Docs for both builds: `docs/how-to/agent-host.md` (the rules and the grant in 1b1; the
+  read-backs, the confirmation switch and the records in 1b2) and
+  `docs/reference/roadmap.yml`, in the same pull request as the code.
+- Proof of a task is its test: 1b1's tasks by 1.14, 1b2's tasks by 1.14c. The split between
+  the two is an open question for the architect (see the proposal).
 
 - [ ] 1.7 `agent_host/gate`: the PreToolUse hook, for every tool. Rules from
   `agent_host/gate_rules.toml` and `/etc/jarvis-agent/rules.d/`. Default rules (D36): for
@@ -135,7 +148,7 @@ This build carries the change's guarantees and is reviewed on its own.
   confirmed. The notify command, run by the wrapper after a confirmed call (D36)
 - [ ] 1.12b The action log (PostToolUse hook) with redaction; gated actions and their
   outcome added to the turn record; retention (D38)
-- [ ] 1.14 Tests for this build: one per gate pattern (a match, and a near miss that must not match), with
+- [ ] 1.14 Tests for build 1b1 (1.7, 1.7b, 1.8): one per gate pattern (a match, and a near miss that must not match), with
   at least `git push -f`, `-fu`, `--mirror`, `--delete`, `origin :branch`, a bare `git push`
   on a default branch and on a feature branch, `gh api -X DELETE`, `gh api -f`, a GraphQL
   `mergePullRequest`, `gh secret set`, `argocd app sync`, `sudo` in second position, an
@@ -183,7 +196,16 @@ This build carries the change's guarantees and is reviewed on its own.
   (refused); a ref `release/1.2` and a 40-hex commit in a read-back (spoken as built,
   "slash" and seven digits, no fallback sentence); a read-back that cannot be built (nothing
   pending, `needs_desk`); a late `confirm` (`expired`)
-- [ ] 1.14b Phase heading to 1c
+- [ ] 1.14a Phase heading to 1b2 (the last task of 1b1). Of the list in 1.14, 1b1 proves
+  only: every gate pattern with its near miss, the defaults, `curl`, `wget`, nested
+  `ssh` and `bash -c`, compound commands and "run it alone", `scp`, `rsync`, `terraform`,
+  `aws`, the `confirm off` command forms, a grant for another hash, a reused grant, and the
+  confirmed bytes from another `cwd`
+- [ ] 1.14c Tests for build 1b2 (1.7c, 1.7e, 1.7d, 1.9, 1.10, 1.11, 1.12b): every entry of
+  the list in 1.14 that 1.14a does not name for 1b1 (target shapes, the explicit-target
+  refusals and the one repair, push remotes and addresses, the checkout settings rule before
+  and mid-turn, the pending call, expiry, an exact no, the read-back forms)
+- [ ] 1.14b Phase heading to 1c (the last task of 1b2)
 
 ### 1c. Installer, docs and the host checks
 
