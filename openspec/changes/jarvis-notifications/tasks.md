@@ -14,8 +14,10 @@ One build does one phase. The last task of every phase moves the heading and upd
 - [ ] 1.1 `POST /notify` in `bridge/`: version 1, the closed field and kind lists, the 4 KB
   cap, the project check, 400 for anything else (N2). 404 while no broker is configured
 - [ ] 1.2 Sender tokens from a file of `name = token` lines; a sender token is refused on
-  `/turn` and `/projects`, the phone's token on `/notify`; constant-time comparison; the
-  log names the sender and never the token (N2)
+  `/turn` and `/projects`, the phone's token on `/notify`; a sender token may post `build`
+  and `question` only, `reply` and `confirmation` are refused with 403 and have no route in
+  from outside the bridge; constant-time comparison; the log names the sender and never
+  the token (N2)
 - [ ] 1.3 The text through the spoken-output filter, the 300-character cut, the fixed
   sentence per kind and outcome when nothing is left; the link rule (HTTPS, allowed hosts)
 - [ ] 1.4 The limit per sender (20 per hour, burst 5, configurable), 429 over it
@@ -23,7 +25,8 @@ One build does one phase. The last task of every phase moves the heading and upd
   a file), a timeout, 202 on success, 503 when it fails, no retry and no queue
 - [ ] 1.6 Tests against a fake broker on loopback: each scenario of "Notifications in",
   a request without a token, with a wrong one, an oversized body, a body that is not JSON,
-  a text that is only a code block, a link to another host, the 21st notification in an hour
+  a text that is only a code block, a link to another host, the 21st notification in an
+  hour, a sender token posting `confirmation` and `reply`
 - [ ] 1.7 Docs: `docs/how-to/notifications.md` (the route, a `curl` example with a token
   file, the broker settings of N3 without host names), `bridge-service.md`; roadmap
 
@@ -54,16 +57,23 @@ One build does one phase. The last task of every phase moves the heading and upd
   two states (N5)
 - [ ] 3.4 The connection through `TailnetRoute` as a turn uses it (A6): refused when
   Tailscale is off, no proxy
-- [ ] 3.5 One channel per kind (N7); private visibility with the public version of N6;
-  local only; no actions; a tap opens the app; the project and text shown after unlock
+- [ ] 3.5 One channel per kind (N7). The notification holds the fixed sentence of N6 and
+  nothing else: no project, text or link in the title, the text, an expanded style, the
+  ticker or the extras; private visibility with the same sentence as public version; the
+  setting "hide notifications on the lock screen" (secret visibility), off; local only; no
+  actions; a tap opens the app
+- [ ] 3.5b The list in the app: the project and the filtered text of the last day's
+  notifications, read from the broker, nothing written to storage; the activity is not
+  shown over the lock screen
 - [ ] 3.6 `POST_NOTIFICATIONS` asked when the switch is turned on; refused means off, with
   a sentence
 - [ ] 3.7 `.github/workflows/android.yml`: the permission check allows exactly the three of
   A9 plus `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE` and
   `RECEIVE_BOOT_COMPLETED`; `checkSovereignDependencies` unchanged and green
-- [ ] 3.8 Tests: the public version holds only the fixed sentence for every kind and
-  outcome; a notification id shown once across a reconnect; an unknown kind is shown as
-  nothing
+- [ ] 3.8 Tests: for every kind and outcome the built notification, with all its fields
+  and extras dumped, contains the fixed sentence and no character of the project, the text
+  or the link (a test with marker strings in all three); a notification id shown once
+  across a reconnect; an unknown kind is shown as nothing
 - [ ] 3.9 Docs: `android-app.md` (switching it on, the permanent notification, where a
   vendor's battery manager is set, what the lock screen shows); roadmap
 
@@ -74,8 +84,11 @@ One build does one phase. The last task of every phase moves the heading and upd
 - [ ] 4.2 **(cluster)** The collector of open questions sends `question` once per new
   question, not for reminders
 - [ ] 4.3 **(Mark)** The phone test: a notification arrives with the phone locked; the lock
-  screen shows the fixed sentence only; after an hour without Tailscale the missed ones
-  come in; after a reboot it still works
+  screen shows the fixed sentence only, **checked with the system's lock-screen setting on
+  "show all notification content"** and again on "hide sensitive content"; with the app's
+  "hide on the lock screen" on, nothing shows while locked; the project and text appear in
+  the app after unlocking; after an hour without Tailscale the missed ones come in; after
+  a reboot it still works. The settings used are written into the test record
 - [ ] 4.4 **(Mark)** Battery: 24 hours with the listener on and 24 hours with it off, the
   system's own per-app figure for both, written into the how-to (open question 5)
 - [ ] 4.5 Roadmap

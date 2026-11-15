@@ -59,7 +59,8 @@ in place of the phone.
   with the runner's `ssh-keygen`
 - [ ] 3.2 The key (B1): P-256, sign only, authentication per use, strong biometric only,
   invalidated by a new enrolment, StrongBox when present; the two API paths (29, and 30 and
-  newer)
+  newer). The prompt with `setConfirmationRequired(true)`, so a face unlock needs an
+  explicit tap before the key signs; a test that the prompt is built that way
 - [ ] 3.3 Settings: "Fingerprint confirmation": create, show the public line and the
   fingerprint with a copy button, delete; refusal without a strong biometric (B6)
 - [ ] 3.4 The confirmation screen (B8): the sentence as received, the countdown, the two

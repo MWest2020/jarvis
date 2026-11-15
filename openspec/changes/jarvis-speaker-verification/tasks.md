@@ -37,19 +37,27 @@ Nothing in `bridge/` changes in this phase.
 - [ ] 1.2 The check before transcription; the four outcomes; the score in the turn's log
   line; `JARVIS_SPEAKER_CHECK` with `off` and `observe` (V1, V4, V5)
 - [ ] 1.3 The voiceprint store: AES-256-GCM, the key from a file outside the state volume,
-  mode 0600, the model checksum inside, no read route; `forget-voice` (V8)
+  mode 0600, the model checksum inside, no read route; `forget-voice` deletes the file,
+  records the key's identifier as retired and prints that the key must be replaced; enrol
+  refuses a retired key (V8)
 - [ ] 1.4 Enrolment: `jarvis-bridge enrol` opens the ten-minute window; `POST /enrol` only
   inside it; the count, length and agreement rules; profiles; recordings deleted when it
   closes (V7)
 - [ ] 1.5 Tests: enrolment refused outside the window; a voiceprint from another model
   refused; the file unreadable without the key; nothing of the voiceprint or the audio in
   the log (a test that greps the log of a full run); no embedding of a non-matching voice
-  on disk after a turn; nothing enrolled behaves as off
+  on disk after a turn; nothing enrolled behaves as off; enrolment under a retired key is
+  refused and under a new key works; a copy of the old file cannot be read with the new key
 - [ ] 1.6 The smoke test of the image still passes offline with the model inside
 - [ ] 1.7 **(host)** The key as a Secret mounted in the pod, in the cluster's own repository
 - [ ] 1.8 **(Mark)** Enrol at the desk and in the car; drive with `observe` for two weeks
-- [ ] 1.9 Docs: `docs/how-to/speaker-check.md` (what it is and is not, enrolling,
-  forgetting, the modes), `bridge-service.md`, `run-in-cluster.md`; roadmap
+- [ ] 1.9 Docs: `docs/how-to/speaker-check.md` (what it is and is not, enrolling, the
+  modes), `bridge-service.md`, `run-in-cluster.md`; roadmap. The how-to must contain, in
+  plain words: that a recording or a cloned voice passes; that a short "yes" from a
+  passenger right after Mark's request is accepted and confirms the action (V6); and
+  forgetting as two steps: `forget-voice`, then destroying the old key and its older
+  versions in the secret store, with the sentence that older backups stay readable until
+  the second step is done (V8)
 
 ## 2. Mode `enforce`
 
@@ -65,7 +73,9 @@ Nothing in `bridge/` changes in this phase.
 - [ ] 2.4 **(Mark)** Parked test with a second person: their request is refused, his runs;
   their "yes" after his request (it confirms: seen and noted); a recording of him (it
   passes: seen and noted)
-- [ ] 2.5 Roadmap; archive the change
+- [ ] 2.5 The how-to updated for `enforce`; the passenger-"yes" limitation of V6 stays in
+  it, next to `JARVIS_SPEAKER_SHORT`; a docs check in CI fails when that paragraph is gone
+- [ ] 2.6 Roadmap; archive the change
 
 ## What needs Mark's hands
 

@@ -13,7 +13,9 @@ asks. This change lets Jarvis tell him, on the phone, that something needs him.
 - **A way in: `POST /notify` on the bridge.** A sender (the build system, the job that
   collects open questions, Jarvis itself) posts one small JSON object: a kind from a closed
   list (`build`, `question`, `reply`, `confirmation`), a project, one short text and
-  optionally a link. Each sender has its own token, which can do nothing but notify. The
+  optionally a link. Each sender has its own token, which can do nothing but notify, and
+  only with the kinds `build` and `question`: `reply` and `confirmation` come from the
+  bridge itself and from nobody else. The
   bridge applies the filter it already applies to speech (no code, no paths, nothing shaped
   like a secret), caps the length, and refuses everything else.
 - **A broker: ntfy, self-hosted in the cluster, tailnet-only.** The bridge publishes to one
@@ -24,10 +26,12 @@ asks. This change lets Jarvis tell him, on the phone, that something needs him.
   broker over the Tailscale tunnel, under the same network rules as a voice turn, with a
   token that can only read that one topic. No second app on the phone, no new library: the
   platform's HTTP client reads ntfy's line-per-message stream.
-- **The lock screen shows fixed words only.** "A build finished", "A question is waiting",
-  "A confirmation is waiting", "Jarvis has a reply". The text a sender wrote is shown only
-  after the phone is unlocked, and it has passed the bridge's filter before that. No
-  notification has a button that does something: a tap opens the app.
+- **A notification holds fixed words only.** "A build finished", "A question is waiting",
+  "A confirmation is waiting", "Jarvis has a reply". That sentence is all the notification
+  contains, so it is all a lock screen can show, however the phone is set. The project and
+  the text a sender wrote are shown only inside the app, which opens only on an unlocked
+  phone, and the text has passed the bridge's filter before that. No notification has a
+  button that does something: a tap opens the app.
 - **Speaking** a notification is the last phase and waits for `add-drive-mode` (#9): in
   drive mode a notification is an *arrival*, announced by a tone and spoken when Mark asks
   "what's new". Jarvis does not start talking by itself (default; open question 2).
@@ -89,10 +93,10 @@ kinds `reply` and `confirmation` have no sender until background turns exist (#9
 Each has a default. If the pull request is merged without an answer, the default is what
 is built. They are put to Mark in https://github.com/MWest2020/jarvis/issues/30.
 
-1. **May the project name be on the lock screen?** ("A build finished for wordsworth"
-   instead of "A build finished".) It is not a secret, but it tells whoever picks up the
-   phone what you work on.
-   *Default: no. Kind and outcome only; the project is shown after unlocking.*
+1. **May the project name be in the notification, and so on the lock screen?** ("A build
+   finished for wordsworth" instead of "A build finished".) It is not a secret, but it
+   tells whoever picks up the phone what you work on.
+   *Default: no. Kind and outcome only; the project is shown inside the app.*
 2. **Should Jarvis speak a notification by itself in drive mode,** or only sound a tone and
    wait for "what's new"? #9's design says Jarvis never talks at a moment the driver did
    not choose; #21 says "optionally speaks it".

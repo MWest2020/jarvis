@@ -32,15 +32,27 @@ The app SHALL be able to receive notifications from the configured notification 
 - **THEN** the build fails
 
 ### Requirement: Lock screen content
-On a locked phone a notification SHALL show only one fixed sentence chosen by its kind and outcome. It SHALL NOT show text written by a sender, a link, code, a path, a secret or the read-back of a pending action, and this SHALL NOT depend on a system setting. After unlocking it MAY show the project and the filtered text. A notification SHALL NOT carry a button that performs an action, SHALL NOT be passed on to a watch or a car display, and a tap on it SHALL only open the app.
+A notification posted by the app SHALL contain only one fixed sentence chosen by its kind and outcome. The project, text written by a sender, a link, code, a path, a secret and the read-back of a pending action SHALL NOT be part of the notification in any field, so that a locked phone cannot show them under any lock-screen setting of the system. The app SHALL show the project and the filtered text only on its own screen, which SHALL NOT be shown over the lock screen. The app SHALL offer a setting that keeps its notifications off the lock screen entirely. A notification SHALL NOT carry a button that performs an action, SHALL NOT be passed on to a watch or a car display, and a tap on it SHALL only open the app. The app SHALL NOT write the text of a notification to the phone's storage.
 
 #### Scenario: A failed build on a locked phone
 - **WHEN** a notification of kind build with outcome failed arrives while the phone is locked
 - **THEN** the lock screen shows "A build failed" and nothing else from the notification
 
-#### Scenario: The same notification after unlocking
-- **WHEN** the phone is unlocked
-- **THEN** the notification shows the project and the filtered text
+#### Scenario: The phone shows all notification content on the lock screen
+- **WHEN** the system's lock-screen setting is "show all notification content" and a notification with a project and a sender's text arrives while the phone is locked
+- **THEN** the lock screen still shows only the fixed sentence, because the notification holds nothing else
+
+#### Scenario: Reading what it was about
+- **WHEN** the user taps the notification and unlocks the phone
+- **THEN** the app shows the project and the filtered text
+
+#### Scenario: The shade of an unlocked phone
+- **WHEN** the phone is unlocked and the notification is expanded in the shade
+- **THEN** it still shows only the fixed sentence
+
+#### Scenario: Hidden on the lock screen
+- **WHEN** the user has switched on the setting that keeps notifications off the lock screen
+- **THEN** a locked phone shows no Jarvis notification at all, and they appear after unlocking
 
 #### Scenario: A pending confirmation
 - **WHEN** a notification of kind confirmation arrives

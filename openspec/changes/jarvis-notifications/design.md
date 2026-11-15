@@ -26,7 +26,7 @@ Goals:
 - Mark hears within about a minute that a build finished, a question waits, a reply is
   ready or a confirmation is pending, while the phone is on the tailnet.
 - No Google dependency, nothing reachable from outside the tailnet.
-- A locked phone shows nothing a sender wrote.
+- A locked phone shows nothing a sender wrote, whatever its lock-screen setting is.
 - A cost in battery that is measured, not assumed.
 
 Non-Goals:
@@ -66,6 +66,11 @@ The price: one more deployment and a second address and token in the app's setti
 
 - `kind` is one of `build`, `question`, `reply`, `confirmation`. `outcome` (`ok`, `failed`)
   is allowed for `build` only. An unknown field, kind or version is a 400.
+- **Kinds per sender.** A sender token may post `build` and `question` only. `reply` and
+  `confirmation` say "Jarvis did something" and "Jarvis waits for your yes"; they are
+  created inside the bridge, by the code that ran the turn, and are refused (403) from
+  every sender token. Otherwise a leaked build-system token could put "A confirmation is
+  waiting" on Mark's phone at a moment of its choosing.
 - `project` must be a name the bridge knows (the same check as `/turn`), or absent.
 - `text` passes the spoken-output filter (no code, no paths, nothing shaped like a secret)
   and is cut to 300 characters. A text that is empty after the filter is replaced by the
@@ -140,10 +145,10 @@ Alternatives considered:
 - Default: the switch is off. Someone who installs the app and never wants notifications
   pays nothing.
 
-**N6. What a locked phone shows.** Every notification is posted with private visibility and
-a *public version* that holds one fixed sentence chosen by kind and outcome:
+**N6. The notification itself holds one fixed sentence, and nothing else.** Chosen by kind
+and outcome:
 
-| Kind | Lock screen |
+| Kind | The whole notification |
 |---|---|
 | build, ok | A build finished |
 | build, failed | A build failed |
@@ -151,11 +156,24 @@ a *public version* that holds one fixed sentence chosen by kind and outcome:
 | reply | Jarvis has a reply |
 | confirmation | A confirmation is waiting |
 
-Nothing a sender wrote is in the public version: no text, no project (open question 1), no
-link. So the rule does not depend on how the phone's "sensitive content" setting stands.
-After unlocking, the notification shows the project and the filtered text. The read-back of
-a pending confirmation is never in a notification at all, locked or not: it is shown in the
-app, where the confirmation is given.
+The project, the sender's text and the link are **never put into the notification**: not
+as its title, its text, an expanded view or the ticker. They are shown inside the app, in
+a list that opens on a tap. The app's screen is never shown over the lock screen, so
+reading them takes an unlocked phone.
+Why not "private visibility with a public version", which Android offers for exactly this
+and which the first draft of this design used: Android shows the public version only when
+the phone is set to hide sensitive content on the lock screen. With the phone set to "show
+all notification content", which is a common setting, the full notification is on the lock
+screen. The rule would then depend on a system setting, and it must not. A notification
+that does not contain the text cannot show it, on any setting, on the lock screen or in the
+shade of an unlocked phone that someone else is looking at.
+The notification is still posted with private visibility (and a public version that is the
+same sentence), so nothing changes if a later Android reads those fields differently. A
+setting in the app, "hide notifications on the lock screen", off by default, posts them
+with secret visibility instead: then a locked phone shows nothing at all.
+The list in the app is filled from the broker (`since=`, the last day); the app writes no
+notification text to the phone's storage. The read-back of a pending confirmation is not in
+the list either: it is shown on the confirmation screen, where the confirmation is given.
 Notifications are local only (not bridged to a watch or a car display) and carry no action
 buttons. A tap opens the app; a link is opened from there.
 
@@ -178,7 +196,8 @@ fixes the two rules above.
 **N10. Senders are configuration, not code.** The repository has the route and one example
 (`curl` with a token file). Which systems send, and with what words, is set up outside it:
 for Mark the build system and the collector of his open questions. Jarvis's own two kinds
-(`reply`, `confirmation`) are sent by the bridge itself when background turns exist.
+(`reply`, `confirmation`) are sent by the bridge itself when background turns exist, and
+by nothing else (N2).
 
 **N11. The confirmation ping of D36 is not moved here.** Its job is to be a second,
 independent witness of a confirmed action. If it travelled through the bridge, whoever
@@ -197,8 +216,9 @@ command the agent host configures.
 - **Tailscale off means silence.** The permanent notification says so. The daily mail still
   carries what waits for Mark.
 - **A noisy sender.** The per-sender limit, and the channels let Mark silence one kind.
-- **A sender token leaks.** Its holder can show Mark filtered text under a fixed headline,
-  up to the limit. It cannot start a turn or read anything. Withdraw that one token.
+- **A sender token leaks.** Its holder can make "A build finished" or "A question is
+  waiting" appear, with filtered text behind it in the app, up to the limit. It cannot
+  claim a reply or a confirmation, start a turn or read anything. Withdraw that one token.
 - **The read token leaks.** Its holder can read the filtered notifications from inside the
   tailnet. Another reason for the filter and for short texts.
 - **ntfy is one more thing to keep patched.** Pinned by digest, updated by the cluster's

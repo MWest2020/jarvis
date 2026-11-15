@@ -46,8 +46,10 @@ biometric is enrolled on the phone, so a fingerprint added later by someone who 
 PIN does not inherit it.
 P-256 because Ed25519 in the Keystore needs Android 13, and OpenSSH verifies both.
 The prompt is the platform's `BiometricPrompt` (API 28) with the signature object bound to
-it: the signature can only be made inside a successful prompt. No library is added. One
-permission is added: `USE_BIOMETRIC`.
+it: the signature can only be made inside a successful prompt. The prompt is built with
+`setConfirmationRequired(true)`: a biometric that needs no deliberate act (a face that is
+simply seen) releases nothing until Mark taps to confirm. A glance at the phone must never
+sign. No library is added. One permission is added: `USE_BIOMETRIC`.
 Alternatives considered:
 - *A validity window* ("authenticated in the last 30 seconds"). Rejected: one touch would
   then cover whatever is signed next. One touch, one signature.

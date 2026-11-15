@@ -97,7 +97,9 @@ with several enrolled profiles (V7) it is the highest.
   not a transcript.
 - `too_short`: accepted when the last utterance for that project was a `match` and no more
   than 60 seconds ago, otherwise handled as `no_match`. So the "yes" after a read-back
-  still works, and so does "go on". Configurable to refuse instead
+  still works, and so does "go on". **The limit that comes with it:** a passenger who says
+  "yes" right after Mark's request is accepted, and confirms the action. This sentence is
+  kept in the how-to, next to the setting, for as long as the rule exists. Configurable to refuse instead
   (`JARVIS_SPEAKER_SHORT=refuse`), which makes voice confirmation impossible and only makes
   sense with the fingerprint.
 - `error`: the turn is refused with "the voice check is not working", and the bridge's
@@ -128,8 +130,17 @@ read back): it needs the desk.
   encryption dependency of the bridge, pinned like the rest;
 - holds the profiles' vectors, the model's checksum (a voiceprint from another model is
   refused, not compared) and the enrolment date. No audio;
-- no route returns it. There is `enrol` and `jarvis-bridge forget-voice`, which deletes
-  the file. Nothing reads it out;
+- no route returns it. There is `enrol` and `jarvis-bridge forget-voice`. Nothing reads
+  it out;
+- **forgetting retires the key too.** Deleting the file does not reach the copies of it in
+  older backups of the state volume: they stay readable for whoever has the key. So
+  `forget-voice` deletes the file, records the key's identifier (a hash of the key) as
+  retired, and says that the key must now be replaced. The bridge refuses to enrol a voice
+  under a retired key, so a new voiceprint always gets a new key. The bridge cannot destroy
+  the old key itself: it is mounted read-only and lives in the cluster's secret store.
+  Destroying it there, with its older versions, is the second step of forgetting, in the
+  how-to; only after that step are the old backups unreadable. Until then they are not,
+  and the how-to says so in those words;
 - never in a log, a turn record, an error message, the agent's prompt, the agent host or
   git; the state volume's backup holds only the encrypted file.
 What the encryption is worth, said plainly: it protects a copy of the volume or a backup

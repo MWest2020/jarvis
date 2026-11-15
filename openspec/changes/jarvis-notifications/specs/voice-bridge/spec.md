@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Notifications in
-The bridge SHALL accept a notification from a configured sender as one small structured request: a kind from a closed list (a build, a question, a reply, a confirmation), optionally an outcome, a project, a short text and a link. Each sender SHALL have its own token, which SHALL be accepted for notifying only; the phone's token SHALL NOT be accepted for notifying. The bridge SHALL apply to the text the same filter as to spoken output (no code, no paths, nothing shaped like a secret), SHALL cap its length, SHALL drop a link that is not HTTPS to an allowed host, and SHALL limit how many notifications one sender can send per hour. It SHALL pass the result to a notification broker that is reachable only inside the private network and that involves no service outside the user's own machines. The bridge SHALL NOT pass the text of a notification to the agent.
+The bridge SHALL accept a notification from a configured sender as one small structured request: a kind from a closed list (a build, a question, a reply, a confirmation), optionally an outcome, a project, a short text and a link. Each sender SHALL have its own token, which SHALL be accepted for notifying only and only for the kinds build and question; a notification of the kinds reply and confirmation SHALL be created by the bridge itself and SHALL be refused from every sender. The phone's token SHALL NOT be accepted for notifying. The bridge SHALL apply to the text the same filter as to spoken output (no code, no paths, nothing shaped like a secret), SHALL cap its length, SHALL drop a link that is not HTTPS to an allowed host, and SHALL limit how many notifications one sender can send per hour. It SHALL pass the result to a notification broker that is reachable only inside the private network and that involves no service outside the user's own machines. The bridge SHALL NOT pass the text of a notification to the agent.
 
 #### Scenario: A build finished
 - **WHEN** the build system posts a notification of kind build with outcome ok for a known project, with its own token
@@ -10,6 +10,10 @@ The bridge SHALL accept a notification from a configured sender as one small str
 #### Scenario: A sender token on another route
 - **WHEN** a request to start a turn or to list projects carries a sender token
 - **THEN** it is refused as if it had no token
+
+#### Scenario: A sender claims a confirmation
+- **WHEN** a sender posts a notification of kind confirmation or reply with a valid sender token
+- **THEN** it is refused and nothing is published
 
 #### Scenario: The phone's token on the notify route
 - **WHEN** a notification is posted with the phone's token

@@ -50,7 +50,7 @@ A match SHALL NOT grant anything: it SHALL NOT replace the token, the private ne
 - **THEN** the bridge does not start and says why
 
 ### Requirement: Voiceprint
-The bridge SHALL create the enrolled voice only in an enrolment that is started on the bridge's own machine and that ends by itself after a fixed time; a request with the phone's token alone SHALL NOT start, change or replace it. The voiceprint SHALL be stored only on the bridge, encrypted, with its key kept outside the storage that holds it. The recordings used for enrolment SHALL be deleted when it ends. The bridge SHALL offer no way to read the voiceprint out, SHALL offer its user a command that deletes it, and SHALL NOT write it, or audio it was made from, to a log, a turn record, a prompt, another machine or the repository. The bridge SHALL NOT store a voiceprint or an embedding of any voice other than the enrolled one. A voiceprint made with another model SHALL be refused, not compared.
+The bridge SHALL create the enrolled voice only in an enrolment that is started on the bridge's own machine and that ends by itself after a fixed time; a request with the phone's token alone SHALL NOT start, change or replace it. The voiceprint SHALL be stored only on the bridge, encrypted, with its key kept outside the storage that holds it. The recordings used for enrolment SHALL be deleted when it ends. The bridge SHALL offer no way to read the voiceprint out, SHALL offer its user a command that deletes it and retires its encryption key, SHALL refuse to enrol a voice under a retired key, and SHALL NOT write it, or audio it was made from, to a log, a turn record, a prompt, another machine or the repository. The bridge SHALL NOT store a voiceprint or an embedding of any voice other than the enrolled one. A voiceprint made with another model SHALL be refused, not compared.
 
 #### Scenario: Enrolling
 - **WHEN** an enrolment is opened on the bridge's machine and Mark speaks the asked number of sentences through his phone
@@ -75,6 +75,10 @@ The bridge SHALL create the enrolled voice only in an enrolment that is started 
 #### Scenario: Forgetting
 - **WHEN** Mark runs the command that deletes the voiceprint
 - **THEN** it is gone, and the check behaves as with nothing enrolled
+
+#### Scenario: Enrolling again after forgetting
+- **WHEN** an enrolment is opened after the voiceprint was deleted and the encryption key is still the one it was stored under
+- **THEN** the enrolment is refused until the key has been replaced, so that older copies of the storage cannot be read with the key in use
 
 #### Scenario: Another voice
 - **WHEN** an utterance by someone else is checked
