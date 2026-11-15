@@ -81,13 +81,19 @@ This build carries the change's guarantees and is reviewed on its own.
   managed settings and every file a configured hook runs; writes by `Edit`, `Write` and
   shell commands): always desk-only. The fixed `confirm on|off [class]` program and its
   templated read-back as the one exception
-- [ ] 1.7c Target shapes per kind (D36 table); every target of the call named (mail to, cc
+- [ ] 1.7c A target longer than 100 characters, or matching the secret-shaped pattern in
+  its spoken form, makes the call not nameable. Target shapes per kind (D36 table); every target of the call named (mail to, cc
   and bcc; every repository and ref of a push; namespace and resource); a missing or
   misshapen target, or more targets than the template holds, makes the call not nameable
 - [ ] 1.7e Explicit targets only: no repository, namespace, context, remote, refspec or
-  recipient is taken from the surroundings. `cwd` is used for two things: the explicit
+  recipient is taken from the surroundings; `--context` is required on every cluster call,
+  whatever the number of configured contexts. `cwd` is used for two things: the explicit
   `--repo` of a `gh` call must equal the checkout's GitHub remote when there is one, and a
-  push's explicit remote name is resolved in the stored `cwd`. A call that is not nameable
+  push's explicit remote name is resolved in the stored `cwd` with
+  `git remote get-url --push --all` (so `pushurl` and `pushInsteadOf` apply): exactly one
+  address that parses to `owner/name` or the push is not nameable; the resolved address is
+  part of the push's hash, and the gate resolves it again on release and denies with
+  `target_changed` when it differs. A call that is not nameable
   only for missing explicit targets is denied with the list of exactly those parts; the gate
   remembers it and accepts one repair in that turn (the same words plus only options from
   that list, the same `cwd`); anything else after such a refusal is denied with `needs_desk`
@@ -155,7 +161,13 @@ This build carries the change's guarantees and is reviewed on its own.
   without `--repo` and without the pin (refused with exactly those two parts named, then the
   repaired call pending); a repair that also changes the number, a repair with another tool,
   and a second repair (each `needs_desk`); `kubectl delete pod x` without `-n` and a
-  `git push` without a remote (each refused with the missing part named); a `--repo` that is
+  `git push` without a remote (each refused with the missing part named); `kubectl delete
+  pod x -n y` without `--context`, with one context configured and with two (refused both
+  times, `--context` named); a remote with a `pushurl` (the read-back names the push
+  address, not the fetch address); a `pushInsteadOf` rewrite (the rewritten address is
+  named); two push addresses (not nameable); an address that does not parse (not nameable);
+  a `pushurl` set between read-back and release (denied, `target_changed`, nothing pushed);
+  a target of 101 characters and a target of 32 token characters (not nameable); a `--repo` that is
   not the checkout's repository (not nameable); the confirmed bytes from another `cwd`
   (refused); a ref `release/1.2` and a 40-hex commit in a read-back (spoken as built,
   "slash" and seven digits, no fallback sentence); a read-back that cannot be built (nothing
@@ -244,7 +256,8 @@ This build carries the change's guarantees and is reviewed on its own.
   exists only on the agent host cannot be reached by voice
 - [ ] 2.6 Spoken errors for `busy`, `low_memory`, `timeout`, `agent_failed`, and for
   `expired` its own sentence ("That took too long. Ask again."); fixed sentences for the
-  notices `needs_desk`, `run_alone`, `settings_changed`, `new_session`; the bridge log
+  notices `needs_desk`, `run_alone`, `settings_changed`, `target_changed`, `out_of_budget`,
+  `new_session`; the bridge log
   gets the turn id of the agent host, never the key or the request body on stdout
 - [ ] 2.7 `deploy/Dockerfile`: the ssh client; the CI smoke test still passes offline in
   `readonly` mode

@@ -149,7 +149,7 @@ configuration (`/etc/jarvis-agent/`). It:
   | `pending` | `true` when a gated call waits for a yes, else `false` |
   | `readback` | the read-back sentence when `pending` is `true`, else `null`. A separate field, never the marker line, so the bridge cannot mistake one for the other |
   | `confirm` | when `pending` is `true`: `{"id","sha256","class","expires_s"}`, else `null` |
-  | `notice` | `null`, or one code from a closed list for which the bridge has a fixed sentence: `needs_desk`, `run_alone`, `settings_changed`, `new_session` |
+  | `notice` | `null`, or one code from a closed list for which the bridge has a fixed sentence: `needs_desk`, `run_alone`, `settings_changed`, `target_changed`, `out_of_budget`, `new_session` |
 
   When `pending` is `true`, `spoken` is `""`: the agent's own line is not sent at all.
   `expired` answers a `confirm` whose pending call is gone or too old (D36).
@@ -230,8 +230,9 @@ The call shape the prompt states, per gated class, because the gate names only w
 in the call (D36):
 - a merge: `gh pr merge <number> --repo <owner>/<name> --match-head-commit <full sha>`;
 - other `gh` actions: `--repo <owner>/<name>`;
-- cluster calls: `-n <namespace>` on every namespaced call, and `--context <name>` whenever
-  more than one context is configured;
+- cluster calls: `--context <name>` on every call, always, however many contexts are
+  configured, and `-n <namespace>` on every namespaced call. The context is a target like
+  any other and is read back ("on cluster homelab");
 - a push: an explicit remote and an explicit refspec (`git push origin my-branch:main`);
 - mail and messages: every recipient explicit in the call.
 The prompt line is help. The enforcement is the gate's refusal: a call without these is not
@@ -334,7 +335,11 @@ when it matches the shape its kind must have; nothing else from the call is ever
 **Every** target of the call is named: every recipient of a mail (to, cc and bcc), every
 repository and every ref of a push, the namespace as well as the resource. A target that is
 missing, does not match its shape, or is one of more than the template can say (a mail to
-thirty people) makes the call **not nameable**. What the read-back therefore promises is
+thirty people) makes the call **not nameable**. So does a target that is longer than 100
+characters or matches the bridge's secret-shaped pattern (`sk-ant-`, or a run of 32 or more
+token characters) in the form it would be spoken: the read-back skips the free-text filter
+and is also sent in the notify ping, so nothing shaped like a credential may ride in it. A
+full commit id is not affected, because it is spoken as seven digits. What the read-back therefore promises is
 this and no more: the sentence says truthfully what the released call acts on. It does not
 say the call is what Mark meant; hearing that is his part.
 
@@ -346,22 +351,33 @@ main` is one example):
   string, byte for byte;
 - any other tool: SHA-256 over the tool name, a zero byte, the `cwd`, a zero byte and the
   canonical JSON of its input (sorted keys, no insignificant whitespace) without the
-  cosmetic field `description`.
+  cosmetic field `description`;
+- a push: additionally a zero byte and the resolved push address of its remote (below).
 A released call must therefore run in the stored `cwd`: the confirming prompt names the
 directory, and a call with the right bytes from another directory has another hash and is
 refused.
 
 *Explicit targets, and what `cwd` is not used for.* A target is named only when it stands
 in the call. The wrapper never fills in a missing one from the surroundings: no repository
-from the checkout for a `gh` call without `--repo`, no namespace from the current context,
+from the checkout for a `gh` call without `--repo`, no cluster and no namespace from the
+current context,
 no upstream for a bare `git push`. (Deciding *that* a call is gated may look at the
 surroundings, such as where a bare push would land; naming it may not.) Two uses of `cwd` remain, neither a substitute:
 - *consistency*: when the `cwd` is a checkout with a GitHub remote, the explicit `--repo`
   of a `gh` call must be that repository. If it is not, the call is not nameable;
-- *resolving a name that is in the call*: a push names its remote (`origin`); the wrapper
-  reads that remote's address in the stored `cwd` to say which repository it is. The remote
-  is explicit, and the directory is in the hash, so this is the same lookup git itself
-  makes when the released call runs.
+- *resolving a name that is in the call*: a push names its remote (`origin`), and which
+  repository that is depends on git configuration that the call's bytes do not contain: git
+  pushes to `remote.<name>.pushurl` when it is set, rewrites addresses with
+  `pushInsteadOf`, and may push to several addresses at once. So the wrapper resolves the
+  remote with `git remote get-url --push --all <remote>` in the stored `cwd`, which applies
+  those settings. Exactly one address that parses to an `owner/name` repository is nameable;
+  more than one, or one that does not parse, is not. **The resolved address is part of the
+  hash** of a push, and the gate resolves it again, the same way, at the moment the call is
+  released: if it differs from what was read back (a `git config remote.origin.pushurl …`
+  in between is not a gated call), the hash no longer matches, the call is denied and the
+  notice is `target_changed` ("The push target changed. That one needs the desk."). What is
+  left is the instant between the gate's check and git's own read of its configuration,
+  which only a process racing the call could use; that is D40's attacker, not a mistake.
 
 *A refusal that says what is missing.* When a gated call fails to be nameable only because
 explicit targets are missing, the gate's denial lists exactly those parts ("add --repo
@@ -650,8 +666,9 @@ host; see D40.
 - **The agent host is small.** One turn at a time and a memory floor (D34). A turn that
   starts subagents can still push the host; the prompt says to dispatch long work.
 - **Shared usage limits.** Full turns use the same login as the coding session; when the
-  limit is reached both stop. The bridge says "the agent is out of budget" from the
-  wrapper's `agent_failed` detail when Claude Code reports a limit.
+  limit is reached both stop. The wrapper then answers `agent_failed` with the notice
+  `out_of_budget`, for which the bridge has the fixed sentence "The agent is out of budget
+  for now."
 - **Two agents, one set of checkouts.** The agreement "one working tree per session" covers
   it: Jarvis works in its own worktrees. The turn's working directory is the checkout only
   so that the project's own instructions load.
