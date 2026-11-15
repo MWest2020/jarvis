@@ -30,11 +30,15 @@ mouth for the same agent, never a privileged way around it.
   exactly as the coding session does. An appended prompt adds only what is different: you are
   Jarvis, the driver cannot see a screen, the same agreements apply.
 - **Voice confirmation** for actions that are irreversible or reach outside: merge, deploy,
-  delete, anything forced, sending mail or messages, creating a repository, and changing
-  Jarvis's own rules. A PreToolUse hook refuses such a tool call unless the bridge sent a
-  grant for exactly that call in this turn. Jarvis reads the action back in one sentence; a
-  spoken "yes" as the next utterance releases it, once. It is on by default and Mark can
-  switch it off: everything is allowed, this only guards against misheard speech in a car.
+  delete, anything forced, changes through an API or to account settings, sending mail or
+  messages, creating a repository, running as root, and changing Jarvis's own rules. A
+  PreToolUse hook refuses such a tool call unless the bridge sent a grant for exactly that
+  call (by hash) in this turn. Jarvis reads the action back in one sentence that is built
+  from the call by rules, with nothing the agent wrote; a spoken "yes" as the next utterance
+  releases it, once. A merge is read back with its review and check status. What cannot be
+  named in a sentence, and what the classifier refuses anyway, "needs the desk". It is on by
+  default and Mark can switch it off: everything is allowed, this guards against misheard
+  speech in a car.
 - **Identity and audit.** Commits use the host's global git identity. Builds and pings go out
   under the identity the host configures for Jarvis. Every turn leaves an owner-only record on
   the agent host (what was said, what was replied, every tool call that changes something,
@@ -46,6 +50,37 @@ mouth for the same agent, never a privileged way around it.
 Not in this change: streaming, tones, control words, the drive journal (`add-drive-mode`,
 #9); the Android app (no change needed: a read-back is an ordinary spoken reply, and the yes
 is an ordinary next turn); any change to the phone's token or to how the bridge is exposed.
+
+## What this trusts
+
+Said plainly, because "everything you can do" has a price (design D40):
+
+- Whoever holds the phone's token, or the bridge's key at the bridge's address, can put any
+  prompt to a full agent: that is Mark at the agent host's keyboard, limited only by the
+  agent's judgement, the permission rules and the gate. The forced command limits the form
+  of what can be asked, not the power of what answers.
+- The cluster gets a road to the agent host that did not exist. Anyone who can read the
+  Secret with the bridge's key, or run code in the bridge's pod, inherits the line above.
+  Accepted under Mark's decision; kept narrow by `from=` on the key, the NetworkPolicy, a
+  kill switch on the agent host and a ping to Mark's phone on every confirmed action.
+- The gate and its records live on a host where the agent has a shell as their owner, and
+  passwordless `sudo`. The guarantees of the gate hold for an agent that works through its
+  tools, including one misled into trying a gated action. They are not a wall against an
+  agent that deliberately attacks its own host. `sudo` and writes to Jarvis's own rules are
+  gated, which makes that road visible, not closed.
+- The classifier does not see calls that match one of the user's allow rules (for example
+  `ssh` and merging on his own repositories). That is so for the coding session too.
+- Nothing enforces "review and green checks before a merge". The read-back states both, so
+  the yes is an informed one.
+
+## Decided by "everything you can do"
+
+1. **A merge by voice is allowed.** The read-back says how the pull request stands (review,
+   checks); Mark's yes is his consent.
+2. **What the classifier refuses to the coding session stays desk-only.** If the host check
+   shows that auto mode refuses an action even after a yes (a force push, `reset --hard`,
+   deleting a namespace), Jarvis does not offer a read-back and says "that one needs the
+   desk". Jarvis can do what the coding session can, not more.
 
 ## What Jarvis must still never do
 
@@ -76,7 +111,7 @@ branch is not edited here. What #9 should change before it is merged:
 
 | In #9 | Do |
 |---|---|
-| Rule 1 and D11 ("the front seat directs; it does not edit"), the non-goal "editing files or running commands from the voice session" | Drop. In `full` mode the voice session is a full agent. |
+| Rule 1 and D11 ("the front seat directs; it does not edit"), the non-goal "editing files or running commands from the voice session", and the goal "a spoken yes can only start something that was defined beforehand and read back" | Drop. In `full` mode the voice session is a full agent. |
 | The `MODIFIED` delta of "Approval for changes" | Drop it; the one in this change replaces it. Two changes cannot both rewrite one requirement. |
 | D21, the capability `handoffs`, phase 4, `POST /arrivals` and its token, tasks 4.1 to 4.9 | Drop. Jarvis starts a build itself, as its own identity, under the confirmation gate. Keep "note" (it writes only to the journal). |
 | D12 ("actions come from the driver's words only") | Narrow it: project switching, control words and the yes are still recognised by the bridge from the driver's own utterance, and the agent can never confirm. The agent may now act, under the classifier, the hooks and the gate. |
@@ -100,13 +135,16 @@ by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 
 ## Impact
 
-- Capability `voice-bridge`: one requirement modified (Approval for changes), eight added.
+- Capability `voice-bridge`: two requirements modified (Approval for changes, Session
+  continuity), eight added.
+- `run-bridge-in-cluster`, D2: the pod's egress was DNS and HTTPS only. In `full` mode it is
+  also ssh to the agent host through the tailnet egress proxy; that change's how-to says so.
 - Code: `bridge/` (adapter seam, remote adapter, confirmation state), new `agent_host/`
   (wrapper, gate hook, gate rules, prompt, installer; Python standard library only),
   `deploy/Dockerfile` (the ssh client). `agent_host/` is added to the `docs-gates` code paths.
 - Docs: a new how-to for the agent host; `bridge-service.md` and `run-in-cluster.md` updated.
-- Outside this repository: one `authorized_keys` line and a root-owned install on the agent
-  host; a Secret with the bridge's key, a tailnet egress Service and one more egress rule in
+- Outside this repository: one `authorized_keys` line, a root-owned install and host-local
+  gate rules on the agent host; the daily mail step reading Jarvis's line; a Secret with the bridge's key, a tailnet egress Service and one more egress rule in
   the cluster's own repository.
 - The Claude credentials in the pod stay, for `readonly` mode. `full` mode uses the agent
   host's own login, so its turns count against the same usage limits as the coding session.
