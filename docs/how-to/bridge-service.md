@@ -114,13 +114,27 @@ recorded audio as the body. Replies:
 | Status | When |
 |---|---|
 | 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. |
-| 400 | No project, an unknown project, an empty body, or a `Content-Length` that is not a number |
+| 400 | No project, an unknown project, an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
 | 409 | That project is still busy with another turn (one turn per session at a time) |
 | 413 | Audio larger than 10 MB |
 | 502 | The Claude Code turn failed or timed out (details in the log) |
+| 503 | Eight connections are already open (any route, before the token is looked at). `Retry-After: 5`. |
 
 A connection that stalls for 30 seconds is closed.
+
+The bridge serves at most eight connections at once (`MAX_CONNECTIONS` in
+`bridge/server.py`). A connection counts from the moment it is accepted until it closes,
+whatever it is doing: sending headers, uploading, waiting for the agent, or sitting idle on
+keep-alive. The ninth gets no thread and no place in a queue: the bridge writes a 503 at
+once, without reading the request, and closes. A client that had already started a large
+upload can see a broken connection instead of the 503. The phone app shows "The bridge is
+busy with other connections" for a 503. What the cap does not solve: the 30 seconds apply
+to each read, not to the whole request, so eight clients on the tailnet that each send a
+header byte every few seconds hold all eight slots for as long as they like, token or not.
+The cap turns unlimited threads into a bridge that says it is busy; it does not keep the
+bridge reachable under such an attack. The tailnet ACL and the NetworkPolicy decide who can
+connect at all ([`run-in-cluster.md`](run-in-cluster.md)).
 
 A refused request (404, 401, 400) still gets its status line when the phone is already
 uploading a long question: if the announced `Content-Length` is a valid number of at most

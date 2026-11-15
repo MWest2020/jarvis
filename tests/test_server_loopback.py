@@ -192,6 +192,124 @@ def test_draining_a_rejected_body_is_bounded_in_time(running_server, monkeypatch
     assert reply == b"" or b" 401 " in reply.split(b"\r\n")[0]
 
 
+def test_draining_a_trickled_body_stops_at_the_total_deadline(running_server, monkeypatch):
+    # Slowloris-style: a byte every 100 ms keeps every single read well inside the
+    # socket timeout, so only the total deadline can end the drain (jarvis#15).
+    import socket
+    import time
+    monkeypatch.setattr(server, "DRAIN_DEADLINE_S", 1.0)
+    head = (b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+            b"Authorization: Bearer wrong\r\nContent-Length: 5000000\r\n\r\n")
+    reply = b""
+    sent = 0
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head)
+        started = time.monotonic()
+        s.settimeout(0.1)
+        while time.monotonic() - started < 10:
+            try:
+                s.sendall(b"x")
+                sent += 1
+            except OSError:
+                break
+            try:
+                chunk = s.recv(4096)   # doubles as the 100 ms pause
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            reply += chunk
+            if not chunk or b"\r\n\r\n" in reply:
+                break
+        elapsed = time.monotonic() - started
+    # Not before the deadline (the trickle was still being read), and not long after.
+    assert elapsed >= 1.0
+    assert elapsed < 3.0
+    assert sent >= 5
+    assert b" 401 " in reply.split(b"\r\n")[0]
+    assert b"connection: close" in reply.lower()
+
+
+@pytest.mark.parametrize("value", ["+5", "-1", "5_0", "0x10", "1.0", "\u0665", "9" * 5000])
+def test_content_length_must_be_plain_digits(value):
+    assert server._parse_content_length(value) is None
+
+
+def test_content_length_plain_digits_and_absent():
+    assert server._parse_content_length("0") == 0
+    assert server._parse_content_length("0010") == 10
+    assert server._parse_content_length(None) == 0
+
+
+def test_rejects_a_signed_content_length(running_server):
+    reply = _raw(running_server, b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+                 b"Authorization: Bearer test-token\r\nContent-Length: +5\r\n\r\nhello")
+    assert b" 400 " in reply.split(b"\r\n")[0]
+
+
+# jarvis#15: at most MAX_CONNECTIONS connections are served at once.
+
+@pytest.fixture
+def capped_server(monkeypatch, request):
+    # The cap is read when the server is made, so set it before running_server starts.
+    monkeypatch.setattr(server, "MAX_CONNECTIONS", 2)
+    return request.getfixturevalue("running_server")
+
+
+def _wait_for_status(port, wanted, *, within=5.0):
+    import time
+    deadline = time.monotonic() + within
+    status = None
+    while time.monotonic() < deadline:
+        status = _get(port)[0].status
+        if status == wanted:
+            return status
+        time.sleep(0.05)
+    return status
+
+
+def test_a_connection_over_the_cap_gets_a_quick_503(capped_server):
+    import socket
+    import time
+    # Two clients that connect and say nothing hold both slots.
+    idle = [socket.create_connection(("127.0.0.1", capped_server), timeout=5) for _ in range(2)]
+    try:
+        assert _wait_for_status(capped_server, 503) == 503
+        started = time.monotonic()
+        with socket.create_connection(("127.0.0.1", capped_server), timeout=5) as s:
+            reply = b""
+            while chunk := s.recv(4096):   # nothing was sent: the 503 does not wait for a request
+                reply += chunk
+        assert time.monotonic() - started < 1.0
+        head, _, body = reply.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.1 503 ")
+        assert b"connection: close" in head.lower()
+        assert b"retry-after:" in head.lower()
+        assert body == server.BUSY_MESSAGE
+    finally:
+        for s in idle:
+            s.close()
+    # The slots come back when those connections close.
+    assert _wait_for_status(capped_server, 200) == 200
+
+
+def test_many_connections_over_the_cap_do_not_queue(capped_server):
+    import socket
+    idle = [socket.create_connection(("127.0.0.1", capped_server), timeout=5) for _ in range(2)]
+    try:
+        assert _wait_for_status(capped_server, 503) == 503
+        for _ in range(20):
+            assert _get(capped_server)[0].status == 503
+    finally:
+        for s in idle:
+            s.close()
+    assert _wait_for_status(capped_server, 200) == 200
+    # More requests than slots, one after another: each gives its slot back. A slot
+    # is freed just after the client sees the close, hence the short wait.
+    for _ in range(10):
+        assert _wait_for_status(capped_server, 200) == 200
+
+
 # add-project-list: GET /projects, behind the same gate as /turn.
 
 def _get(port, path="/projects", *, token="test-token"):

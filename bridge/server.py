@@ -33,6 +33,12 @@ NOT_HEARD = "Sorry, I didn't catch that."
 # however slowly the client trickles bytes in.
 DRAIN_DEADLINE_S = 30.0
 DRAIN_CHUNK_BYTES = 64 * 1024
+# Connections served at once (BoundedHTTPServer). A voice bridge has one user and a
+# turn per project; anything beyond this is refused with a 503 instead of a new thread.
+MAX_CONNECTIONS = 8
+BUSY_MESSAGE = b"the bridge is busy; try again in a moment"
+# The 503 is written from the accept loop, so it may never wait on a slow client.
+BUSY_SEND_TIMEOUT_S = 1.0
 _project_locks: dict[str, threading.Lock] = {}
 _project_locks_guard = threading.Lock()
 
@@ -46,11 +52,14 @@ def _parse_content_length(value: str | None) -> int | None:
     """The announced body length; 0 when absent, None when not a valid number."""
     if value is None:
         return 0
-    try:
-        length = int(value)
-    except ValueError:
+    # Digits only: int() alone also takes "+5", "5_0", padding and non-ASCII digits,
+    # which another HTTP parser on the path could read differently.
+    if not (value.isascii() and value.isdigit()):
         return None
-    return length if length >= 0 else None
+    try:
+        return int(value)
+    except ValueError:   # more digits than int() converts
+        return None
 
 
 def is_authorized(auth_header: str | None, expected_token: str) -> bool:
@@ -268,12 +277,58 @@ class Handler(BaseHTTPRequestHandler):
             logger.info("could not send %s to %s: %s", status, self.address_string(), exc)
 
 
-def make_server(config: BridgeConfig) -> ThreadingHTTPServer:
+class BoundedHTTPServer(ThreadingHTTPServer):
+    """A thread per connection, but at most MAX_CONNECTIONS of them (jarvis#15).
+
+    A connection holds its slot from accept until it closes, whatever it is doing:
+    trickling headers, uploading, draining, waiting for the agent, or idling on
+    keep-alive. One over the cap gets no thread and no queue place: a 503 is written
+    from the accept loop, without reading the request, and the socket is closed.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._slots.acquire(blocking=False):
+            self._refuse_busy(request, client_address)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:   # the thread did not start, so nothing else frees the slot
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def _refuse_busy(self, request, client_address) -> None:
+        logger.warning("refused %s: %s connections already open", client_address[0], MAX_CONNECTIONS)
+        try:
+            request.settimeout(BUSY_SEND_TIMEOUT_S)
+            request.sendall(
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: text/plain; charset=utf-8\r\n"
+                b"Content-Length: " + str(len(BUSY_MESSAGE)).encode("ascii") + b"\r\n"
+                b"Retry-After: 5\r\n"
+                b"Connection: close\r\n\r\n" + BUSY_MESSAGE
+            )
+        except OSError as exc:
+            logger.info("could not send 503 to %s: %s", client_address[0], exc)
+        finally:
+            self.shutdown_request(request)
+
+
+def make_server(config: BridgeConfig) -> BoundedHTTPServer:
     Handler.config = config
     Handler.sessions = SessionStore(config.session_store_path)
-    server_cls = ThreadingHTTPServer
+    server_cls = BoundedHTTPServer
     if ":" in config.bind_host:   # a Tailscale IPv6 address
-        server_cls = type("ThreadingHTTPServerV6", (ThreadingHTTPServer,),
+        server_cls = type("BoundedHTTPServerV6", (BoundedHTTPServer,),
                           {"address_family": socket.AF_INET6})
     return server_cls((config.bind_host, config.port), Handler)
 

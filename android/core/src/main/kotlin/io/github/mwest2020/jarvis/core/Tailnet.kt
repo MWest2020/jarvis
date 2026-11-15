@@ -4,7 +4,25 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 
+/**
+ * One route of the VPN network that matches an address: how long its prefix is, and whether
+ * it is a unicast route (packets go into the tunnel) and not a throw or unreachable route.
+ */
+data class MatchingRoute(val prefixLength: Int, val unicast: Boolean)
+
 object Tailnet {
+    /**
+     * Whether the tunnel carries an address, given the routes of the VPN network that match
+     * it ([matching]). The most specific route decides, as it does in the kernel: an address
+     * the VPN app excluded (VpnService.Builder.excludeRoute, Android 13+) has a throw route
+     * that is more specific than the unicast route around it, and its packets leave outside
+     * the tunnel. No matching route, or a most specific one that is not unicast: not carried.
+     */
+    fun carries(matching: List<MatchingRoute>): Boolean {
+        val longest = matching.maxOfOrNull { it.prefixLength } ?: return false
+        return matching.filter { it.prefixLength == longest }.all { it.unicast }
+    }
+
     /**
      * True for the addresses Tailscale hands out: 100.64.0.0/10 (the CGNAT range) and
      * fd7a:115c:a1e0::/48.
