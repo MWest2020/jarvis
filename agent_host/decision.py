@@ -11,9 +11,12 @@ tested without a process. Phase 1b1: the gate decides and refuses.
   by voice and every gated action is desk-only, which is the safe side.
 - The order of the refusals, for a gated call: first the checkout settings
   rule (while a `.claude/settings*.json` of the turn's checkout or of the
-  call's own worktree carries `env`, `hooks` or `disableAllHooks`, every
-  gated call is denied, whatever else is true of it), then "run it alone"
-  for a compound command, then "needs the desk".
+  call's own worktree carries anything but the few harmless keys, every
+  gated call is denied, whatever else is true of it), then the class
+  `self`, then a command the gate cannot read as one command (with
+  nothing gated found in it: "run each part alone", and the agent may go
+  on; with something gated in it: "run it alone", and the turn ends), then
+  "needs the desk".
 - If anything here cannot be done (the rules cannot be read, the call
   cannot be parsed, a crash), the caller denies: failing closed.
 
@@ -46,6 +49,14 @@ REASON_RUN_ALONE = (
     " read back as one command, without a separator, pipe, substitution, redirection"
     " or newline anywhere in it (inside quotes too), and without eval, xargs or"
     " source." + _STOP
+)
+REASON_NOT_UNDERSTOOD = (
+    "[split] The gate reads one plain command at a time, and it could not read this"
+    " call as one: a pipe, a separator, a substitution, a here-document, a redirection"
+    " to a file, a wrapper it does not follow, or a program that runs other commands."
+    " What it cannot fully understand it does not let through. Run each part as its own"
+    " call, and put text that holds such characters (a commit message, a body) in a"
+    " file and pass the file. Nothing was run."
 )
 REASON_SELF = (
     "[needs_desk] That one needs the desk: it writes to Jarvis's own rules or"
@@ -103,7 +114,6 @@ def decide(
         config, rules, cwd=real_cwd,
         home=home if home is not None else user_home(),
         lib_dir=lib_dir if lib_dir is not None else Path(__file__).resolve().parent,
-        extra_temp_roots=(os.environ.get("TMPDIR", ""),),
         git=git,
     )
     verdict = classify.classify(tool_name, tool_input, ctx)
@@ -116,6 +126,8 @@ def decide(
         return Decision(False, REASON_SETTINGS, verdict)
     if verdict.desk_only:
         return Decision(False, REASON_SELF, verdict)
+    if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
+        return Decision(False, REASON_NOT_UNDERSTOOD, verdict)
     if verdict.run_alone:
         return Decision(False, REASON_RUN_ALONE, verdict)
     return Decision(False, REASON_DESK, verdict)

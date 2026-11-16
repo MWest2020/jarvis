@@ -29,6 +29,7 @@ the surroundings is never allowed (1b2).
 """
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import json
 import os
@@ -49,6 +50,7 @@ _REMOTE_NAME_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
 _REMOTE_SPEC_RE = re.compile(r"(?:[^@/:\s]+@)?(\[[0-9A-Fa-f:.]+\]|[^/:\s\[\]]+):")
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 _GLOB_RE = re.compile(r"[*?\[]")
+_NOT_PLAIN_RE = re.compile(r"[\"'\\$*?\[\]{}~]")
 _HTTP_METHOD_RE = re.compile(r"[A-Za-z]+")
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD"})
 
@@ -68,7 +70,6 @@ _GIT_FLAGS = frozenset({
 })
 # Options of git itself that change which repository or configuration a
 # push uses: with one of them, nothing about the push is resolved here.
-_GIT_REDIRECTING = ("-C", "-c", "--git-dir", "--work-tree", "--config-env", "--namespace")
 _PUSH_VALUE_OPTIONS = ("--repo", "--receive-pack", "--exec", "--push-option")
 
 
@@ -111,26 +112,46 @@ def run_git(args: list[str], cwd: Path) -> str | None:
 
 @dataclass(frozen=True)
 class Protected:
-    """Real paths that are Jarvis's own rules. A directory covers its tree."""
+    """Paths that are Jarvis's own rules. A directory covers its tree.
+
+    Every path is held twice, as written in the configuration and as its
+    real path, and a candidate is compared both ways: as it stands in the
+    call (made absolute, `..` folded, symlinks NOT followed) and as its real
+    path. A protected file reached through a symlink is protected, and so is
+    a symlink that stands where a protected file should be.
+    """
     paths: frozenset[str]
 
+    @staticmethod
+    def _forms(path: str | os.PathLike) -> tuple[str, str]:
+        lexical = os.path.normpath(os.path.abspath(path))
+        return lexical, os.path.realpath(path)
+
     def covers(self, path: str | os.PathLike) -> bool:
-        real = os.path.realpath(path)
-        if _is_claude_settings(real):
-            return True
-        return any(real == p or real.startswith(p + os.sep) for p in self.paths)
+        for form in self._forms(path):
+            if _is_claude_settings(form):
+                return True
+            if any(form == p or form.startswith(p + os.sep) for p in self.paths):
+                return True
+        return False
 
     def holds(self, path: str | os.PathLike) -> bool:
         """`path` is a directory with a protected path somewhere inside it."""
-        real = os.path.realpath(path)
-        prefix = real.rstrip(os.sep) + os.sep
-        return any(p.startswith(prefix) for p in self.paths)
+        for form in self._forms(path):
+            prefix = form.rstrip(os.sep) + os.sep
+            if any(p.startswith(prefix) for p in self.paths):
+                return True
+            if os.path.basename(form) == ".claude" or os.path.lexists(os.path.join(form, ".claude")):
+                return True
+        return False
 
     def parent_of_one(self, path: str | os.PathLike) -> bool:
-        real = os.path.realpath(path)
-        if os.path.basename(real) == ".claude":
-            return True
-        return any(os.path.dirname(p) == real for p in self.paths)
+        for form in self._forms(path):
+            if os.path.basename(form) == ".claude":
+                return True
+            if any(os.path.dirname(p) == form for p in self.paths):
+                return True
+        return False
 
 
 def _is_claude_settings(real: str) -> bool:
@@ -177,6 +198,7 @@ def hook_files(settings_path: Path, home: Path) -> set[str]:
             expanded = _expand_home(word, home)
             if os.path.isabs(expanded) and os.path.isfile(expanded):
                 found.add(os.path.realpath(expanded))
+                found.add(os.path.normpath(expanded))
     return found
 
 
@@ -199,6 +221,7 @@ def protected_paths(
     paths |= {home / rel for rel in rules.self_home_paths}
     paths |= {claude_dir / rel for rel in rules.self_claude_dir_paths}
     real = {os.path.realpath(p) for p in paths}
+    real |= {os.path.normpath(os.path.abspath(p)) for p in paths}
     for settings in (config.user_settings_path, claude_dir / "settings.local.json",
                      config.managed_settings_path, config.turn_settings_path):
         real |= hook_files(settings, home)
@@ -229,9 +252,12 @@ class Context:
 
 def context_for(
     config: AgentHostConfig, rules: Rules, *, cwd: Path, home: Path, lib_dir: Path,
-    extra_temp_roots: tuple[str, ...] = (), git: GitRunner = run_git,
+    git: GitRunner = run_git,
 ) -> Context:
-    roots = tuple(rules.temp_roots) + tuple(extra_temp_roots)
+    """`home` is the passwd entry's home and the temp roots are the rules':
+    nothing a safety decision rests on is taken from the process environment
+    (`HOME`, `TMPDIR`), which is the one thing project settings could touch."""
+    roots = tuple(rules.temp_roots)
     return Context(
         rules=rules,
         cwd=cwd,
@@ -245,15 +271,19 @@ def context_for(
 
 # --- the entry point ------------------------------------------------------------
 
+RULE_NOT_UNDERSTOOD = "compound:not-understood"
+
+
 def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
+    rules = ctx.rules
     if tool_name == "Bash":
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("a Bash call without a command string")
         return _classify_bash(command, ctx)
 
-    if tool_name in _WRITE_TOOLS:
-        path = tool_input.get(_WRITE_TOOLS[tool_name])
+    if tool_name in rules.tools_write:
+        path = tool_input.get("file_path", tool_input.get("notebook_path"))
         if not isinstance(path, str) or not path:
             raise ValueError(f"a {tool_name} call without a path")
         if ctx.protected.covers(_resolve(path, ctx)):
@@ -262,12 +292,16 @@ def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
 
     if tool_name.startswith("mcp__"):
         name = tool_name.lower()
-        for word in ctx.rules.mcp_words:
+        for word in rules.mcp_words:
             if word in name:
                 return Verdict(gated=True, rule=f"mcp:{word}")
         return UNGATED
 
-    return UNGATED
+    if tool_name in rules.tools_ungated:
+        return UNGATED
+    # A built-in tool nobody decided about (an artifact, a message to
+    # another agent, a schedule, a skill, a workflow ...): default-deny.
+    return Verdict(gated=True, rule="tool:not-listed")
 
 
 def _resolve(path: str, ctx: Context) -> str:
@@ -278,6 +312,18 @@ def _resolve(path: str, ctx: Context) -> str:
 
 
 # --- Bash -----------------------------------------------------------------------
+
+def is_harmless(words, ctx: Context) -> bool:
+    """One piece of a compound command is a known-harmless read program:
+    the program itself, by its plain name, with nothing in front of it."""
+    rules = ctx.rules
+    if not words:
+        return True
+    program = words[0]
+    if program in rules.harmless:
+        return True
+    return program == "git" and len(words) > 1 and words[1] in rules.harmless_git
+
 
 def _classify_bash(command: str, ctx: Context) -> Verdict:
     rules = ctx.rules
@@ -290,31 +336,88 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
     )
 
     if analysis.compound:
+        # Not one command the gate can follow. A gated candidate decides
+        # what the refusal says; whether the call runs at all is decided by
+        # its pieces: every one a known-harmless read program, or none of it.
         if analysis.root_word:
             return Verdict(gated=True, classes=("root",), run_alone=True, rule="root:any-position")
         for candidate in analysis.commands:
-            verdict = _judge(candidate.argv, ctx)
-            if verdict.gated:
+            verdict = _judge(candidate, ctx)
+            if verdict.gated and verdict.rule != RULE_NOT_UNDERSTOOD:
                 return Verdict(gated=True, classes=verdict.classes, run_alone=True,
                                rule=verdict.rule, command=candidate)
+        # Without a quote, a backslash, a variable or a pattern anywhere in
+        # the call, its words are exactly what the shell will see, and a
+        # piece that is a read of a default-gated program (`kubectl get
+        # pods | grep web`) is as well understood as `ls`. With one of
+        # them, only the harmless list counts: its arguments are data.
+        plain = not _NOT_PLAIN_RE.search(command)
+        for segment in analysis.segments:
+            if is_harmless(segment, ctx):
+                continue
+            if plain and segment[0] in rules.programs \
+                    and not _judge(shell.Command(tuple(segment)), ctx).gated:
+                continue
+            return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
         return UNGATED
 
     if not analysis.commands:
         return UNGATED
     inner = analysis.commands[0]
-    verdict = _judge(inner.argv, ctx)
+    remote = any(kind == "ssh" for kind, _ in inner.wrappers)
+    verdict = _judge(inner, ctx, remote=remote)
+    if verdict.run_alone:
+        return verdict
     classes = list(verdict.classes)
     is_root = analysis.root_word or any(kind == "root" for kind, _ in inner.wrappers)
     if is_root and "root" not in classes:
         classes.insert(0, "root")
+    if not verdict.gated and remote and not _remote_read(inner, ctx):
+        # A command on another host that is not a plain read: its paths
+        # mean nothing here and nothing about it can be checked locally.
+        # Class `outward`; no sentence unless a host-local rule names it.
+        classes.append("outward")
+        return Verdict(gated=True, classes=tuple(classes), rule="ssh:remote-command", command=inner)
     if not verdict.gated and not is_root:
         return UNGATED
     return Verdict(gated=True, classes=tuple(classes), rule=verdict.rule or "root:any-position",
                    command=inner)
 
 
-def _judge(argv: tuple[str, ...], ctx: Context) -> Verdict:
+def _remote_read(command: shell.Command, ctx: Context) -> bool:
+    """The remote command of an `ssh` call is a read: a harmless program, or
+    a read verb of a program that is gated by default (`ssh jumpy kubectl
+    get pods`)."""
+    return is_harmless(command.argv, ctx) or command.program in ctx.rules.programs
+
+
+def _is_interpreter(program: str, ctx: Context) -> bool:
+    return any(fnmatch.fnmatchcase(program, pattern) for pattern in ctx.rules.interpreters)
+
+
+def _inline_code(args: list[str], ctx: Context) -> bool:
+    """An interpreter call that carries its code in the call, or reads it
+    from stdin. Looked for anywhere in the arguments: which of them is the
+    script and which the value of an option is not something to guess at."""
+    rules = ctx.rules
+    positional = False
+    for arg in args:
+        if arg in rules.inline_words:
+            return True
+        if arg.startswith("--"):
+            if arg.split("=", 1)[0] in rules.inline_words:
+                return True
+        elif arg.startswith("-") and len(arg) > 1:
+            if any(letter in rules.inline_letters for letter in arg[1:]):
+                return True
+        else:
+            positional = True
+    return not positional  # no script at all: the program comes from stdin
+
+
+def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Verdict:
     """One command, already unwrapped: is it gated, and in which classes."""
+    argv = command.argv
     if not argv:
         return UNGATED
     rules = ctx.rules
@@ -323,16 +426,31 @@ def _judge(argv: tuple[str, ...], ctx: Context) -> Verdict:
 
     if program in rules.root_programs:
         return Verdict(gated=True, classes=("root",), rule=f"root:{program}")
+    if program in rules.shells:
+        # What `shell.analyse` did not unwrap: no `-c`. With a script file
+        # it is not followed (D40); without one it reads commands from stdin.
+        script = [arg for arg in args if not arg.startswith(("-", "+"))]
+        if not script or "-s" in args:
+            return Verdict(gated=True, rule=f"shell:{program}:stdin")
+        return UNGATED
+    if _is_interpreter(program, ctx):
+        if _inline_code(args, ctx):
+            return Verdict(gated=True, rule=f"interpreter:{program}")
+        return UNGATED
     if program == "git":
         return _judge_git(args, ctx)
+    if program in ("rm", "find") and remote:
+        return UNGATED  # judged by the caller as a remote command, never against local paths
     if program == "rm":
         return _judge_rm(args, ctx)
+    if program == "find":
+        return _judge_find(args, ctx)
     if program in rules.transfer_programs:
         return _judge_transfer(program, args, ctx)
     if program in rules.http:
-        return _judge_http(program, args, ctx)
+        return _judge_http(program, args, ctx, command.env)
     if program in rules.programs:
-        return _judge_default(rules.programs[program], args, ctx)
+        return _judge_default(rules.programs[program], args, ctx, command.env)
     # A program that is not gated by default: an action rule is what gates
     # it. Its words are its arguments up to the first option, its verb the
     # first of them (`factory build jarvis`: path `build`).
@@ -344,6 +462,13 @@ def _judge(argv: tuple[str, ...], ctx: Context) -> Verdict:
     classes = _action_classes(program, tuple(words), ctx, verb=words[0] if words else None)
     if classes:
         return Verdict(gated=True, classes=classes, rule=f"action:{program}")
+    if program not in rules.harmless and any(
+        shell.program_name(arg) in rules.known_programs | rules.shells for arg in args
+    ):
+        # A program no rule knows, with a program the rules do know among
+        # its arguments (`watchdog sudo ...`, `runner gh repo delete x`): it
+        # may be a wrapper the gate cannot see through.
+        return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     return UNGATED
 
 
@@ -409,7 +534,8 @@ def _is_read_verb(program: Program, verb: str) -> bool:
     return verb in program.read_verbs or any(verb.startswith(p) for p in program.read_prefixes)
 
 
-def _judge_default(program: Program, args: list[str], ctx: Context) -> Verdict:
+def _judge_default(program: Program, args: list[str], ctx: Context,
+                   env: tuple[str, ...] = ()) -> Verdict:
     subpath, placed, rest = find_verb(program, args)
     name = program.name
     if not placed:
@@ -419,7 +545,7 @@ def _judge_default(program: Program, args: list[str], ctx: Context) -> Verdict:
         return UNGATED
 
     if name == "gh":
-        special = _judge_gh(subpath, args, rest, ctx)
+        special = _judge_gh(subpath, args, rest, ctx, env)
         if special is not None:
             return special
 
@@ -435,17 +561,27 @@ def _judge_default(program: Program, args: list[str], ctx: Context) -> Verdict:
 
 # --- gh -----------------------------------------------------------------------------
 
-def explicit_repo(args: list[str], repo_options: frozenset[str]) -> str | None:
-    """The value of `--repo` / `-R` as written in the call, or None."""
+def explicit_repos(args: list[str], repo_options: frozenset[str]) -> list[str | None]:
+    """Every value of `--repo` / `-R` as written in the call."""
+    found: list[str | None] = []
     for index, word in enumerate(args):
         if word in repo_options:
-            return args[index + 1] if index + 1 < len(args) else None
+            found.append(args[index + 1] if index + 1 < len(args) else None)
+            continue
         for option in repo_options:
             if option.startswith("--") and word.startswith(option + "="):
-                return word[len(option) + 1:]
-            if not option.startswith("--") and word.startswith(option) and len(word) > len(option):
-                return word[len(option):]
-    return None
+                found.append(word[len(option) + 1:])
+            elif not option.startswith("--") and word.startswith(option) and len(word) > len(option):
+                found.append(word[len(option):])
+    return found
+
+
+def explicit_repo(args: list[str], repo_options: frozenset[str]) -> str | None:
+    """The one value of `--repo` / `-R`, or None: when it is absent, and also
+    when it is given more than once (which of them `gh` uses is not something
+    to rely on)."""
+    found = explicit_repos(args, repo_options)
+    return found[0] if len(found) == 1 else None
 
 
 def is_own_repo(repo: str | None, own_owners: frozenset[str]) -> bool:
@@ -454,8 +590,16 @@ def is_own_repo(repo: str | None, own_owners: frozenset[str]) -> bool:
     return repo.split("/", 1)[0].lower() in own_owners
 
 
+def _names_a_repo_elsewhere(args: list[str]) -> bool:
+    """An argument that itself names a repository: a URL or an ssh address.
+    `gh pr checkout https://github.com/them/x/pull/1 --repo me/x` acts on
+    the URL's repository, whatever `--repo` says."""
+    return any("://" in arg or arg.startswith("git@") or "github.com/" in arg for arg in args)
+
+
 def _judge_gh(
     subpath: tuple[str, ...], args: list[str], rest: list[str], ctx: Context,
+    env: tuple[str, ...] = (),
 ) -> Verdict | None:
     gh = ctx.rules.gh
     rule = f"default:gh:{' '.join(subpath)}"
@@ -471,10 +615,20 @@ def _judge_gh(
             repo = positional[0] if positional else None
         else:
             repo = explicit_repo(args, gh.repo_options)
-        if subpath in gh.own_repo_paths and is_own_repo(repo, ctx.own_owners):
+        # The own-repository exception holds only for a call that says
+        # plainly, once, which repository it is for: no second --repo, no
+        # URL among the arguments, no GH_* variable set in front of it
+        # (GH_HOST, GH_REPO and friends change where the call goes).
+        plain = (
+            len(explicit_repos(args, gh.repo_options)) <= 1
+            and not _names_a_repo_elsewhere(args)
+            and not any(name.startswith(("GH_", "GITHUB_")) for name in env)
+        )
+        own = plain and is_own_repo(repo, ctx.own_owners)
+        if subpath in gh.own_repo_paths and own:
             return UNGATED
         classes: tuple[str, ...] = ()
-        if subpath in gh.foreign_message_paths and not is_own_repo(repo, ctx.own_owners):
+        if subpath in gh.foreign_message_paths and not own:
             classes = ("message",)
         return Verdict(gated=True, classes=classes, rule=rule)
     return None
@@ -515,16 +669,43 @@ def _long_option_matches(name: str, options: tuple[str, ...]) -> bool:
     )
 
 
-def _judge_http(program: str, args: list[str], ctx: Context) -> Verdict:
+# Options that make an HTTP client read its options from somewhere else,
+# and the files it reads them from when nothing says otherwise.
+_HTTP_CONFIG = {
+    "curl": {"short": ("K",), "long": ("--config",), "off": ("-q", "--disable"),
+             "files": (".curlrc", ".config/curlrc"), "env": ("CURL_HOME", "XDG_CONFIG_HOME")},
+    "wget": {"short": ("e",), "long": ("--execute", "--config"), "off": ("--no-config",),
+             "files": (".wgetrc", ".config/wget/wgetrc"), "env": ("WGETRC", "XDG_CONFIG_HOME")},
+}
+
+
+def _judge_http(program: str, args: list[str], ctx: Context, env: tuple[str, ...] = ()) -> Verdict:
     client = ctx.rules.http[program]
     gated = Verdict(gated=True, classes=("api",), rule=f"http:{program}")
+    extra = _HTTP_CONFIG.get(program)
+    if extra is not None:
+        # A configuration the call does not show can turn a GET into
+        # anything: options from a file (`curl -K`, `wget -e`), from a
+        # variable set in front of the call, or from the user's own rc file
+        # unless the call switches that off as curl requires it, first.
+        if any(name in extra["env"] for name in env):
+            return gated
+        off = bool(args) and args[0] in extra["off"] if program == "curl" \
+            else any(arg in extra["off"] for arg in args)
+        if not off and any(os.path.lexists(ctx.home / rel) for rel in extra["files"]):
+            return gated
     positional: list[str] = []
     for word in args:
         if word.startswith("--") and len(word) > 2:
-            if _long_option_matches(word.split("=", 1)[0], client.long_options):
+            name = word.split("=", 1)[0]
+            if _long_option_matches(name, client.long_options):
+                return gated
+            if extra is not None and _long_option_matches(name, extra["long"]):
                 return gated
         elif word.startswith("-") and len(word) > 1:
             if any(letter in client.short_letters for letter in word[1:]):
+                return gated
+            if extra is not None and any(letter in extra["short"] for letter in word[1:]):
                 return gated
         else:
             positional.append(word)
@@ -573,6 +754,28 @@ def _judge_transfer(program: str, args: list[str], ctx: Context) -> Verdict:
 
 # --- rm -r -------------------------------------------------------------------------------
 
+def _allowed_roots(ctx: Context) -> list[str]:
+    allowed = list(ctx.temp_roots)
+    top = git_top_level(ctx.cwd)
+    if top is not None:
+        allowed.append(os.path.realpath(top))
+    return allowed
+
+
+def _outside_roots(target: str, ctx: Context) -> bool:
+    """A path a recursive delete names that the gate cannot place inside
+    the worktree or a temp root. Anything the shell would still expand (a
+    variable, a glob, a brace, `~user`) and any `..` is not placed at all."""
+    if any(mark in target for mark in ("$", "`", "*", "?", "[", "{", "}")):
+        return True
+    if target.startswith("~") and not (target == "~" or target.startswith("~/")):
+        return True
+    if ".." in target.replace("\\", "/").split("/"):
+        return True
+    real = os.path.realpath(_resolve(target, ctx))
+    return not any(real == root or real.startswith(root + os.sep) for root in _allowed_roots(ctx))
+
+
 def _judge_rm(args: list[str], ctx: Context) -> Verdict:
     recursive = False
     targets: list[str] = []
@@ -583,60 +786,107 @@ def _judge_rm(args: list[str], ctx: Context) -> Verdict:
         elif word == "--":
             options_done = True
         elif word.startswith("--"):
-            if len(word) > 3 and "--recursive".startswith(word):
+            # GNU getopt takes any unambiguous beginning: --r, --re, --rec ...
+            if len(word) > 2 and "--recursive".startswith(word):
                 recursive = True
         elif "r" in word or "R" in word:
             recursive = True
     if not recursive:
         return UNGATED
-    allowed = list(ctx.temp_roots)
-    top = git_top_level(ctx.cwd)
-    if top is not None:
-        allowed.append(os.path.realpath(top))
-    gated = Verdict(gated=True, classes=("delete",), rule="rm:recursive-outside")
-    for target in targets:
-        if "$" in target or "`" in target:
-            return gated
-        glob = _GLOB_RE.search(target)
-        if glob:
-            literal = target[:glob.start()]
-            target = literal if literal.endswith("/") else os.path.dirname(literal)
-            if not target:
-                target = "."
-        real = os.path.realpath(_resolve(target, ctx))
-        if not any(real == root or real.startswith(root + os.sep) for root in allowed):
-            return gated
+    if any(_outside_roots(target, ctx) for target in targets):
+        return Verdict(gated=True, classes=("delete",), rule="rm:recursive-outside")
+    return UNGATED
+
+
+_FIND_RUNS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_FIND_WRITES = frozenset({"-fprint", "-fprint0", "-fprintf", "-fls"})
+
+
+def _judge_find(args: list[str], ctx: Context) -> Verdict:
+    """`find` only looks, unless it is told to run or delete: `-exec` and
+    its kin run a command the gate does not follow; `-delete` is a
+    recursive delete of the places it starts from."""
+    if any(arg in _FIND_RUNS for arg in args):
+        return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
+    if "-delete" in args:
+        starts: list[str] = []
+        for arg in args:
+            if arg.startswith(("-", "(", "!")):
+                break
+            starts.append(arg)
+        if any(_outside_roots(start, ctx) for start in starts or ["."]):
+            return Verdict(gated=True, classes=("delete",), rule="find:delete-outside")
     return UNGATED
 
 
 # --- git push ---------------------------------------------------------------------------
 
-def _git_subcommand(args: list[str]) -> tuple[str | None, list[str], bool, bool]:
-    """(subcommand, its arguments, placed, redirected).
+# Configuration given on the command line that makes git run a command of
+# the caller's choosing, or changes where a push goes.
+_GIT_DANGEROUS_CONFIG_RE = re.compile(
+    r"alias\.|core\.(sshcommand|hookspath|fsmonitor|pager|editor|gitproxy|askpass)$"
+    r"|url\..*\.(insteadof|pushinsteadof)$|sequence\.editor$|protocol\."
+    r"|.*\.(textconv|external|helper|command|receivepack|uploadpack|clean|smudge|process"
+    r"|driver|tool|cmd|pushurl|url|push|mirror)$",
+    re.IGNORECASE,
+)
 
-    An alias defined on the command line (`git -c alias.p=push p ...`) makes
-    the subcommand a word of the caller's choosing: not placed.
-    """
-    redirected = False
+
+@dataclass(frozen=True)
+class GitCall:
+    subcommand: str | None
+    args: tuple[str, ...]
+    placed: bool            # the subcommand could be told from the options
+    directory: str | None   # the value of the one `-C`, or None
+    redirected: bool        # --git-dir, --work-tree, --namespace, -c, --config-env, a second -C
+    dangerous_config: bool  # a -c / --config-env that sets an alias, a command or an address
+
+
+def read_git(args: list[str]) -> GitCall:
+    directory: str | None = None
+    redirected = dangerous = False
     index = 0
     while index < len(args):
         word = args[index]
         if not word.startswith("-"):
-            return word, args[index + 1:], True, redirected
-        name = word.split("=", 1)[0]
-        if name == "-c" and index + 1 < len(args) and args[index + 1].lower().startswith("alias."):
-            return None, args[index:], False, redirected
-        if name in _GIT_REDIRECTING:
+            return GitCall(word, tuple(args[index + 1:]), True, directory, redirected, dangerous)
+        name, has_value, attached = word.partition("=")
+        if name in ("-c", "--config-env") or (word.startswith("-c") and len(word) > 2
+                                               and not word.startswith("--")):
             redirected = True
-        if "=" in word and name.startswith("--"):
+            if name == "-c" and not has_value:
+                value = args[index + 1] if index + 1 < len(args) else ""
+                index += 2
+            elif name == "--config-env" and not has_value:
+                value = args[index + 1] if index + 1 < len(args) else ""
+                index += 2
+            elif name == "--config-env":
+                value = attached
+                index += 1
+            else:  # -ckey=value
+                value = word[2:]
+                index += 1
+            if _GIT_DANGEROUS_CONFIG_RE.match(value.split("=", 1)[0].strip()):
+                dangerous = True
+            continue
+        if name == "-C":
+            if has_value or index + 1 >= len(args) or directory is not None:
+                redirected = True
+            else:
+                directory = args[index + 1]
+            index += 2 if not has_value else 1
+            continue
+        if name in ("--git-dir", "--work-tree", "--namespace"):
+            redirected = True
+        if has_value and name.startswith("--"):
             index += 1
         elif name in _GIT_VALUE_OPTIONS:
             index += 2
         elif name in _GIT_FLAGS:
             index += 1
         else:
-            return None, args[index:], False, redirected
-    return None, [], True, redirected
+            return GitCall(None, tuple(args[index:]), False, directory, redirected, dangerous)
+    return GitCall(None, (), True, directory, redirected, dangerous)
 
 
 def _long_is(name: str, full: str) -> bool:
@@ -730,13 +980,34 @@ def push_destinations(push: Push) -> list[str] | None:
     return out
 
 
+def _is_default_destination(destination: str, defaults: set[str]) -> bool:
+    """A destination that is, or can resolve to, a default branch. git
+    completes a short name itself: `main`, `heads/main` and
+    `refs/heads/main` are the same branch. A pattern (`refs/heads/*`) can
+    land on it too."""
+    if "*" in destination:
+        return True
+    for prefix in ("refs/heads/", "heads/"):
+        if destination.startswith(prefix):
+            destination = destination[len(prefix):]
+            break
+    return destination in defaults
+
+
 def _judge_git(args: list[str], ctx: Context) -> Verdict:
-    subcommand, rest, placed, redirected = _git_subcommand(args)
-    if not placed:
-        if "push" in args or any("push" in arg for arg in args if arg.lower().startswith("alias.")):
+    call = read_git(args)
+    if call.dangerous_config:
+        # An alias, a command git will run, or another address, set on the
+        # command line: whatever the subcommand says, this is not it.
+        return Verdict(gated=True, rule="git:config-on-command-line")
+    if not call.placed:
+        if "push" in args:
             return Verdict(gated=True, rule="push:option-before-subcommand")
         return UNGATED
-    if subcommand != "push":
+    rest = list(call.args)
+    if call.subcommand == "subtree" and "push" in rest:
+        return Verdict(gated=True, rule="push:subtree")
+    if call.subcommand != "push":
         return UNGATED
 
     push = parse_push(rest)
@@ -747,10 +1018,22 @@ def _judge_git(args: list[str], ctx: Context) -> Verdict:
         classes.append("force")
     if push.wide:
         return Verdict(gated=True, classes=tuple(classes), rule="push:wide")
+    if call.redirected:
+        # --git-dir, --work-tree, -c: which repository and which
+        # configuration this push uses is not what the directory says.
+        return Verdict(gated=True, classes=tuple(classes), rule="push:redirected")
+
+    # `git -C <dir> push`: the push runs there, so that is where git is asked.
+    where = ctx.cwd
+    if call.directory is not None:
+        where = Path(_resolve(call.directory, ctx))
+        if not where.is_dir():
+            return Verdict(gated=True, classes=tuple(classes), rule="push:redirected")
+    there = dataclasses.replace(ctx, cwd=where)
 
     remote = push.remote
     if not push.refspecs:
-        landing = None if redirected or push.repo_option else _bare_push_landing(remote, ctx)
+        landing = None if push.repo_option else _bare_push_landing(remote, there)
         if landing is None:
             return Verdict(gated=True, classes=tuple(classes), rule="push:bare-unresolved")
         remote, branch = landing
@@ -761,20 +1044,18 @@ def _judge_git(args: list[str], ctx: Context) -> Verdict:
             return Verdict(gated=True, classes=tuple(classes), rule="push:refspec-unreadable")
 
     defaults = set(ctx.rules.default_branches)
-    if not redirected and remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
-        head = ctx.git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], ctx.cwd)
+    if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
+        head = ctx.git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], where)
         if head and head.startswith(remote + "/"):
             defaults.add(head[len(remote) + 1:])
 
     for destination in destinations:
         if destination in ("HEAD", "@"):
-            current = None if redirected else ctx.git(["symbolic-ref", "--short", "HEAD"], ctx.cwd)
+            current = ctx.git(["symbolic-ref", "--short", "HEAD"], where)
             if not current:
                 return Verdict(gated=True, classes=tuple(classes), rule="push:head-unresolved")
             destination = current
-        if destination.startswith("refs/heads/"):
-            destination = destination[len("refs/heads/"):]
-        if destination in defaults:
+        if _is_default_destination(destination, defaults):
             classes.insert(0, "merge")
             break
 

@@ -102,6 +102,13 @@ class Rules:
     root_programs: frozenset[str]
     shells: frozenset[str]
     indirect: frozenset[str]
+    harmless: frozenset[str]
+    harmless_git: frozenset[str]
+    interpreters: tuple[str, ...]
+    inline_letters: frozenset[str]
+    inline_words: frozenset[str]
+    tools_ungated: frozenset[str]
+    tools_write: frozenset[str]
     temp_roots: tuple[str, ...]
     mcp_words: tuple[str, ...]
     self_home_paths: tuple[str, ...]
@@ -122,7 +129,7 @@ class Rules:
         the words that start a candidate command (agent_host.shell)."""
         return (
             frozenset(self.programs) | self.action_programs | frozenset(self.http)
-            | self.transfer_programs | self.root_programs | {"git", "rm"}
+            | self.transfer_programs | self.root_programs | {"git", "rm", "find"}
         )
 
 
@@ -267,6 +274,7 @@ def rules_from_dict(data: dict) -> Rules:
     _known_keys(data, {
         "version", "read_verbs", "global_flags", "programs", "gh", "http", "git",
         "transfer", "root", "shell", "rm", "mcp", "self", "actions", "option_classes",
+        "interpreters", "tools",
     }, "rules")
     if data.get("version") != 1:
         raise RulesError("rules: version must be 1")
@@ -302,7 +310,11 @@ def rules_from_dict(data: dict) -> Rules:
     root = _table(data, "root", "")
     _known_keys(root, {"programs"}, "root")
     shell = _table(data, "shell", "")
-    _known_keys(shell, {"shells", "indirect"}, "shell")
+    _known_keys(shell, {"shells", "indirect", "harmless", "harmless_git"}, "shell")
+    interpreters = _table(data, "interpreters", "")
+    _known_keys(interpreters, {"programs", "inline_letters", "inline_words"}, "interpreters")
+    tools = _table(data, "tools", "")
+    _known_keys(tools, {"ungated", "write"}, "tools")
     rm = _table(data, "rm", "")
     _known_keys(rm, {"temp_roots"}, "rm")
     mcp = _table(data, "mcp", "")
@@ -338,6 +350,13 @@ def rules_from_dict(data: dict) -> Rules:
         root_programs=frozenset(root_programs),
         shells=frozenset(_strings(shell, "shells", "shell.")),
         indirect=frozenset(_strings(shell, "indirect", "shell.")),
+        harmless=frozenset(_strings(shell, "harmless", "shell.")),
+        harmless_git=frozenset(_strings(shell, "harmless_git", "shell.")),
+        interpreters=_strings(interpreters, "programs", "interpreters."),
+        inline_letters=frozenset(_strings(interpreters, "inline_letters", "interpreters.")),
+        inline_words=frozenset(_strings(interpreters, "inline_words", "interpreters.")),
+        tools_ungated=frozenset(_strings(tools, "ungated", "tools.")),
+        tools_write=frozenset(_strings(tools, "write", "tools.")),
         temp_roots=_strings(rm, "temp_roots", "rm."),
         mcp_words=tuple(word.lower() for word in mcp_words),
         self_home_paths=_strings(self_, "home_paths", "self."),

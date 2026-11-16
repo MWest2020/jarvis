@@ -30,7 +30,7 @@ def _analyse(command, ctx):
     ("ssh jumpy 'kubectl delete pod web -n web'", ["delete"]),
     ("ssh -p 2222 -i key deploy@jumpy kubectl apply -f x.yaml", ["deploy"]),
     ("ssh -o StrictHostKeyChecking=yes jumpy helm upgrade web ./chart", ["deploy"]),
-    ("ssh jumpy sudo systemctl restart web", ["root"]),
+    ("ssh jumpy sudo systemctl restart web", ["root", "outward"]),
     ("ssh jumpy -- kubectl delete pod web", ["delete"]),
     ("ssh jumpy -t 'kubectl delete pod web'", ["delete"]),
     ("ssh -t jumpy -p 2222 kubectl delete pod web", ["delete"]),
@@ -78,7 +78,7 @@ def test_a_wrapped_command_is_judged_like_the_command_itself(ctx, command, class
     "nohup pytest -q",
 ])
 def test_a_wrapped_read_is_not_gated(ctx, command):
-    assert not bash(command, ctx).gated
+    assert not bash(command, ctx).gated, command
 
 
 def test_the_wrappers_of_the_inner_command_are_kept(ctx):
@@ -112,7 +112,6 @@ RUN_ALONE = [
     f"gh pr merge 1 --repo {M} || true",
     f"gh pr merge 1 --repo {M} | tee log",
     f"gh pr merge 1 --repo {M} &",
-    f"gh pr merge 1 --repo {M} 2>&1",
     f"cd /srv/repo && gh pr merge 1 --repo {M}",
     "git add -A && git commit -m x && git push origin main",
     # Behind a shell keyword.
@@ -168,32 +167,120 @@ def test_a_gated_command_that_is_not_run_alone_is_refused_as_such(ctx, command):
 
 
 NOT_THE_GATES_BUSINESS = [
+    # Every piece is a known-harmless read program.
     "ls | wc -l",
     "git status && git diff",
-    "kubectl get pods -n web | grep web",
-    "gh pr view 5 --json state | jq .state",
-    "cd /srv/repo && pytest -q",
-    "echo $(date)",
-    "for f in *.py; do wc -l $f; done",
-    "pytest -q 2>&1 | tail -5",
+    "cat notes.txt | grep -n todo | sort | uniq | head -5",
+    "cd /srv/repo && ls -la",
     "grep -rn docker docs/ | head",
-    "eval \"$(ssh-agent)\"",
-    "source .venv/bin/activate && pytest -q",
-    "find . -name '*.pyc' -delete",
-    "find . -name '*.py' | xargs wc -l",
-    "git add -A && git commit -m 'fix: one; two' && git push origin feature",
-    f"gh pr create --repo {M} --title x --body \"$(cat body.md)\"",
-    "cat <<'EOF' > notes.txt\nhello\nEOF",
+    "echo $(date)",
+    "ls -la 2>/dev/null | wc -l",
+    "git log --oneline | head -20",
     "(cd sub && ls)",
     "echo 'unfinished",
+    # ... or, in a call without any quoting, a read of a default-gated program.
+    "kubectl get pods -n web | grep web",
+    "gh pr view 5 --json state | jq .state",
+    "kubectl get pods -n web --context homelab | wc -l",
 ]
 
 
 @pytest.mark.parametrize("command", NOT_THE_GATES_BUSINESS)
-def test_a_compound_command_with_nothing_gated_in_it_runs(ctx, command):
+def test_a_compound_command_of_harmless_reads_runs(ctx, command):
     verdict = bash(command, ctx)
     assert not verdict.gated, (command, verdict)
     assert not verdict.run_alone
+
+
+# What the gate cannot fully understand does not get through: a compound
+# command with any piece that is not a known-harmless read is refused,
+# whether or not a rule knows what is in it.
+NOT_UNDERSTOOD = [
+    'echo "gh repo delete x" | bash',
+    "cd / && rm -rf etc",
+    "cd ../other && git push",
+    "cd /srv/repo && pytest -q",
+    "pytest -q 2>&1 | tail -5",
+    "for f in *.py; do wc -l $f; done",
+    "source .venv/bin/activate && pytest -q",
+    "find . -name '*.py' | xargs wc -l",
+    "git add -A && git commit -m 'fix: one; two'",
+    "git commit -m 'fix: one; two'",
+    "make test && make lint",
+    "cat <<'EOF' > notes.txt\nhello\nEOF",
+    "ls | tee listing.txt",
+    "cat notes.txt | sh",
+    "cat notes.txt | python3",
+    "ls | awk '{print $1}'",
+    "ls; ./deploy.sh",
+    "true && mystery-program",
+    "FOO=1 ls | wc -l",
+    "/tmp/ls | wc -l",
+    "git -C /elsewhere status | cat",
+    "git commit -am x | cat",
+    # A read of a default-gated program counts only in a call without quoting.
+    'kubectl -n "x get" delete pod y | cat',
+    'aws --profile "p ec2 describe-instances" s3 rm s3://b/k | cat',
+    "kubectl get pods -n $NS | cat",
+    # Programs that run other commands, alone or not.
+    "eval \"$(ssh-agent)\"",
+    "eval true",
+    "xargs ls",
+    "source ./env.sh",
+    ". ./env.sh",
+    "trap 'gh repo delete x' EXIT",
+    "trap 'echo bye' EXIT",
+    "coproc gh repo delete x",
+    "watch -n 5 ls",
+    "chroot /srv/root ls",
+    "busybox sh",
+    # A wrapper the gate does not follow, or an option of one it does not know.
+    "env -S 'ls -la'",
+    "env --split-string='gh repo delete x'",
+    "exec --weird gh pr view 1",
+    "timeout notaduration ls",
+    "stdbuf --weird ls",
+    "sudo --unknown-option ls",
+    # Here-documents, here-strings, process substitution, ANSI-C and locale quoting.
+    "bash <<< 'gh repo delete x'",
+    "bash <<EOF\ngh repo delete x\nEOF",
+    "python3 <<EOF\nprint(1)\nEOF",
+    "tee >(gh repo delete x)",
+    "$'gh' repo delete x",
+    "gh repo delete $'x'",
+    "$'\\x67h' repo delete x",
+    '$"gh" repo delete x',
+    # A program no rule knows, with one the rules know among its arguments.
+    "watchdog sudo systemctl restart web",
+    "runner gh repo delete x",
+    "mystery kubectl delete pod web",
+    "man mail",
+    "find . -name '*.yaml' -exec cat {} +",
+    "find . -type f -ok rm {} +",
+]
+
+
+@pytest.mark.parametrize("command", NOT_UNDERSTOOD)
+def test_a_command_the_gate_cannot_fully_understand_is_refused(ctx, command):
+    verdict = bash(command, ctx)
+    assert verdict.gated, (command, verdict)
+    assert verdict.run_alone, (command, verdict)
+
+
+@pytest.mark.parametrize("command", [
+    "find . -name '*.py'",
+    "find /srv -type f -newer x",
+    "pytest -q 2>&1",
+    "make test 2>/dev/null",
+    "git commit -m 'fix one thing (and another) > before'",
+    "which gh",
+    "grep -rn kubectl docs/",
+    "command -v kubectl",
+    "ls --color=auto gh",
+    "ls > listing.txt",          # a redirection in one plain command is no second command
+])
+def test_one_plain_command_no_rule_gates_still_runs(ctx, command):
+    assert not bash(command, ctx).gated, command
 
 
 def test_a_single_gated_command_is_gated_but_not_refused_as_compound(ctx):
@@ -230,7 +317,19 @@ def test_what_is_not_a_separator(text):
     (["env", "-i", "FOO=1", "gh"], ["gh"], True),
     (["env", "-u", "HOME", "gh"], ["gh"], True),
     (["env", "--chdir=/x", "gh"], ["gh"], True),
-    (["env", "-S", "gh x"], ["-S", "gh x"], False),
+    (["env", "-S", "gh x"], ["env", "-S", "gh x"], False),
+    (["exec", "-a", "name", "gh"], ["gh"], True),
+    (["exec", "--weird", "gh"], ["exec", "--weird", "gh"], False),
+    (["stdbuf", "-oL", "-e", "0", "gh"], ["gh"], True),
+    (["time", "-f", "%e", "-o", "t.txt", "gh"], ["gh"], True),
+    (["ionice", "-c", "3", "-n7", "gh"], ["gh"], True),
+    (["nice", "--adjustment=5", "gh"], ["gh"], True),
+    (["timeout", "--kill-after=5", "-s", "KILL", "1.5m", "gh"], ["gh"], True),
+    (["timeout", "gh", "pr"], ["timeout", "gh", "pr"], False),
+    (["env", "-u", "A", "B=1", "-C", "/x", "gh"], ["gh"], True),
+    (["command", "-v", "gh"], [], True),
+    (["command", "-p", "gh"], ["gh"], True),
+    (["nohup", "--weird", "gh"], ["nohup", "--weird", "gh"], False),
     (["time", "-p", "gh"], ["gh"], True),
     (["nice", "-n", "5", "gh"], ["gh"], True),
     (["nice", "-5", "gh"], ["gh"], True),
