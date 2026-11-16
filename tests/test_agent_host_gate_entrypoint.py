@@ -15,7 +15,7 @@ import uuid
 import pytest
 
 from agent_host import decision
-from tests.gatekit import REPO_ROOT, make_config
+from tests.gatekit import REPO_ROOT, make_config, run_hook
 
 GATE = REPO_ROOT / "agent_host" / "gate"
 
@@ -51,17 +51,21 @@ def _payload(tool="Bash", tool_input=None, cwd=None, **extra):
     return data
 
 
-def _run(config_path, checkout, payload, *, env=None, raw=None):
+def _run(config_path, checkout, payload, *, env=None, raw=None, record=True, overrides=None):
+    """The gate as Claude Code runs it in a turn the wrapper started with
+    `env`: under a stand-in `claude` that wrote the trusted record (unless
+    `record` is False). `overrides`: what project `env` settings add to the
+    gate's own environment."""
     if env is None:
         # A new turn for every call, unless the test says otherwise: the
         # gate's state carries from call to call within one turn.
         env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": str(uuid.uuid4()),
                "JARVIS_AGENT_CONFIG": str(config_path), "JARVIS_TURN_CHECKOUT": str(checkout),
                "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-    return subprocess.run(
-        [sys.executable, str(GATE)],
-        input=raw if raw is not None else json.dumps(payload).encode(),
-        capture_output=True, env=env, timeout=30,
+    gate_dir = config_path.parent.parent / "state" / "gate" if record else None
+    return run_hook(
+        [sys.executable, GATE], raw if raw is not None else json.dumps(payload).encode(), env,
+        gate_dir=gate_dir, overrides=overrides,
     )
 
 
@@ -394,8 +398,8 @@ def test_the_gate_works_through_a_symlink_as_the_installer_places_it(setup, tmp_
            "JARVIS_AGENT_CONFIG": str(config_path),
            "JARVIS_TURN_CHECKOUT": str(checkout), "PATH": os.environ.get("PATH", "")}
     payload = json.dumps(_payload(tool_input={"command": "terraform apply"}, cwd=checkout))
-    proc = subprocess.run([sys.executable, str(link)], input=payload.encode(), capture_output=True,
-                          env=env, timeout=20)
+    proc = run_hook([sys.executable, link], payload.encode(), env,
+                    gate_dir=tmp_path / "state" / "gate")
     assert _denied(proc) == decision.REASON_DESK
 
 
@@ -415,8 +419,8 @@ def test_the_gate_runs_isolated_behind_a_symlink_as_installed(setup, tmp_path):
 
     def run(command, run_env=env):
         payload = json.dumps(_payload(tool_input={"command": command}, cwd=checkout)).encode()
-        return subprocess.run([sys.executable, "-I", str(link)], input=payload,
-                              capture_output=True, env=run_env, cwd=tmp_path, timeout=20)
+        return run_hook([sys.executable, "-I", link], payload, run_env,
+                        gate_dir=tmp_path / "state" / "gate", cwd=tmp_path)
 
     assert _denied(run("terraform apply")) == decision.REASON_DESK
     proc = run("ls -la")
@@ -430,9 +434,13 @@ def test_the_script_is_executable_and_checks_the_marker_before_any_other_import(
     assert GATE.read_text().splitlines()[0] == "#!/usr/bin/env python3"  # the installer rewrites it
     lines = [line for line in GATE.read_text().splitlines()
              if line.startswith(("import ", "from "))]
-    assert lines[:2] == ["import os", "import sys"]
+    assert lines[:3] == ["import os", "import signal", "import sys"]
     source = GATE.read_text()
     assert source.index('if "JARVIS_TURN" not in os.environ:') < source.index("import json")
+    # The deadline comes first of all (host check 12): before the marker
+    # check, before any other import.
+    assert source.index("signal.setitimer(signal.ITIMER_REAL, DEADLINE_S)") \
+        < source.index('if "JARVIS_TURN" not in os.environ:')
 
 
 # --- the decision, without a process ----------------------------------------------------------

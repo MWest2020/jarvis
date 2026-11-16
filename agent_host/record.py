@@ -100,10 +100,20 @@ READ_ONLY_TOOLS = frozenset({
 _MAX_LOGGED_CHARS = 2000
 
 
+_EXIT_CODE = re.compile(r"\AExit code (\d{1,3})\b")
+# The status of a line that says the call ran and failed.
+FAILED_STATUSES = frozenset({"failed", "error", "interrupted"})
+
+
 def action_line(payload: dict, now: str) -> dict | None:
-    """The log line for one PostToolUse hook input, or None for a tool that
-    only reads. Holds the tool, the command or target, and the exit status,
-    never the tool's output."""
+    """The log line for one PostToolUse or PostToolUseFailure hook input, or
+    None for a tool that only reads. Holds the tool, the command or target,
+    and the exit status, never the tool's output.
+
+    PostToolUseFailure carries `error` (text) and `is_interrupt` instead of
+    a `tool_response`: the status is the exit code when the text starts with
+    Claude Code's "Exit code N", else "interrupted" or "failed". The error
+    text itself is output, and is not logged."""
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
     if not isinstance(tool, str) or not tool or tool in READ_ONLY_TOOLS:
@@ -119,7 +129,16 @@ def action_line(payload: dict, now: str) -> dict | None:
         what = json.dumps(sorted(tool_input)) if tool_input else ""
     response = payload.get("tool_response")
     status: object = "ok"
-    if isinstance(response, dict):
+    if payload.get("hook_event_name") == "PostToolUseFailure":
+        error = payload.get("error")
+        found = _EXIT_CODE.match(error) if isinstance(error, str) else None
+        if found is not None and int(found.group(1)) != 0:
+            status = int(found.group(1))
+        elif payload.get("is_interrupt") is True:
+            status = "interrupted"
+        else:
+            status = "failed"
+    elif isinstance(response, dict):
         # The exit code of a Bash call where Claude Code gives one.
         for key in ("exit_code", "exitCode", "returncode", "returnCode", "code"):
             if isinstance(response.get(key), int):
@@ -149,18 +168,29 @@ def action_line(payload: dict, now: str) -> dict | None:
     }
 
 
+def failed_status(status: object) -> bool:
+    """Does a logged status say that the call ran and failed?"""
+    if isinstance(status, bool):
+        return False
+    if isinstance(status, int):
+        return status != 0
+    return status in FAILED_STATUSES
+
+
 def ran(actions_dir: Path, turn_id: str, base_hash: str) -> str:
     """Did the call with this hash run in this turn, by the action log:
-    "ran", "not run", or "unknown" when the log cannot say (it is not
-    there, or cannot be read)."""
+    "ran", "ran, failed" (it ran and exited non-zero, was interrupted or
+    failed: the PostToolUseFailure line), "not run", or "unknown" when the
+    log cannot say (it is not there, or cannot be read)."""
     try:
         text = (actions_dir / f"{turn_id}.jsonl").read_text()
     except OSError:
         return "unknown"
     for line in text.splitlines():
         try:
-            if json.loads(line).get("hash") == base_hash:
-                return "ran"
+            entry = json.loads(line)
+            if entry.get("hash") == base_hash:
+                return "ran, failed" if failed_status(entry.get("status")) else "ran"
         except (ValueError, AttributeError):
             return "unknown"
     return "not run"

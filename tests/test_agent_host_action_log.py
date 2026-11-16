@@ -12,7 +12,7 @@ import pytest
 
 from agent_host import record, switch
 from agent_host.config import ConfigError, config_from_dict
-from tests.gatekit import REPO_ROOT, make_config
+from tests.gatekit import REPO_ROOT, make_config, run_hook
 
 ACTION_LOG = REPO_ROOT / "agent_host" / "action-log"
 CONFIRM = REPO_ROOT / "agent_host" / "confirm"
@@ -106,10 +106,15 @@ def _config_file(tmp_path):
     return path, config
 
 
-def _hook(script, payload, env, *, isolated=False, raw=None):
+def _hook(script, payload, env, *, isolated=False, raw=None, gate_dir=None):
+    """A hook as a process. With `gate_dir`, as Claude Code runs it in a turn
+    the wrapper started with `env` (tests/hook_parent.py writes the trusted
+    record there); without, run directly, with no trusted record."""
     argv = [sys.executable] + (["-I"] if isolated else []) + [str(script)]
-    return subprocess.run(argv, input=raw if raw is not None else json.dumps(payload).encode(),
-                          capture_output=True, env=env, timeout=30)
+    data = raw if raw is not None else json.dumps(payload).encode()
+    if gate_dir is not None:
+        return run_hook(argv, data, env, gate_dir=gate_dir)
+    return subprocess.run(argv, input=data, capture_output=True, env=env, timeout=30)
 
 
 def test_the_hook_writes_one_line_per_changing_call_of_the_turn(tmp_path):
@@ -123,7 +128,7 @@ def test_the_hook_writes_one_line_per_changing_call_of_the_turn(tmp_path):
         {"tool_name": "Read", "tool_input": {"file_path": "/srv/repo/a"}},
         {"tool_name": "Write", "tool_input": {"file_path": "/srv/repo/a", "content": "x"}},
     ):
-        proc = _hook(ACTION_LOG, payload, env)
+        proc = _hook(ACTION_LOG, payload, env, gate_dir=config.gate_dir)
         assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
     lines = [json.loads(line) for line in
              (config.actions_dir / f"{turn}.jsonl").read_text().splitlines()]
@@ -142,7 +147,7 @@ def test_the_hook_never_fails_a_call_and_never_blocks(tmp_path):
         (dict(good, JARVIS_AGENT_CONFIG=str(tmp_path / "nope.toml")), None),
         ({"JARVIS_TURN": "1", "PATH": os.environ.get("PATH", "")}, None),
     ):
-        proc = _hook(ACTION_LOG, payload, env, raw=raw)
+        proc = _hook(ACTION_LOG, payload, env, raw=raw, gate_dir=config.gate_dir)
         assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
     assert not config.actions_dir.exists()
 
@@ -182,12 +187,12 @@ def test_each_entry_point_runs_isolated_behind_a_symlink(tmp_path):
     payload = {"tool_name": "Bash", "tool_input": {"command": "terraform apply"},
                "cwd": str(tmp_path / "projects" / "demo"), "tool_response": {"exit_code": 0}}
 
-    gate = _hook(bin_dir / "gate", payload, env, isolated=True)
+    gate = _hook(bin_dir / "gate", payload, env, isolated=True, gate_dir=config.gate_dir)
     assert gate.returncode == 0
     assert json.loads(gate.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "[needs_desk]" in gate.stdout.decode()
 
-    log = _hook(bin_dir / "action-log", payload, env, isolated=True)
+    log = _hook(bin_dir / "action-log", payload, env, isolated=True, gate_dir=config.gate_dir)
     assert (log.returncode, log.stdout, log.stderr) == (0, b"", b"")
     assert json.loads((config.actions_dir / f"{turn}.jsonl").read_text())["what"] == "terraform apply"
 
@@ -438,7 +443,7 @@ def test_ran_reads_the_action_log_for_the_hash_of_one_call(tmp_path):
     assert record.ran(directory, turn, wanted) == "not run"           # the same bytes, another directory
     record.append_action(directory, turn, record.action_line(
         {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 21", "description": "x"},
-         "cwd": "/srv/repo", "tool_response": {"exit_code": 1}}, NOW))
+         "cwd": "/srv/repo", "tool_response": {"exit_code": 0}}, NOW))
     assert record.ran(directory, turn, wanted) == "ran"
     (directory / f"{turn}.jsonl").write_text("not json\n")
     assert record.ran(directory, turn, wanted) == "unknown"

@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Callable
 
 from agent_host import shell
+from agent_host.boundedio import read_text
 from agent_host.checkout_settings import git_top_level
 from agent_host.config import CONFIRM_CLASSES, AgentHostConfig
 from agent_host.rules import Program, Rules
@@ -114,11 +115,20 @@ UNGATED = Verdict()
 GitRunner = Callable[[list[str], Path], "str | None"]
 
 
+# Every git lookup is bounded, far inside the gate's own deadline
+# (agent_host/gate): a lookup that takes longer fails, and what depends on it
+# is gated or not nameable.
+GIT_TIMEOUT_S = 2
+# A Claude Code settings file read for its hook commands: the user's own can
+# be replaced by the agent's user, so it is read without blocking and capped.
+MAX_SETTINGS_READ_BYTES = 1024 * 1024
+
+
 def run_git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str | None:
     """`git <args>` in `cwd`: its output, or None when it fails for any reason."""
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5,
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
             stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
@@ -224,7 +234,7 @@ def hook_files(settings_path: Path, home: Path) -> set[str]:
     itself stays protected whatever is in it.
     """
     try:
-        data = json.loads(settings_path.read_text())
+        data = json.loads(read_text(settings_path, MAX_SETTINGS_READ_BYTES))
     except (OSError, ValueError):
         return set()
     found: set[str] = set()

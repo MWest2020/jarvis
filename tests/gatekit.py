@@ -4,13 +4,16 @@ real home directory, the real rules directory or a real remote."""
 from __future__ import annotations
 
 import dataclasses
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 from agent_host import classify, rules as rules_mod
 from agent_host.config import config_from_dict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+HOOK_PARENT = REPO_ROOT / "tests" / "hook_parent.py"
 OWN = ("me",)
 
 
@@ -135,3 +138,16 @@ class Turn:
             self.config, Path(cwd or self.cwd).resolve(), home=self.tmp_path / "home",
             lib_dir=self.tmp_path / "lib", git=self.git)
         return naming.derive("Bash", {"command": command}, ctx, self.config)
+
+
+def run_hook(argv, input_bytes, env, *, gate_dir, overrides=None, timeout=30, **kwargs):
+    """Run a hook script as Claude Code runs it in a turn the wrapper started:
+    under a stand-in for the `claude` process (tests/hook_parent.py) whose
+    exec-time environment is `env` and which wrote the trusted record for
+    itself into `gate_dir` (None: no record). `overrides` is what project
+    `env` settings would add to the hook's own environment on top of that."""
+    return subprocess.run(
+        [sys.executable, str(HOOK_PARENT), str(gate_dir) if gate_dir is not None else "-",
+         json.dumps(overrides or {}), *[str(word) for word in argv]],
+        input=input_bytes, capture_output=True, env=env, timeout=timeout, **kwargs,
+    )

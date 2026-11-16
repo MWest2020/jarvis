@@ -134,14 +134,19 @@ def test_the_turn_settings_name_the_real_paths_not_the_fake_root(source, destdir
     assert set(settings) == {"disableAllHooks", "hooks", "autoMemoryDirectory"}
     assert settings["disableAllHooks"] is False
     assert settings["autoMemoryDirectory"] == "/home/someone/.claude/memory"
-    assert set(settings["hooks"]) == {"PreToolUse", "PostToolUse"}
-    (pre,), (post,) = settings["hooks"]["PreToolUse"], settings["hooks"]["PostToolUse"]
-    assert pre["matcher"] == "*" and post["matcher"] == "*"
+    assert set(settings["hooks"]) == {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+    (pre,), (post,), (failure,) = (settings["hooks"][event] for event in (
+        "PreToolUse", "PostToolUse", "PostToolUseFailure"))
+    assert pre["matcher"] == post["matcher"] == failure["matcher"] == "*"
     assert [h["command"] for h in pre["hooks"]] == ["/usr/local/lib/jarvis-agent/gate"]
-    # An explicit timeout for the gate, so a hanging gate ends in a known time (the host
-    # check "a gate that times out denies the call" says what happens then).
-    assert [h["timeout"] for h in pre["hooks"]] == [10]
+    # A hook that runs past its timeout fails OPEN in Claude Code (host check 12,
+    # 2.1.322). The gate keeps its own deadline far inside this one (agent_host/gate,
+    # DEADLINE_S), so the margin is large.
+    assert [h["timeout"] for h in pre["hooks"]] == [30]
+    # The action log for a call that succeeded and for one that failed: Claude Code
+    # runs PostToolUse only for the first, PostToolUseFailure for the second.
     assert [h["command"] for h in post["hooks"]] == ["/usr/local/lib/jarvis-agent/action-log"]
+    assert [h["command"] for h in failure["hooks"]] == ["/usr/local/lib/jarvis-agent/action-log"]
     assert str(destdir) not in json.dumps(settings)
 
 

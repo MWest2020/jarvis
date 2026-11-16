@@ -30,7 +30,12 @@ tested without a process.
 - The checkout settings rule comes before all of that: while a
   `.claude/settings*.json` of the turn's checkout or of the call's own
   worktree carries anything but the few harmless keys, every gated call is
-  denied, **with or without a matching grant**.
+  denied, **with or without a matching grant**. The same holds while the
+  gate's own environment differs in any `JARVIS_*` value from the one the
+  wrapper started the turn with (`env_changed`): project `env` settings
+  reached it (host check 6). The turn's checkout, id and grant passed in
+  here are the trusted ones (agent_host.trusted), never the gate's own
+  environment's.
 - `confirm = "off"`, or a call whose classes are all in `confirm_skip`:
   the call is let through and noted as not confirmed, when it is one call
   the gate fully understood. The class `self`, a compound command, inline
@@ -52,6 +57,7 @@ import fcntl
 import os
 import pwd
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,7 +72,8 @@ _STOP = (
 REASON_SETTINGS = (
     "[settings_changed] Project settings changed, needs the desk: a .claude/settings"
     " file of this checkout or worktree sets env, hooks or disableAllHooks, or cannot"
-    " be read. No gated action runs while that is so." + _STOP
+    " be read, or such a file has changed the turn's environment. No gated action"
+    " runs while that is so." + _STOP
 )
 REASON_RUN_ALONE = (
     "[run_alone] Run it alone: this action needs a spoken yes, and it can only be"
@@ -127,6 +134,9 @@ REASON_ERROR = (
 
 
 _GRANT_RE = re.compile(r"[0-9a-f]{64}")
+# How long a gate waits for another gate of the same turn to finish with the
+# turn's state. Far inside the gate's own deadline (agent_host/gate).
+LOCK_WAIT_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -216,22 +226,39 @@ def _turn_state_lock(config: AgentHostConfig, turn_id: str):
     written under an exclusive lock, so two tool calls judged at the same
     moment cannot both become "the one pending call"."""
     config.gate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(config.gate_dir / f"{turn_id}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(config.gate_dir / f"{turn_id}.lock",
+                 os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        # Never an unbounded wait (host check 12): poll, and give up in time.
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise pending.StateError("the turn's state stayed locked") from None
+                time.sleep(0.02)
         yield
     finally:
         os.close(fd)
 
 
 def decide(
-    payload: object, config: AgentHostConfig, *, turn_checkout: Path, turn_id: str,
-    grant: str | None = None, grant_base: str | None = None,
+    payload: object, config: AgentHostConfig, *, turn_checkout: Path | None,
+    turn_id: str | None, grant: str | None = None, grant_base: str | None = None,
+    env_changed: bool = False,
     home: Path | None = None, lib_dir: Path | None = None,
     git: classify.GitRunner = classify.run_git,
 ) -> Decision:
     """Decide about one PreToolUse hook input. Raises on anything it cannot
-    read; the caller turns that into a denial."""
+    read; the caller turns that into a denial.
+
+    `turn_checkout`, `turn_id`, `grant` and `grant_base` are the turn's
+    trusted values; None for the first two when there are none, and then
+    every gated call is denied. `env_changed`: the gate's own environment
+    differs from the trusted one, and every gated call is denied with
+    `settings_changed`."""
     if not isinstance(payload, dict):
         raise ValueError("the hook input is not an object")
     tool_name = payload.get("tool_name")
@@ -250,8 +277,10 @@ def decide(
     if not verdict.gated:
         return ALLOW
 
-    if not pending.is_canonical_uuid(turn_id):
-        raise pending.StateError("the turn id is not one the wrapper issues")
+    if turn_id is None or not pending.is_canonical_uuid(turn_id):
+        raise pending.StateError("no trusted turn id, or not one the wrapper issues")
+    if turn_checkout is None or not turn_checkout.is_absolute():
+        raise pending.StateError("no trusted turn checkout")
     with _turn_state_lock(config, turn_id):
         state = pending.TurnState.load(config.gate_dir, turn_id)
 
@@ -261,7 +290,7 @@ def decide(
             state.save()
             return Decision(False, reason, verdict)
 
-        if checkout_settings.problem(
+        if env_changed or checkout_settings.problem(
             turn_checkout, real_cwd, user_settings_path=config.user_settings_path,
         ) is not None:
             return deny(REASON_SETTINGS, "settings_changed")

@@ -17,7 +17,12 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_host.boundedio import read_regular
+
 BASE_RULES_PATH = Path(__file__).resolve().parent / "gate_rules.toml"
+# A rules file is read on every gated call: never without a bound (host
+# check 12). The repository's own is far smaller.
+MAX_RULES_FILE_BYTES = 4 * 1024 * 1024
 
 # The classes a rule may put a call in (D36's table). `self` is not here: no
 # rule assigns it, the protected paths do (agent_host.classify).
@@ -179,7 +184,7 @@ def _merge(base: dict, extra: dict, where: str) -> dict:
 
 def _read_toml(path: Path) -> dict:
     try:
-        raw = path.read_bytes()
+        raw = read_regular(path, MAX_RULES_FILE_BYTES)
     except OSError as exc:
         raise RulesError(f"cannot read rules file {path}: {exc}") from exc
     try:

@@ -11,12 +11,16 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent_host.boundedio import read_regular
+
 
 class ConfigError(RuntimeError):
     """Raised when the agent host is misconfigured."""
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/jarvis-agent/config.toml")
+# The gate reads this on every call: never without a bound (host check 12).
+MAX_CONFIG_BYTES = 1024 * 1024
 
 DEFAULT_MEMORY_FLOOR_MB = 600
 DEFAULT_TIMEOUT_S = 600
@@ -149,7 +153,7 @@ def _string_list(data: dict, key: str, default: tuple[str, ...] = ()) -> tuple[s
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentHostConfig:
     try:
-        raw = path.read_bytes()
+        raw = read_regular(path, MAX_CONFIG_BYTES)
     except OSError as exc:
         raise ConfigError(f"cannot read agent host configuration {path}: {exc}") from exc
     try:

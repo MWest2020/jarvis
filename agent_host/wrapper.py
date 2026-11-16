@@ -54,7 +54,7 @@ from pathlib import Path
 
 from agent_host import (
     checkout_settings, classify, command, decision, gatehash, identity, naming, pending,
-    projects, prstatus,
+    projects, prstatus, trusted,
 )
 from agent_host import record as record_mod
 from agent_host import request as request_mod
@@ -489,24 +489,46 @@ def _run_turn(
     )
 
     started = time.monotonic()
+    gate_dir = config.gate_dir
+
+    def write_trusted_record() -> None:
+        # In the child, between fork and exec: the record of the turn's
+        # trusted values, keyed by the process that is about to become
+        # `claude`, exists before any hook can run (agent_host.trusted).
+        trusted.write_for_self(gate_dir, env)
+
     # The prompt goes over stdin, never argv (as for the coding session's
     # own adapter, bridge/claude_adapter.py); start_new_session=True so a
     # timeout can kill the whole process group, not just `claude` itself.
-    proc = subprocess.Popen(
-        argv, cwd=working_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            argv, cwd=working_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
+            preexec_fn=write_trusted_record,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # No `claude`, or no record of the turn's trusted values: the turn
+        # does not start, because its gate could not know whom to trust.
+        _write_record(
+            config, turn_id=turn_id, project=project, session_id=stored_id, prompt=prompt,
+            reply_text=f"the turn could not start: {exc}", duration_s=0.0,
+            outcome="agent_failed",
+        )
+        return _reply(status="error", error="agent_failed", turn=turn_id)
     timed_out = False
     try:
-        stdout, stderr = proc.communicate(prompt, timeout=config.timeout_s)
-    except subprocess.TimeoutExpired:
-        timed_out = True
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
-        stdout = stderr = ""
+            stdout, stderr = proc.communicate(prompt, timeout=config.timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            stdout = stderr = ""
+    finally:
+        trusted.remove_for(gate_dir, proc.pid)
     duration = time.monotonic() - started
     # The checkout settings rule, after the turn (D36, check 3): the files
     # were safe when the turn started, so a problem now appeared during it.

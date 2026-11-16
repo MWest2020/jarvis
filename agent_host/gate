@@ -7,80 +7,220 @@ wrapper started. It reads the hook input (one JSON object) on stdin and
 reads its configuration from one fixed path, /etc/jarvis-agent/config.toml:
 a constant of the installation, not something the turn's environment can
 choose (`JARVIS_AGENT_CONFIG` is honoured in a source checkout only, for the
-tests). The wrapper tells it the turn's checkout in `JARVIS_TURN_CHECKOUT`.
+tests).
 
 Three answers:
 - no turn marker (`JARVIS_TURN`) in the environment: exit 0 at once,
-  before anything is imported or read. The coding session is never gated,
-  whether the rest of this script works or not;
-- a call no rule gates, and a gated call whose hash equals the grant in
-  `JARVIS_GRANT` (once): exit 0 in silence;
+  before anything else is imported or read. The coding session is never
+  gated, whether the rest of this script works or not;
+- a call no rule gates, and a gated call whose hash equals the turn's grant
+  (once): exit 0 in silence;
 - every other gated call: denied, with a reason for the agent. A nameable
   one becomes the turn's pending call (agent_host.decision).
 
+**What it trusts** (host check 6). The turn's id, checkout and grant are
+never taken from this process's environment: Claude Code adds a checkout's
+`env` settings to it, mid-turn too. They come from the record the wrapper
+wrote for the `claude` process it started, checked against that process's
+exec-time environment (agent_host.trusted). When this process's `JARVIS_*`
+values differ from those in any way, every gated call is denied
+(`settings_changed`).
+
+**Always in time** (host check 12). A hook that runs past its `timeout`
+fails OPEN in Claude Code 2.1.322: the call runs. So the first thing this
+script does is set its own deadline (`DEADLINE_S`, far inside the 30 s of
+the turn settings), and the decision is made in a forked worker: this
+process only waits for the worker's answer and is the only one that writes
+to stdout. When the deadline comes first, it kills the worker, prints the
+denial and exits, whatever the worker was stuck in (a blocked read, a
+regular expression, a lock). That holds unless the whole host stalls for
+longer than the hook timeout.
+
 Failing closed: inside a turn, unreadable rules, an unparsable call, a
-missing configuration or a crash all deny the call.
+missing configuration, no trusted values, a crash or the deadline all deny
+the call.
 """
 import os
+import signal
 import sys
 
-if "JARVIS_TURN" not in os.environ:
-    sys.exit(0)
-
-import json  # noqa: E402 - nothing is imported before the turn marker check
-
-
-def _deny(reason: str) -> None:
-    sys.stdout.write(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        },
-    }))
-    sys.stdout.flush()
-
-
+DEADLINE_S = 5.0
+_DEADLINE_REASON = (
+    "[needs_desk] The gate ran out of time deciding about this call, so it is refused."
+    " That one needs the desk. Stop here and end your turn."
+)
 _FALLBACK_REASON = (
     "[needs_desk] The gate could not decide about this call, so it is refused. That"
     " one needs the desk. Stop here and end your turn."
 )
 
 
-def main() -> int:
+def _deny_bytes(reason: str) -> bytes:
+    # Built by hand so that the deadline path needs no import. The reasons
+    # are fixed ASCII text without quotes or backslashes.
+    return (
+        '{"hookSpecificOutput": {"hookEventName": "PreToolUse",'
+        ' "permissionDecision": "deny", "permissionDecisionReason": "' + reason + '"}}'
+    ).encode("ascii")
+
+
+_DEADLINE_DENY = _deny_bytes(_DEADLINE_REASON)
+_FALLBACK_DENY = _deny_bytes(_FALLBACK_REASON)
+_worker = 0
+_answered = False
+
+
+def _emit_and_exit(data: bytes, reason: str) -> None:
+    """Write the one answer and leave. A denial that cannot be written is
+    still a denial: exit 2 with the reason on stderr."""
+    global _answered
+    _answered = True
     try:
-        from pathlib import Path
+        view = memoryview(data)
+        while view:
+            view = view[os.write(1, view):]
+        code = 0
+    except OSError:
+        try:
+            os.write(2, reason.encode("ascii"))
+        except OSError:
+            pass
+        code = 2
+    os._exit(code)
 
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from agent_host import decision
-        from agent_host.config import hook_config_path, load_config
 
-        reason = decision.REASON_ERROR
-        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        # A fixed path when installed; the environment is not asked (see
-        # agent_host.config.hook_config_path).
-        config = load_config(hook_config_path(os.environ, Path(__file__).resolve().parent))
-        checkout = os.environ["JARVIS_TURN_CHECKOUT"]
-        if not os.path.isabs(checkout):
-            raise ValueError("JARVIS_TURN_CHECKOUT is not an absolute path")
-        result = decision.decide(
-            payload, config, turn_checkout=Path(checkout),
-            turn_id=os.environ["JARVIS_TURN_ID"],
-            grant=os.environ.get("JARVIS_GRANT") or None,
-            grant_base=os.environ.get("JARVIS_GRANT_BASE") or None,
-        )
+def _on_deadline(signum, frame):
+    if _answered:
+        return
+    if _worker > 0:
+        try:
+            os.kill(_worker, signal.SIGKILL)
+        except OSError:
+            pass
+    _emit_and_exit(_DEADLINE_DENY, _DEADLINE_REASON)
+
+
+# The deadline first, before anything else is imported or read.
+signal.signal(signal.SIGALRM, _on_deadline)
+signal.setitimer(signal.ITIMER_REAL, DEADLINE_S)
+
+if "JARVIS_TURN" not in os.environ:
+    sys.exit(0)
+
+MAX_INPUT_BYTES = 16 * 1024 * 1024
+
+
+def _decide() -> str | None:
+    """The worker's part: None to let the call through, else the reason of
+    the denial. Raises on anything it cannot do."""
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from agent_host import decision, trusted
+    from agent_host.config import hook_config_path, load_config
+
+    try:
+        return _decide_with(decision, trusted, hook_config_path, load_config)
     except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
-        _deny(locals().get("reason", _FALLBACK_REASON))
-        return 0
-    if not result.allow:
-        _deny(result.reason)
-    return 0
+        return decision.REASON_ERROR
+
+
+def _decide_with(decision, trusted, hook_config_path, load_config) -> str | None:
+    from pathlib import Path
+
+    raw = b""
+    while len(raw) <= MAX_INPUT_BYTES:
+        chunk = os.read(0, 1 << 20)
+        if not chunk:
+            break
+        raw += chunk
+    if len(raw) > MAX_INPUT_BYTES:
+        return decision.REASON_ERROR
+    import json
+
+    payload = json.loads(raw.decode("utf-8"))
+    # A fixed path when installed; the environment is not asked (see
+    # agent_host.config.hook_config_path).
+    config = load_config(hook_config_path(os.environ, Path(__file__).resolve().parent))
+    turn = trusted.find(config.gate_dir)
+    if turn is None or turn.checkout is None or turn.turn_id is None:
+        # No record of the turn the wrapper started, or one without its
+        # checkout or id: this is not a turn as the wrapper starts one, and
+        # nothing is let through, gated or not.
+        return decision.REASON_ERROR
+    result = decision.decide(
+        payload, config, turn_checkout=turn.checkout, turn_id=turn.turn_id,
+        grant=turn.grant, grant_base=turn.grant_base,
+        env_changed=trusted.changed(os.environ, turn),
+    )
+    return None if result.allow else result.reason
+
+
+def _work(write_fd: int) -> None:
+    """In the worker: decide, send "A" (let through) or "D" and the denial's
+    JSON to the parent, and leave. Never writes to stdout."""
+    try:
+        import json
+
+        reason = _decide()
+        if reason is None:
+            answer = b"A"
+        else:
+            answer = b"D" + json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }}).encode("utf-8")
+    except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
+        answer = b"D" + _FALLBACK_DENY
+    try:
+        view = memoryview(answer)
+        while view:
+            view = view[os.write(write_fd, view):]
+    finally:
+        os._exit(0)
+
+
+def main() -> None:
+    global _worker, _answered
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # Timers do not cross a fork. The worker gets its own, a little
+        # later, with the default action (the end of the process), so that a
+        # worker whose parent is gone cannot run on.
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.setitimer(signal.ITIMER_REAL, DEADLINE_S + 1)
+        os.close(read_fd)
+        _work(write_fd)
+    _worker = pid
+    os.close(write_fd)
+    chunks = []
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.waitpid(pid, 0)
+    answer = b"".join(chunks)
+    if answer == b"A":
+        _answered = True
+        os._exit(0)
+    if answer.startswith(b"D"):
+        import json
+
+        try:
+            out = json.loads(answer[1:])
+            if out["hookSpecificOutput"]["permissionDecision"] == "deny":
+                _emit_and_exit(answer[1:], _FALLBACK_REASON)
+        except (ValueError, KeyError, TypeError):
+            pass
+    # A worker that died, or sent anything else: denied.
+    _emit_and_exit(_FALLBACK_DENY, _FALLBACK_REASON)
 
 
 if __name__ == "__main__":
     try:
-        code = main()
-    except BaseException:  # noqa: BLE001 - even the denial failed: block by exit code
-        sys.stderr.write(_FALLBACK_REASON)
-        code = 2
-    sys.exit(code)
+        main()
+    except BaseException:  # noqa: BLE001 - denied, whatever went wrong here
+        _emit_and_exit(_FALLBACK_DENY, _FALLBACK_REASON)
