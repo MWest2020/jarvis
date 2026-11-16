@@ -118,6 +118,9 @@ def test_the_turn_settings_name_the_real_paths_not_the_fake_root(source, destdir
     (pre,), (post,) = settings["hooks"]["PreToolUse"], settings["hooks"]["PostToolUse"]
     assert pre["matcher"] == "*" and post["matcher"] == "*"
     assert [h["command"] for h in pre["hooks"]] == ["/usr/local/lib/jarvis-agent/gate"]
+    # An explicit timeout for the gate, so a hanging gate ends in a known time (the host
+    # check "a gate that times out denies the call" says what happens then).
+    assert [h["timeout"] for h in pre["hooks"]] == [10]
     assert [h["command"] for h in post["hooks"]] == ["/usr/local/lib/jarvis-agent/action-log"]
     assert str(destdir) not in json.dumps(settings)
 

@@ -7,7 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/lib/jarvis-agent/gate"
+            "command": "/usr/local/lib/jarvis-agent/gate",
+            "timeout": 10
           }
         ]
       }

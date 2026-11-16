@@ -1,9 +1,9 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 2 (Bridge side)
+## Current phase: 1b (The gate, the hash and grant, the read-back)
 
-Moved here by build 1c (task 1.18). Phase 1b (tasks 1.7 to 1.14b, the gate) is built
-separately and is open until its own boxes are ticked; task 1.17 **(host)** is open too.
+Build 1c (tasks 1.15, 1.16, the roadmap half of 1.18) is done ahead of 1b. The heading
+stays at 1b until the gate is merged; it moves to 2 when 1b and 1c are both in.
 
 One build does one phase: the phase named in this heading. Phase 1 is three builds (1a, 1b,
 1c). The last task of every phase
@@ -217,6 +217,9 @@ This build carries the change's guarantees and is reviewed on its own.
   - auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
   - a blocked call is denied and the turn ends; it does not hang until the timeout;
+  - a gate that times out (the hook `timeout` in the turn settings, 10 s) denies the call;
+    it does not let it through. **If Claude Code lets the call through on a hook timeout,
+    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened;
   - `--append-system-prompt-file` and `--system-prompt-snapshot off` are accepted, and a
     changed prompt reaches a resumed session;
   - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
@@ -244,8 +247,9 @@ This build carries the change's guarantees and is reviewed on its own.
   - the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
     a volume claim, namespace or resource definition): are they refused after a yes? If so
     they are marked desk-only in the rules
-- [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
-  code as evidence, until 1.17 is done on the host
+- [ ] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
+  code as evidence, until 1.17 is done on the host. (Build 1c updated the roadmap; the
+  heading moves to 2 when 1b is merged too, and this box is ticked then)
 
 ## 2. Bridge side
 

@@ -64,7 +64,7 @@ Read this before installing. It is design D40 in plain words.
 | `/usr/local/lib/jarvis-agent/action-log` | The PostToolUse hook that writes one line per tool call that can change something (D38). |
 | `/usr/local/lib/jarvis-agent/gate_rules.toml` | The gate's rules from the repository. |
 | `/usr/local/lib/jarvis-agent/prompt.md` | The appended prompt (D35). |
-| `/usr/local/lib/jarvis-agent/turn-settings.json` | The static settings every turn gets with `--settings`: the two hooks, `disableAllHooks: false`, and `autoMemoryDirectory`. Written by the installer only. |
+| `/usr/local/lib/jarvis-agent/turn-settings.json` | The static settings every turn gets with `--settings`: the two hooks (the gate with a hook `timeout` of 10 seconds), `disableAllHooks: false`, and `autoMemoryDirectory`. Written by the installer only. |
 | `/usr/local/lib/jarvis-agent/src/` | The code itself (`agent_host/` and the one module of `bridge/` it imports). The six paths above the settings are symbolic links into it. |
 | `/usr/local/lib/jarvis-agent/VERSION` | The commit that was installed. |
 | `/etc/jarvis-agent/config.toml` | The configuration. Written from the template only when it does not exist. |
@@ -244,8 +244,10 @@ the new version**:
    worktree the agent entered during the turn. A gated call must not get through in any
    of these cases. **If it does, stop here**: leave the kill switch set, `full` mode stays
    off, and the design is reopened (D36). No other setting makes up for it.
-4. Then the rest of the table.
-5. Write the version and the outcomes into the table, and only then set `enabled = true`.
+4. Then the gate timeout check (row 12), with the same hard stop: if a gate that times out
+   lets the call through, leave the kill switch set.
+5. Then the rest of the table.
+6. Write the version and the outcomes into the table, and only then set `enabled = true`.
 
 ### Host checks (task 1.17)
 
@@ -266,6 +268,7 @@ the one on the agent host at that time (2.1.322 when this page was written).
 | 9 | A real merge call in the explicit shape is refused, read back and released; without `--repo` it gets the naming refusal and one repair | | open |
 | 10 | A dropped caller does not kill the turn | | open |
 | 11 | The classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting a volume claim, namespace or resource definition): refused after a yes? If so they are marked desk-only in the rules | | open |
+| 12 | **Gate timeout**: a gate that runs past its hook `timeout` (10 seconds in the turn settings) denies the call; it does not let it through. A failure stops phase 1 | | open |
 
 Which memory road is in use (`autoMemoryDirectory`, or the symlink fallback): not yet
 determined (check 8).
