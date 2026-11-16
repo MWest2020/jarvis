@@ -319,7 +319,7 @@ subcommand nobody thought of (`gh issue delete`, `gh gist create --public`, `kub
 | create | `gh repo create`, `gh repo fork`, `gh gist create`, changing a repository's visibility |
 | outward | copying files to or from another host with `scp`, `rsync` or `sftp` |
 | root | `sudo`, `su`, `pkexec`, `doas`, in any position: the inner command must itself be nameable |
-| self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user and managed settings, `~/.claude.json` (connector definitions), `~/.claude/CLAUDE.md`, `~/.claude/agents`, `skills`, `plugins`; every file that a configured hook runs; the shell rc files; and the checkout's own `.claude/settings*.json` |
+| self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user and managed settings, `~/.claude.json` (connector definitions), `~/.claude/CLAUDE.md`, `~/.claude/agents`, `skills`, `plugins`; every file that a configured hook runs; the shell rc files; the checkout's own `.claude/settings*.json`; any file whose directory is the home directory, `~/.claude`, `~/.ssh` or a `.claude`; and a repository's `.git/config`, `.git/hooks/` and `.git/info/` (a push mapping or a hook planted there changes what a later git call does) |
 
 A gated call that no naming rule covers has no sentence, and therefore **needs the desk**
 (below). The default rules decide *that* a call is gated; the naming rules decide whether it
@@ -575,7 +575,9 @@ once because the turn marker is absent, and cannot block a call even when it is 
 *Switching it off.* `confirm = "off"` in `/etc/jarvis-agent/config.toml`, or
 `confirm_skip = ["message", …]` for single classes. Then the gate lets the call through and
 the record says "not confirmed: confirmation is off". The class `self` stays desk-only even
-then. By voice the setting is changed only through the fixed `confirm on|off` command above,
+then, and "off" never covers a call the gate did not fully understand: a compound command,
+inline code, a call reached by unwrapping a shell, a write to git's configuration, or a push
+whose destination the configuration or the environment decides (D40). By voice the setting is changed only through the fixed `confirm on|off` command above,
 with its templated read-back and a yes; any other edit of that file is a desk job.
 
 Alternatives considered:

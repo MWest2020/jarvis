@@ -150,14 +150,17 @@ branch is not edited here. What #9 should change before it is merged:
 
 ## Phases
 
-One factory build per phase. Phase 1 is three builds (1a, 1b, 1c): nothing is installed
-before 1c, so the split costs no safety. Tasks marked **(host)** need the agent host itself and are done
+One factory build per phase. Phase 1 is four builds (1a, 1b1, 1b2, 1c): nothing is installed
+before 1c, so the split costs no safety. The gate was cut in two on the architect's finding
+that it was too much for one reviewed build; after 1b1 every gated call is refused and
+nothing can be confirmed yet, which is the desk-only state and not the finished guarantee. Tasks marked **(host)** need the agent host itself and are done
 by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 
 | # | Phase | You can then |
 |---|---|---|
 | 1a | Agent host: the wrapper | run one turn through the wrapper in CI with a fake `claude`; no gate yet |
-| 1b | Agent host: the gate | see a gated call refused, read back and released by a grant, in CI; reviewed on its own |
+| 1b1 | Agent host: the gate decides and refuses | see a gated call refused and desk-only, in CI; reviewed on its own |
+| 1b2 | Agent host: naming, the hash and grant, the read-back | see it read back and released by a grant, in CI; reviewed on its own |
 | 1c | Agent host: installer, docs, host checks | install it; `full` mode stays off everywhere until the host checks pass |
 | 2 | Bridge side | choose `full` mode; a read-back and a yes work end to end against a fake agent host |
 | 3 | Wiring | talk to the full agent from the phone over the tailnet |

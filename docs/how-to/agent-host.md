@@ -11,11 +11,12 @@ the same instructions, memory, hooks and credentials (change `jarvis-full-agent`
 machine: what is installed where, how to configure it, how to switch it off, and what to
 check after an update of Claude Code.
 
-**State on 2026-11-16.** The wrapper (phase 1a) and this installer (phase 1c) are in the
-repository. The gate (phase 1b) is being built; `install.sh` refuses to install without
-it. The host checks of task 1.17 are all open (see [Host checks](#host-checks-task-117)).
-**`full` mode is enabled nowhere until every one of them has passed**, and the
-configuration template ships with the kill switch set.
+**State on 2026-11-16.** Everything in the repository is built: the wrapper (phase 1a),
+the gate with its read-back, grant, action log and `confirm` switch (phases 1b1 and 1b2),
+this installer (phase 1c) and the bridge side (phase 2). Nothing here says it is installed
+on any host. The host checks of task 1.17 are all open (see
+[Host checks](#host-checks-task-117)). **`full` mode is enabled nowhere until every one of
+them has passed**, and the configuration template ships with the kill switch set.
 
 ## What this trusts
 
@@ -144,7 +145,10 @@ is refused. sshd enforces all three options before any of this repository's code
 
 ## Configuration
 
-`/etc/jarvis-agent/config.toml`. The template explains each key in place.
+`/etc/jarvis-agent/config.toml`. The template explains each key in place. Installed, the
+wrapper, the gate and the action log read this one fixed path: `JARVIS_AGENT_CONFIG` in
+the environment is ignored (it counts in a source checkout only, for the tests), so
+nothing a turn or a project's settings can set chooses another configuration.
 
 | Key | Required | Meaning |
 |---|---|---|
@@ -181,8 +185,8 @@ also be on the bridge's own list to be reachable by voice.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A
 turn starts from nothing but this file plus the turn variables: `JARVIS_TURN=1`,
-`JARVIS_TURN_ID`, the identity variable, `JARVIS_AGENT_CONFIG` (the configuration file,
-so the gate reads the same one as the wrapper), `JARVIS_TURN_CHECKOUT` (the checkout the
+`JARVIS_TURN_ID`, the identity variable, `JARVIS_AGENT_CONFIG` (the path of the configuration; informational once installed,
+see below), `JARVIS_TURN_CHECKOUT` (the checkout the
 turn runs in), and in a confirming turn only `JARVIS_GRANT` and `JARVIS_GRANT_BASE` (the
 grant for the one call that was read back). Do not set any of these in the file. Give it the coding session user's `HOME` and a
 `PATH` on which `claude`, `git` and `gh` are found. Nothing the ssh client sends and
@@ -257,7 +261,7 @@ whatever the setting.
 In `state_dir`, owned by the coding session's user, 0700 with files 0600:
 
 - `records/<turn id>.json`: one per turn. Time, project, session id, the prompt as
-  received, the full reply, duration, outcome, and (from phase 1b) every pending,
+  received, the full reply, duration, outcome, and every pending,
   confirmed, cancelled or refused gated action with its read-back. The bridge's log
   carries the same turn id.
 - `sessions/sessions.json`: the Claude Code session id per project.

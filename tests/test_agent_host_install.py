@@ -1,10 +1,9 @@
 """agent_host/install.sh against a fake root (1.15): a DESTDIR-style prefix, so
 nothing outside the test's own directory is written and no root is needed.
 
-The installer refuses a checkout without the gate (phase 1b). Until that
-build is merged the source tree used here gets stand-ins for the files it
-adds; once they exist the real ones are installed and the stand-ins are not
-written.
+The source is a git checkout made from the real files of this repository
+(the installer takes only what git tracks), so what is installed here is the
+real wrapper, gate, confirm switch, action log and rules.
 """
 import hashlib
 import json
@@ -21,7 +20,7 @@ from tests.test_agent_host_turn_entrypoint import _write_setup
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = "usr/local/lib/jarvis-agent"
 ETC = "etc/jarvis-agent"
-PHASE_1B = ("gate", "confirm", "action-log", "gate_rules.toml")
+ENTRY_POINTS = ("turn", "gate", "confirm", "action-log")
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJarvisBridgeTestKeyNotARealOne0000000000000"
 
 
@@ -34,12 +33,8 @@ def source(tmp_path):
     (src / "bridge").mkdir()
     for name in ("__init__.py", "summary.py"):
         shutil.copy(REPO_ROOT / "bridge" / name, src / "bridge" / name)
-    for name in PHASE_1B:
-        path = src / "agent_host" / name
-        if not path.exists():
-            path.write_text("#!/bin/sh\nexit 2\n" if "." not in name else "# stand-in\n")
-            if "." not in name:
-                path.chmod(0o755)
+    for name in (*ENTRY_POINTS, "gate_rules.toml"):
+        assert (src / "agent_host" / name).is_file(), f"agent_host/{name} is not in the repository"
     git(src, "init", "-q")
     commit(src)
     return src
@@ -73,6 +68,17 @@ def install(source, destdir, *args, env_destdir=True):
         ["bash", str(source / "agent_host" / "install.sh"), *args],
         capture_output=True, text=True, env=env, timeout=60,
     )
+
+
+def honour_test_configuration(destdir):
+    """Installed code reads one fixed configuration path and ignores
+    JARVIS_AGENT_CONFIG, unless the test kit lies next to the package
+    (agent_host.config.hook_config_path). The installer never puts it there;
+    a test that wants to run the installed wrapper with its own configuration
+    does, in its own fake root, after the install."""
+    kit = destdir / LIB / "src" / "tests" / "gatekit.py"
+    kit.parent.mkdir()
+    kit.write_text("")
 
 
 def snapshot(root: Path) -> dict[str, str]:
@@ -346,6 +352,7 @@ def test_the_installed_template_is_a_valid_configuration_with_the_kill_switch_se
 
     # The installed wrapper, started the way sshd starts it (by its fixed path, with
     # nothing useful in the environment), finds its own code and answers `disabled`.
+    honour_test_configuration(destdir)
     proc = subprocess.run(
         [str(destdir / LIB / "turn")], input=b"", capture_output=True,
         env={"JARVIS_AGENT_CONFIG": str(destdir / ETC / "config.toml")}, cwd="/", timeout=30,
@@ -356,6 +363,7 @@ def test_the_installed_template_is_a_valid_configuration_with_the_kill_switch_se
 
 def test_a_turn_runs_through_the_installed_wrapper(source, destdir, tmp_path):
     assert install(source, destdir).returncode == 0
+    honour_test_configuration(destdir)
     work = tmp_path / "work"
     work.mkdir()
     config_toml, record_path = _write_setup(work)
@@ -374,10 +382,14 @@ def test_a_turn_runs_through_the_installed_wrapper(source, destdir, tmp_path):
 def test_installed_entry_points_run_under_the_fixed_interpreter_in_isolated_mode(source, destdir, tmp_path):
     assert install(source, destdir).returncode == 0
     turn = destdir / LIB / "turn"
-    assert turn.read_text().splitlines()[0] == "#!/usr/bin/python3 -I"
+    for name in ENTRY_POINTS:
+        entry = destdir / LIB / name
+        assert entry.read_text().splitlines()[0] == "#!/usr/bin/python3 -I", name
+        assert entry.is_symlink() and entry.resolve().stat().st_mode & 0o777 == 0o755
     # In the repository the script keeps its portable shebang; only the installed copy is pinned.
     assert (source / "agent_host" / "turn").read_text().splitlines()[0] == "#!/usr/bin/env python3"
 
+    honour_test_configuration(destdir)
     # A PATH with another `python3` in front, and a PYTHONPATH that shadows both the
     # wrapper's own package and a standard library module: neither is used.
     marker = tmp_path / "hijacked"
@@ -405,3 +417,55 @@ def test_installed_entry_points_run_under_the_fixed_interpreter_in_isolated_mode
     assert proc.returncode == 0, proc.stderr.decode()
     assert json.loads(proc.stdout)["error"] == "disabled"
     assert not marker.exists()
+
+
+def test_every_module_of_the_package_is_installed_and_nothing_of_the_tests(source, destdir):
+    assert install(source, destdir).returncode == 0
+    installed = {p.name for p in (destdir / LIB / "src/agent_host").iterdir()}
+    in_repo = {p.name for p in (REPO_ROOT / "agent_host").iterdir() if p.is_file()}
+    assert installed == in_repo - {"install.sh", "config.example.toml", "turn-settings.json"}
+    # The hooks take their configuration path from the environment only next to the
+    # test kit (agent_host.config.hook_config_path): it must never be installed.
+    assert not (destdir / LIB / "src/tests").exists()
+    assert not list((destdir / LIB).rglob("gatekit.py"))
+
+
+def test_the_installed_gate_denies_when_it_cannot_read_its_configuration(source, destdir, tmp_path):
+    """The installed gate reads one fixed configuration path and ignores what the
+    environment says. Here that file is not the one of this fake root, so whatever
+    the gate finds or does not find there, a call is denied: never let through."""
+    assert install(source, destdir).returncode == 0
+    planted = tmp_path / "planted.toml"
+    planted.write_text((destdir / ETC / "config.toml").read_text())
+    call = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(tmp_path),
+            "tool_input": {"command": "gh repo delete someone/something --yes"}}
+
+    proc = subprocess.run(
+        [str(destdir / LIB / "gate")], input=json.dumps(call).encode(), capture_output=True,
+        cwd="/", timeout=30,
+        env={"JARVIS_TURN": "1", "JARVIS_AGENT_CONFIG": str(planted),
+             "JARVIS_TURN_ID": "11111111-1111-4111-8111-111111111111"},
+    )
+
+    assert proc.returncode in (0, 2), proc.stderr.decode()
+    if proc.returncode == 0:
+        decision = json.loads(proc.stdout)["hookSpecificOutput"]
+        assert decision["permissionDecision"] == "deny"
+
+
+def test_the_installed_wrapper_ignores_a_configuration_named_in_the_environment(source, destdir, tmp_path):
+    assert install(source, destdir).returncode == 0
+    work = tmp_path / "work"
+    work.mkdir()
+    planted, record_path = _write_setup(work)
+    request = json.dumps({"v": 1, "project": "proj", "prompt": "hello", "confirm": None}).encode()
+
+    subprocess.run(
+        [str(destdir / LIB / "turn")], input=request, capture_output=True,
+        env={"JARVIS_AGENT_CONFIG": str(planted)}, cwd="/", timeout=30,
+    )
+
+    # Whatever the fixed path holds on this machine, the planted configuration (with its
+    # own fake `claude` and state directory) was not the one used.
+    assert not record_path.exists()
+    assert not (work / "state").exists()

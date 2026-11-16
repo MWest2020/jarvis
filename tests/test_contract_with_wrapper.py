@@ -65,3 +65,128 @@ def test_the_bridge_reads_every_reply_the_wrapper_builds():
         status="ok", turn=turn, pending=True, readback="Merge pull request 21 on jarvis.",
         confirm={"id": "c1", "sha256": SHA, "class": "merge", "expires_s": 60})))
     assert pending["confirmation"].sha256 == SHA
+
+
+# --- phase 1b: the real wrapper's read-back and confirm path, read by the bridge ----------
+#
+# The fake `claude` hands its tool calls to the real gate (tests/
+# test_agent_host_wrapper_confirm.py, `Host`); everything else on the agent
+# host's side is the code that will be installed. What it writes is read by
+# the bridge's parser, and what the bridge then builds is read by the wrapper.
+
+from agent_host import gatehash  # noqa: E402
+from bridge.remote_adapter import speakable_readback  # noqa: E402
+from tests.test_agent_host_wrapper_confirm import MERGE, MERGE_SENTENCE, Host  # noqa: E402
+
+
+@pytest.fixture
+def host(tmp_path):
+    return Host(tmp_path)
+
+
+def _through_the_bridge(host, *, prompt, confirm=None):
+    """One request as the bridge builds it, one reply as the bridge reads it."""
+    reply = wrapper.handle_request(
+        build_request(project="demo", prompt=prompt, confirm=confirm), host.config)
+    assert set(reply) == remote_adapter.REPLY_KEYS
+    return reply, parse_reply(_wire(reply))
+
+
+def test_the_bridge_reads_the_real_wrappers_read_back(host, monkeypatch):
+    host.agent(monkeypatch, [MERGE])
+    reply, parsed = _through_the_bridge(host, prompt="merge it")
+
+    assert parsed["spoken"] == "" and parsed["error"] == "" and parsed["notice"] == ""
+    assert parsed["readback"] == f"{MERGE_SENTENCE} Checks green, review approved. Say yes to go ahead."
+    # Spoken as built: the bridge's own check of a read-back accepts it unchanged.
+    assert speakable_readback(parsed["readback"]) == parsed["readback"]
+    assert 0 < parsed["expires_s"] <= remote_adapter.MAX_EXPIRES_S
+    confirmation = parsed["confirmation"]
+    assert confirmation.id == reply["confirm"]["id"]
+    assert confirmation.sha256 == gatehash.call_hash(
+        "Bash", str(host.checkout.resolve()), {"command": MERGE})
+    assert set(reply["confirm"]) == remote_adapter.CONFIRM_KEYS
+
+
+def test_the_bridges_yes_releases_the_call_on_the_real_wrapper(host, monkeypatch):
+    host.agent(monkeypatch, [MERGE])
+    _, asked = _through_the_bridge(host, prompt="merge it")
+    pending = asked["confirmation"]
+
+    host.agent(monkeypatch, [MERGE], reply="merged.\nSPOKEN SUMMARY: It is merged.")
+    reply, parsed = _through_the_bridge(
+        host, prompt="", confirm=ConfirmAnswer(pending.id, pending.sha256, "yes"))
+    assert parsed["spoken"] == "SPOKEN SUMMARY: It is merged."
+    assert parsed["confirmation"] is None
+    assert host.popens[-1].decisions[0].allow
+    assert host.popens[-1].kwargs["env"]["JARVIS_GRANT"] == pending.sha256
+    # Single use: the same answer again finds nothing, and the bridge reads that too.
+    _, again = _through_the_bridge(
+        host, prompt="", confirm=ConfirmAnswer(pending.id, pending.sha256, "yes"))
+    assert again["error"] == "expired"
+
+
+def test_the_bridges_no_clears_the_call_on_the_real_wrapper(host, monkeypatch):
+    host.agent(monkeypatch, [MERGE])
+    _, asked = _through_the_bridge(host, prompt="merge it")
+    pending = asked["confirmation"]
+    reply, parsed = _through_the_bridge(
+        host, prompt="", confirm=ConfirmAnswer(pending.id, pending.sha256, "no"))
+    assert (reply["status"], reply["turn"], parsed["error"]) == ("ok", None, "")
+    assert not host.pending_file().exists()
+    _, late = _through_the_bridge(
+        host, prompt="", confirm=ConfirmAnswer(pending.id, pending.sha256, "yes"))
+    assert late["error"] == "expired"
+
+
+def test_a_yes_to_a_busy_host_keeps_the_pending_call_for_the_bridge_to_ask_again(host, monkeypatch):
+    from agent_host.turnlock import acquire_turn_lock
+    host.agent(monkeypatch, [MERGE])
+    _, asked = _through_the_bridge(host, prompt="merge it")
+    pending = asked["confirmation"]
+    before = host.pending_file().read_text()
+    answer = ConfirmAnswer(pending.id, pending.sha256, "yes")
+
+    with acquire_turn_lock(host.config.lock_path):
+        _, busy = _through_the_bridge(host, prompt="", confirm=answer)
+    assert busy["error"] == "busy"
+    monkeypatch.setattr(wrapper, "available_memory_mb", lambda: 1.0)
+    _, low = _through_the_bridge(host, prompt="", confirm=answer)
+    assert low["error"] == "low_memory"
+    assert host.pending_file().read_text() == before          # same id, same expiry
+
+    monkeypatch.setattr(wrapper, "available_memory_mb", lambda: 10_000.0)
+    host.agent(monkeypatch, [MERGE])
+    _, done = _through_the_bridge(host, prompt="", confirm=answer)
+    assert done["error"] == "" and host.popens[-1].decisions[0].allow
+
+
+@pytest.mark.parametrize("calls,notice", [
+    (["terraform apply"], "needs_desk"),
+    ([MERGE + " && echo done"], "run_alone"),
+])
+def test_the_bridge_has_a_sentence_for_every_notice_the_real_gate_leads_to(host, monkeypatch, calls, notice):
+    host.agent(monkeypatch, calls)
+    reply, parsed = _through_the_bridge(host, prompt="do it")
+    assert parsed["notice"] == notice
+    assert notice in remote_adapter.NOTICE_SENTENCES
+    assert parsed["confirmation"] is None and parsed["readback"] == ""
+
+
+def test_every_class_string_the_wrapper_sends_is_one_the_bridge_accepts(host, monkeypatch):
+    for command, classes in (
+        ("sudo kubectl delete pod web -n shop --context homelab --force", "root, delete, force"),
+        (f"sudo {host.config.confirm_program} off", "self"),
+        ("scp notes.txt web.example.org:/srv/", "outward"),
+    ):
+        host.agent(monkeypatch, [command])
+        reply, parsed = _through_the_bridge(host, prompt="do it")
+        assert reply["confirm"]["class"] == classes
+        assert parsed["confirmation"] is not None
+        assert speakable_readback(parsed["readback"]) == parsed["readback"]
+
+
+def test_both_sides_agree_on_the_length_of_a_read_back_and_the_60_seconds():
+    from agent_host.config import PENDING_SECONDS
+    assert wrapper.MAX_READBACK_CHARS == remote_adapter.MAX_READBACK_CHARS
+    assert PENDING_SECONDS == remote_adapter.MAX_EXPIRES_S
