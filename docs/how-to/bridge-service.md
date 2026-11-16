@@ -135,8 +135,8 @@ In `readonly` mode the bridge's own list decides, as before.
 every kind of reply. The bridge says what became of it after the summary (before a
 read-back, so the question stays last; after the error line of a failed turn): "It's ready.
 You can switch to it.", "I'm still setting it up at the desk.", "A different folder with
-that name exists. That needs the desk." or "The repository was created, but I could not
-set it up as a project. That needs the desk." When it is ready, the reply carries the
+that name exists. I passed that on to the coding session." or "The repository was created, but I could not
+set it up as a project. I passed that on to the coding session." When it is ready, the reply carries the
 header `X-Jarvis-Projects-Changed: 1` and the app fetches its list again. An app that
 shows typed project names sends `X-Jarvis-Projects: typed` with each turn and hears "It's
 ready. Add it to your project list in the app." instead.
@@ -241,8 +241,8 @@ or tidied. One that would have to be changed to be spoken cannot be spoken: empt
 than 500 characters, white space at either end, anything that splits into lines, any
 control, format, private-use or unassigned character, or any separator other than the
 plain space (no line or paragraph separator, no no-break space). The bridge
-then cancels the call on the agent host (answer `no`), keeps nothing and says "That one
-needs the desk." Detected speech is measured with the voice activity detector inside
+then cancels the call on the agent host (answer `no`), keeps nothing and says "I could
+not read that back, so I cancelled it. Ask me again." Detected speech is measured with the voice activity detector inside
 faster-whisper (a file in the package, nothing is downloaded); if it cannot be measured,
 nothing counts as an utterance.
 
@@ -272,11 +272,11 @@ the same summary filter as a read-only reply; the full reply never leaves the ag
 | `agent_failed` | "The agent turn failed on the agent host. I did not run it again." |
 | `expired` | "That took too long. Ask again." |
 | `bad_request` | "The agent host refused the request." |
-| notice `needs_desk` | "That one needs the desk." |
+| notice `needs_desk` | "I passed that on to the coding session." |
 | notice `run_alone` | "That command has to be run on its own, so it was refused." |
-| notice `settings_changed` | "The project settings changed. That needs the desk." |
+| notice `settings_changed` | "The project settings changed. I passed that on to the coding session." |
 | notice `new_session` | "I started a new session for this project." |
-| notice `target_changed` | "The push target changed. That one needs the desk." |
+| notice `target_changed` | "The push target changed. I passed that on to the coding session." |
 | notice `out_of_budget` (with `agent_failed`: the usage limit shared with the coding session) | "The agent is out of budget for now." After a yes followed by "I do not know whether it ran. Check at the desk." |
 
 A notice's sentence comes first, followed by the agent's summary when there is one that

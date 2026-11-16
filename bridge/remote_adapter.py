@@ -100,15 +100,18 @@ TRY_AGAIN_CODES = frozenset({BUSY, LOW_MEMORY})
 # Answered before a turn exists, so `turn` is null with them (D33).
 NOT_STARTED_CODES = FALLBACK_CODES | TRY_AGAIN_CODES | {BAD_REQUEST, EXPIRED}
 
-NEEDS_THE_DESK = "That one needs the desk."
+NEEDS_THE_DESK = "I passed that on to the coding session."
+# The read-back could not be spoken, so the call was cancelled (recorded as `cancelled`,
+# like a no): nothing is passed on, and the driver can ask again.
+READBACK_UNSPEAKABLE = "I could not read that back, so I cancelled it. Ask me again."
 OUT_OF_BUDGET = "out_of_budget"
 # The closed list of notices, each with the bridge's own fixed sentence.
 NOTICE_SENTENCES = {
     "needs_desk": NEEDS_THE_DESK,
     "run_alone": "That command has to be run on its own, so it was refused.",
-    "settings_changed": "The project settings changed. That needs the desk.",
+    "settings_changed": "The project settings changed. I passed that on to the coding session.",
     "new_session": "I started a new session for this project.",
-    "target_changed": "The push target changed. That one needs the desk.",
+    "target_changed": "The push target changed. I passed that on to the coding session.",
     "out_of_budget": "The agent is out of budget for now.",
 }
 
@@ -479,7 +482,7 @@ class RemoteAdapter:
             return AgentTurn(spoken=readback, ref=turn_id, confirmation=pending,
                              expires_s=reply["expires_s"], project=news)
         # Nothing can be said, so nothing can be confirmed: the pending call is
-        # cleared on the agent host with a no, and the driver hears the desk line.
+        # cleared on the agent host with a no, and the driver hears that it was cancelled.
         logger.warning("project=%s turn=%s: the read-back cannot be spoken; the pending "
                        "call is cancelled", project.name, turn_id or "-")
         logger.info("project=%s turn=%s read_back=%r", project.name, turn_id or "-",
@@ -490,7 +493,7 @@ class RemoteAdapter:
             # It then expires there by itself; this side keeps nothing to confirm.
             logger.warning("project=%s: the cancel did not reach the agent host (%s)",
                            project.name, exc.code)
-        return AgentTurn(spoken=NEEDS_THE_DESK, ref=turn_id, project=news)
+        return AgentTurn(spoken=READBACK_UNSPEAKABLE, ref=turn_id, project=news)
 
     def list_projects(self) -> list[str]:
         """The agent host's projects (D51), sorted. One connection, at most

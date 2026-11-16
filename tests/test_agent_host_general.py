@@ -538,7 +538,7 @@ def test_a_repository_no_project_can_be_named_after_needs_the_desk_and_reads_cle
     assert reply["notice"] == "needs_desk"
     parsed = remote_adapter.parse_reply(json.dumps(reply).encode())
     assert remote_adapter._spoken(parsed["notice"], parsed["spoken"]) == \
-        "That one needs the desk. I made it."
+        "I passed that on to the coding session. I made it."
     assert _confirmed_action(host)["project"].startswith("not ready (needs_desk)")
     assert host.clones() == []
 

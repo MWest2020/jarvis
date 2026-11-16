@@ -822,6 +822,14 @@ host; see D40.
   never-list are kept by the agent and, where they exist, by hooks. The gate adds an
   informed yes to a merge; it does not verify the review.
 
+### D57. "Needs the desk" is passed on to the coding session (2026-11-16, #55)
+
+Mark has no keyboard where he talks to Jarvis. Where the spec says Jarvis says "that (one)
+needs the desk", the bridge says "I passed that on to the coding session.", and the coding
+session takes the request over from the turn record (docs/how-to/agent-host.md, "Refused
+turns go to the coding session"). A read-back that cannot be spoken is the exception: it is
+cancelled like a no and Jarvis says so. Nothing about what is confirmable by voice changes.
+
 ## Risks / Trade-offs
 
 - **A misheard instruction now has effects.** "Close issue twelve" heard as "twenty" closes
