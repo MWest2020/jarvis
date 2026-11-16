@@ -1121,11 +1121,52 @@ def _judge_http(program: str, args: list[str], ctx: Context, env: tuple[str, ...
 
 # --- scp, rsync, sftp --------------------------------------------------------------------
 
+# Per copy program: the short options that take a value (as the next word
+# or attached), and those of them, or flags, that change how the host is
+# reached or what runs there or here (a proxy, a config file, a program to
+# run instead of ssh, a batch of commands, an option for the remote side).
+TRANSFER_VALUED = {"scp": "cDFiJlPoSX", "sftp": "BbcDFiJloPRSsX", "rsync": "efTBM"}
+TRANSFER_REACH = {"scp": "oFJSD", "sftp": "oFJSDbs", "rsync": "eM"}
+TRANSFER_REACH_LONG = ("--rsh", "--rsync-path", "--remote-option")
+
+
+def transfer_reach(program: str, args: list[str]) -> bool:
+    """An option of `scp`, `sftp` or `rsync` that changes how the host is
+    reached: a host named in the sentence would not be the whole truth."""
+    valued = TRANSFER_VALUED.get(program, "")
+    reach = TRANSFER_REACH.get(program, "")
+    for arg in args:
+        if "proxycommand" in arg.lower() or "proxyjump" in arg.lower():
+            return True
+        if arg.startswith("--"):
+            if arg.split("=", 1)[0] in TRANSFER_REACH_LONG:
+                return True
+            continue
+        if not arg.startswith("-") or arg == "-":
+            continue
+        for letter in arg[1:]:
+            if letter in reach:
+                return True
+            if letter in valued:
+                break  # the rest of the word is its value
+    return False
+
+
 def remote_hosts(program: str, args: list[str], ctx: Context) -> list[str]:
     """The other hosts a copy command names, as written."""
     hosts: list[str] = []
+    valued = TRANSFER_VALUED.get(program, "")
+    skip = False
     for word in args:
+        if skip:
+            skip = False
+            continue
         if word.startswith("-"):
+            if not word.startswith("--") and len(word) > 1:
+                for index, letter in enumerate(word[1:], start=1):
+                    if letter in valued:
+                        skip = index == len(word) - 1  # the value is the next word
+                        break
             continue
         if _URL_RE.match(word):
             hosts.append(word)

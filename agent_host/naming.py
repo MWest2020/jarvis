@@ -519,12 +519,9 @@ def _name_push(command, ctx, config) -> Named | Missing:
 def _name_transfer(program, args, ctx, config) -> Named:
     # An option that changes which host is reached, through what, or what
     # runs there: the host in the sentence would not be the whole truth.
-    for arg in args:
-        name = arg.split("=", 1)[0]
-        if name in ("-o", "-e", "-F", "-J", "-S", "--rsh", "--rsync-path") \
-                or arg.startswith(("-o", "-e", "-F", "-J")) and not arg.startswith("--") \
-                or "proxycommand" in arg.lower():
-            raise NotNameable("an option that changes how the host is reached")
+    # Short options are read letter by letter (`rsync -ave ssh`).
+    if classify.transfer_reach(program, args):
+        raise NotNameable("an option that changes how the host is reached")
     hosts = classify.remote_hosts(program, args, ctx)
     if not hosts or len(hosts) > MAX_ITEMS:
         raise NotNameable("no host, or more hosts than one sentence holds")

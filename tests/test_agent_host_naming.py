@@ -410,6 +410,11 @@ def test_root_is_nameable_only_when_the_inner_command_is(env, command):
     "rsync -av --rsh='ssh -o X=y' dir/ web:/srv/dir/",
     "rsync -av --rsync-path=/tmp/evil dir/ web:/srv/dir/",
     "sftp -o ProxyCommand=evil web.example.org",
+    "rsync -ave ssh dir/ web:/srv/dir/",                           # -e inside a cluster
+    "rsync -avM--rsync-path=x dir/ web:/srv/dir/",
+    "rsync -av --remote-option=--rsync-path=x dir/ web:/srv/dir/",
+    "sftp -b batch web.example.org",                                # a batch of commands
+    "scp -D /tmp/evil notes.txt web.example.org:/srv/",
     # A kind that is not known to live in a namespace.
     "kubectl delete namespace shop -n shop --context homelab",
     "kubectl delete node worker-1 -n shop --context homelab",
@@ -422,6 +427,13 @@ def test_root_is_nameable_only_when_the_inner_command_is(env, command):
 ])
 def test_what_the_sentence_would_leave_out_makes_the_call_not_nameable(env, command):
     _not_nameable(env, command)
+
+
+def test_the_value_of_a_copy_option_is_no_host(env):
+    assert _sentence(env, "sftp -i key web.example.org") == "Copy files to or from host web.example.org."
+    assert _sentence(env, "sftp -P 2222 -l 100 web.example.org") \
+        == "Copy files to or from host web.example.org."
+    assert _sentence(env, "rsync -avz --progress dir/ web:/srv/dir/") == "Copy files to or from host web."
 
 
 def test_plain_wrappers_are_still_named(env):

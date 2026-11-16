@@ -399,6 +399,12 @@ def test_a_refspec_without_a_colon_under_a_push_mapping_is_not_nameable(repo):
     "env -C /srv/other git push origin main",
     "git -C /srv/other push origin main",
     "GIT_DIR=/srv/other/.git git push origin main",
+    "sudo --chdir=/srv/other git push origin main",
+    "sudo -D /srv/other git push origin main",
+    "env --chdir=/srv/other git push origin main",
+    "git --git-dir=/srv/other/.git push origin main",
+    "git --work-tree=/srv/other push origin main",
+    "GIT_SSH_COMMAND='ssh -o ProxyCommand=evil' git push origin main",
 ])
 def test_a_push_behind_a_wrapper_is_not_nameable(repo, command):
     derived = _outcome(repo, command)

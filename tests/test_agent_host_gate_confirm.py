@@ -387,6 +387,8 @@ def test_confirm_off_never_applies_to_what_the_gate_did_not_fully_understand(tmp
         ("bash", decision.REASON_DESK),
         ("awk 'BEGIN{system(1)}'", decision.REASON_DESK),
         ("echo x >> ~/.bashrc", decision.REASON_SELF),                    # self
+        ("git config core.hooksPath /tmp/h", decision.REASON_DESK),       # git configuration
+        ("git -c alias.x=push x", decision.REASON_DESK),
     ):
         result = turn.call(command)
         assert not result.allow and result.reason == reason, command

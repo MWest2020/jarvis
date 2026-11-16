@@ -166,7 +166,7 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
     Only for a single call the gate fully understood. Never for the class
     `self`, never for a compound command or one the gate could not read,
     never for inline code of an interpreter or a shell fed from stdin, never
-    for a tool nobody listed: "off" means "do not ask me", not "do not
+    for a write to git's configuration, never for a tool nobody listed: "off" means "do not ask me", not "do not
     look". With `confirm_skip`, every class of the call must be skipped,
     and a call in no class is in no skipped class.
     """
@@ -174,7 +174,10 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
         return False
     if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
         return False
-    if verdict.rule.startswith(("interpreter:", "shell:", "tool:")):
+    if verdict.rule.startswith(("interpreter:", "shell:", "tool:", "git:config")):
+        # Inline code, a shell on stdin, a tool nobody listed, and a change to
+        # git's configuration (which changes what every later git call does):
+        # desk-only, whatever the switch says.
         return False
     if config.confirm == "off":
         return True
