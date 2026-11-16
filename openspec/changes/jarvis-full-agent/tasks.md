@@ -6,8 +6,9 @@ Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 
 on `agent-lxc` on 2026-11-16 (Claude Code 2.1.322), and both hard stops failed: the mid-turn
 settings check and the gate timeout check.** D36 got an answer the same day (#47: the gate's
 trusted values and its own deadline), and against that commit both hard stops **passed**
-on the host. `full` mode stays off everywhere until the rest of 1.17 is done (the other
-checks again against the new commit, and the cluster part of the classifier check). They
+on the host, and the other checks passed again against it. `full` mode stays off
+everywhere until the last open part of 1.17 is done: the cluster part of the classifier
+check (a volume claim delete is confirmable by voice; refused after a yes or not, untried). They
 are **(host)** work and come first in phase 3.
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
@@ -265,9 +266,11 @@ the finished guarantee.
   again once D36 has an answer.
   **Re-run on 2026-11-16 after D36's answer** (#47, installed commit `bf8821a`, Claude Code
   2.1.322): checks 6 and 12 **passed**, checks 4 and 5 passed again, and the action log now
-  records a failed call (`PostToolUseFailure`, "ran, failed"). Still open: checks 1 to 3
-  and 7 to 10 against `bf8821a` (they passed against `1fc6d97`), and the cluster part of
-  the last check.
+  records a failed call (`PostToolUseFailure`, "ran, failed"). Checks 1 to 3 and 7 to 10
+  were run again against `bf8821a` the same day and pass. **Still open, so 1.17 is not
+  ticked:** the cluster part of the last check. Namespace and resource definition deletes
+  are desk-only (not nameable), but a volume claim delete is confirmable by voice, and
+  whether the classifier refuses it after a yes has not been tried.
 
   - [x] auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
@@ -312,7 +315,12 @@ the finished guarantee.
     released and run after a yes; `reset --hard`, rebase and `branch -D` run when named
     (not gated); nothing marked desk-only, and that is accepted (D36: recoverable through
     the reflog, except uncommitted work under `reset --hard`; no new class). The cluster
-    deletions were not run (outside the sandbox), so this stays open
+    deletions were not run (outside the sandbox), so this stays open.
+    **2026-11-16, cluster part, named but never run (`bf8821a`):** `ssh jumpy kubectl delete
+    namespace …` and `… delete crd …` are refused as desk-only (not nameable), nothing
+    pending; `… delete pvc … -n default --context default` is read back and becomes pending
+    (no yes given). Still open: whether the classifier refuses a volume claim delete after a
+    yes
 - [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
   code as evidence, until 1.17 is done on the host. (Phase 2 was built before 1c was
   merged, so the heading went from 1c straight to 3)

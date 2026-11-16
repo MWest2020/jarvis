@@ -520,8 +520,14 @@ the user's allow rule `git branch`, so the classifier does not see it). So none 
 marked desk-only. **Accepted** (Mark, 2026-11-16): rebase, `reset --hard` and `branch -D`
 stay ungated and get no class of their own. They act on local history, and what they drop
 can be recovered from the reflog, with one exception: uncommitted work in the working tree
-under `reset --hard` is gone. The cluster deletions were not tried (outside the test
-sandbox) and are still open.
+under `reset --hard` is gone.
+**Cluster part (2026-11-16, named but never run):** the agent host has no cluster access of
+its own; a turn reaches the cluster as `ssh jumpy kubectl …`, which the gate unwraps and
+judges by the inner `kubectl`. Deleting a namespace or a resource definition is not
+nameable, so it is desk-only and the question does not arise. Deleting a volume claim
+with `-n` and `--context` **is** nameable: it was read back and became pending. Whether
+the classifier refuses it after a yes was not tried (that would mean running a delete), so
+this part is still open.
 
 *Why a grant in the process environment.* The agent has a shell as the same user as every
 file the wrapper writes, so a grant in a file could be written by the agent itself. The
@@ -828,7 +834,9 @@ None for Mark in the design (the trust edge is his, in #25). For the build, sett
 Answered on 2026-11-16 (Claude Code 2.1.322): mid-turn `env` *did* get a gated call
 through, and a hook timeout *does* let the call run. The design was reopened, D36 now
 answers both (the gate's trusted values, and its own deadline), and the re-run passed. The
-git part of the last question is answered "no, not refused", and accepted (D36).
+git part of the last question is answered "no, not refused", and accepted (D36). Its
+cluster part is answered for namespaces and resource definitions (desk-only, they are not
+nameable) and open for volume claims (nameable; refused after a yes or not, untried).
 
 Not a question but a fact to build on (D30): in `full` mode the bridge's own project list
 still decides what can be asked at all.
