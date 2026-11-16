@@ -1,8 +1,8 @@
 # The Android app (android/): unit tests, lint, the dependency check of design D9, and a
-# debug APK as an artifact. Nothing is signed with a release key here: that waits for a
-# secret only Mark can create (openspec/changes/add-android-client, open question 1).
-# A debug APK is signed with a key made on the runner, so every run's APK has another
-# signature (docs/how-to/android-app.md, "Updating").
+# debug APK as an artifact. It is signed with the stable key from the repository secrets
+# when they exist (jarvis#13), so an update installs over the old app; without them (a fork)
+# with a per-run key, and an update then means a fresh install
+# (docs/how-to/android-app.md, "Updating").
 name: android
 on:
   push:
@@ -41,7 +41,23 @@ jobs:
       - name: Core tests (no Android SDK)
         run: env -u ANDROID_HOME -u ANDROID_SDK_ROOT ./gradlew --no-daemon :core:test
 
+      # The stable signing key (jarvis#13), when the secrets exist (not on forks).
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf %s "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/jarvis.jks"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/jarvis.jks" >> "$GITHUB_ENV"
+          else
+            echo "No signing secrets: this APK gets a per-run debug key." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Lint, dependency check (D9), debug APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew --no-daemon check :app:assembleDebug
 
       # What the merged manifest really asks for and exposes, libraries included. Fails on
@@ -76,7 +92,7 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/$name"
           sum=$(sha256sum "$RUNNER_TEMP/$name" | cut -d' ' -f1)
           echo "path=$RUNNER_TEMP/$name" >> "$GITHUB_OUTPUT"
-          echo "\`$name\` (debug-signed) sha256 \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$name\` (debug build) sha256 \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
 
       # On main the APK is kept for 90 days; on a pull request for a week, so a reviewer
       # can try the build under review.

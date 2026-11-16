@@ -20,10 +20,25 @@ android {
         versionName = "0.1.0"
     }
 
+    // One key that stays the same (jarvis#13), so an update installs over the old app.
+    // CI writes it from the repository secrets; without them (a fork, a local build) the
+    // build falls back to the usual per-machine debug key.
+    val keystore = providers.environmentVariable("ANDROID_KEYSTORE_FILE").orNull
+    val stable = if (keystore != null && file(keystore).exists()) {
+        signingConfigs.create("stable") {
+            storeFile = file(keystore)
+            storePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").get()
+        }
+    } else null
+
     buildTypes {
+        debug {
+            if (stable != null) signingConfig = stable
+        }
         release {
-            // No release signing yet: it waits for a key only Mark can create
-            // (openspec/changes/add-android-client, open question 1).
+            if (stable != null) signingConfig = stable
             isMinifyEnabled = false
         }
     }

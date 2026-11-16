@@ -48,10 +48,11 @@ The app is not in any store. CI builds the APK.
 
 ### Updating
 
-Until there is a release signing key, every CI build is signed with a debug key made on the
-runner, and each has a different one. Android refuses to install an APK over an app signed
-with another key, so for now an update is: uninstall Jarvis, install the new APK, enter the
-settings again. A release key fixes this; see "The signing key" below.
+Since 16 Nov 2026 CI signs every APK with one key that stays the same (repository secrets,
+jarvis#13), so a new APK installs over the old one and keeps the settings. The first APK
+with that key is the exception: the app on the phone still has an old per-run key, so
+uninstall it once, install the new APK and enter the settings again. After that, just
+install each new APK.
 
 ## First run
 
@@ -221,22 +222,16 @@ The HTTP Shortcuts guide stays valid: both use the same `POST /turn`.
 
 The icon is a voice waveform whose last bar bends into a J: mint bars, a white J, on deep navy. It is an adaptive icon made of three vector drawables in `android/app/src/main/res/drawable/`: `ic_launcher_background`, `ic_launcher_foreground` and `ic_launcher_monochrome` (for Android 13+ themed icons). The source drawing is `docs/assets/jarvis-logo.svg`. Change the SVG and the three drawables together, and keep the mark inside the 66 dp safe zone (21 to 87 in the 108 viewport).
 
-## The signing key (Mark, once)
+## The signing key
 
-So that updates install over the old version, CI needs a key that stays the same. Create it
-on a machine you trust, not on a runner and not in the repository:
-
-```sh
-keytool -genkeypair -v -keystore jarvis-release.jks -alias jarvis \
-  -keyalg RSA -keysize 4096 -validity 10000
-base64 -w0 jarvis-release.jks      # the value for ANDROID_KEYSTORE_BASE64
-```
-
-Then, in the repository's Settings → Secrets and variables → Actions, add
-`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`jarvis`) and
-`ANDROID_KEY_PASSWORD`. Keep the `.jks` file and the passwords somewhere safe: losing them
-means a fresh install on every phone. CI does not use these secrets yet; wiring the release
-build to them is task 4.3 of the change.
+The key was made on agent-lxc on 16 Nov 2026 (PKCS12, alias `jarvis`, RSA 4096, SHA-256
+fingerprint `49:BC:A0:D1:6A:2A:84:FD:3B:BD:F8:25:14:7F:92:4C:80:97:41:4B:F8:62:E1:8C:DC:17:CE:98:75:B7:6D:95`). It lives in `~/.config/jarvis/android-signing/` there
+(mode 600) and in the repository secrets `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. The android
+workflow writes the keystore to the runner's temp directory and Gradle signs both build types
+with it (`android/app/build.gradle.kts`, signing config `stable`). Without the secrets the
+build falls back to a per-machine debug key. Losing the key means one fresh install on every
+phone; it cannot be read back from GitHub.
 
 ## Building and testing
 
