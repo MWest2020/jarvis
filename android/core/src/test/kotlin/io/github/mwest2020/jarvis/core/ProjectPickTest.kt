@@ -69,10 +69,10 @@ class ProjectMenuTest {
     }
 
     @Test
-    fun generalIsShownEvenWhenTheListLacksTheHomeProject() {
-        val entries = ProjectMenu.entries(listOf("bazibo"), home)
-        assertEquals(listOf("jarvis-home", "bazibo"), entries.map { it.project })
-        assertEquals(listOf("jarvis-home"), ProjectMenu.entries(emptyList(), " jarvis-home ").map { it.project })
+    fun withoutTheHomeProjectInTheListThereIsNoGeneral() {
+        // An existing install: a typed list, or a bridge without jarvis-home.
+        assertEquals(listOf("bazibo"), ProjectMenu.entries(listOf("bazibo"), home).map { it.label })
+        assertEquals(emptyList<ProjectEntry>(), ProjectMenu.entries(emptyList(), home))
     }
 
     @Test
@@ -91,8 +91,22 @@ class ProjectMenuTest {
     @Test
     fun generalIsSelectedWhenNothingIsRememberedAndNoDefaultIsSet() {
         assertEquals("jarvis-home", ProjectPick.choose(fromBridge, remembered = "", default = "", home = home))
-        assertEquals("jarvis-home", ProjectPick.choose(listOf("bazibo"), remembered = "", default = "", home = home))
-        assertEquals("jarvis-home", ProjectPick.choose(emptyList(), remembered = "", default = "", home = home))
+        assertEquals("jarvis-home", ProjectPick.choose(listOf("bazibo", "jarvis-home"), remembered = "", default = "", home = home))
+    }
+
+    @Test
+    fun withTheRealDefaultHomeAnExistingInstallKeepsItsOldRules() {
+        // The app's own default, not "": a list without jarvis-home selects as before.
+        assertEquals("", ProjectPick.choose(listOf("bazibo", "jarvis"), remembered = "", default = "", home = home))
+        assertEquals("jarvis", ProjectPick.choose(listOf("bazibo", "jarvis"), remembered = "jarvis", default = "", home = home))
+        assertEquals("bazibo", ProjectPick.choose(listOf("bazibo", "jarvis"), remembered = "", default = "bazibo", home = home))
+    }
+
+    @Test
+    fun exactlyOneRealProjectIsSelectedWhateverTheLabels() {
+        assertEquals("only", ProjectPick.choose(listOf("only"), remembered = "", default = "", home = home))
+        assertEquals("jarvis-home", ProjectPick.choose(listOf("jarvis-home"), remembered = "gone", default = "", home = home))
+        assertEquals("", ProjectPick.choose(emptyList(), remembered = "", default = "", home = home))
     }
 
     @Test
@@ -105,8 +119,11 @@ class ProjectMenuTest {
     }
 
     @Test
-    fun withoutGeneralTheOldRulesHold() {
-        assertEquals("", ProjectPick.choose(fromBridge, remembered = "", default = "", home = ""))
-        assertEquals("only", ProjectPick.choose(listOf("only"), remembered = "", default = "", home = ""))
+    fun aRefreshKeepsTheSelectionWhileTheListHasIt() {
+        val more = fromBridge + "birdsong"
+        assertEquals("jarvis", ProjectPick.keep("jarvis", more, remembered = "bazibo", default = "", home = home))
+        assertEquals("jarvis-home", ProjectPick.keep("jarvis-home", more, remembered = "bazibo", default = "", home = home))
+        assertEquals("bazibo", ProjectPick.keep("gone", more, remembered = "bazibo", default = "", home = home))
+        assertEquals("jarvis-home", ProjectPick.keep("", more, remembered = "", default = "", home = home))
     }
 }

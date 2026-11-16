@@ -8,7 +8,8 @@ data class ProjectEntry(val project: String, val label: String, val general: Boo
 
 /**
  * The picker's entries: "General" first, for the home project, then the other projects.
- * A blank home project means no General entry: the picker is the plain list.
+ * General is offered only when the home project is in the list (from the bridge, or typed);
+ * otherwise, and with a blank home project, the picker is the plain list.
  */
 object ProjectMenu {
     const val GENERAL_LABEL = "General"
@@ -18,17 +19,17 @@ object ProjectMenu {
 
     /**
      * The home project's name as the list spells it: the exact name, else one that differs
-     * only in case, else the setting as typed. "" when there is no home project.
+     * only in case. "" when there is no home project or the list does not have it.
      */
     fun homeName(projects: List<String>, home: String): String {
         val wanted = home.trim()
         if (wanted.isEmpty()) return ""
         return projects.firstOrNull { it == wanted }
             ?: projects.firstOrNull { it.equals(wanted, ignoreCase = true) }
-            ?: wanted
+            ?: ""
     }
 
-    /** General (when there is a home project), then every other project in the given order. */
+    /** General (when the list has the home project), then every other project in the given order. */
     fun entries(projects: List<String>, home: String): List<ProjectEntry> {
         val name = homeName(projects, home)
         val rest = projects.filter { it != name }.map { ProjectEntry(it, it) }
@@ -42,25 +43,31 @@ object ProjectMenu {
  */
 object ProjectPick {
     /**
-     * The project to select, or "" when the user has to pick one. Over the picker's entries
-     * ([ProjectMenu.entries], General included when [home] is set):
-     * 0. exactly one entry: that one, there is no choice;
-     * 1. [remembered], the last project picked by hand, when it is still an entry;
-     * 2. otherwise [default], the "Default project" setting, when it is an entry;
-     * 3. otherwise General, the home project, when there is one;
+     * The project to select, or "" when the user has to pick one:
+     * 0. exactly one project in the list: that one, there is no choice (General, when it is
+     *    there, is that same project under another label);
+     * 1. [remembered], the last project picked by hand, when the list still has it;
+     * 2. otherwise [default], the "Default project" setting, when the list has it;
+     * 3. otherwise General, the home project, when the list has it;
      * 4. otherwise nothing.
      */
     fun choose(projects: List<String>, remembered: String, default: String, home: String = ""): String {
-        val names = ProjectMenu.entries(projects, home).map { it.project }
-        if (names.size == 1) return names.single()
-        if (remembered.isNotEmpty() && remembered in names) return remembered
+        if (projects.size == 1) return projects.single()
+        if (remembered.isNotEmpty() && remembered in projects) return remembered
         val wanted = default.trim()
         if (wanted.isNotEmpty()) {
-            val match = names.firstOrNull { it == wanted } ?: names.firstOrNull { it.equals(wanted, ignoreCase = true) }
+            val match = projects.firstOrNull { it == wanted } ?: projects.firstOrNull { it.equals(wanted, ignoreCase = true) }
             if (match != null) return match
         }
         return ProjectMenu.homeName(projects, home)
     }
+
+    /**
+     * After a refresh: the [current] selection stays while the list still has it (D56); only
+     * otherwise is it chosen again as at start.
+     */
+    fun keep(current: String, projects: List<String>, remembered: String, default: String, home: String = ""): String =
+        if (current.isNotEmpty() && current in projects) current else choose(projects, remembered, default, home)
 
     /**
      * The order the bridge's list is shown in: alphabetical, upper and lower case together.

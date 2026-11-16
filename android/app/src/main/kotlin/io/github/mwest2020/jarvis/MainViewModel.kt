@@ -78,6 +78,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    // Main thread only. A reply said a new project is ready: fetch the list once the reply has
+    // finished playing or was stopped (D56).
+    private var refreshAfterReply = false
+    // A refresh was asked for while one was running: one more follows it.
+    private var refreshAgain = false
+    // The message the last failed list fetch put on screen. A good fetch clears only that one,
+    // never an error that came after it (a turn's, a playback's).
+    private var listError: String? = null
+
     init {
         // App start: read the settings, then ask the bridge for its projects if that is the setting.
         viewModelScope.launch {
@@ -117,7 +126,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun refreshProjects() {
         val current = state.value
-        if (!current.loaded || !current.projectsFromBridge || current.refreshing) return
+        if (!current.loaded || !current.projectsFromBridge) return
+        if (current.refreshing) {
+            refreshAgain = true
+            return
+        }
         if (current.bridgeUrl.isBlank() || !current.hasToken) return
         _state.update { it.copy(refreshing = true) }
         viewModelScope.launch {
@@ -129,25 +142,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             when (outcome) {
-                is ListOutcome.Failed -> _state.update { it.copy(refreshing = false, error = outcome.failure.message) }
+                is ListOutcome.Failed -> {
+                    listError = outcome.failure.message
+                    _state.update { it.copy(refreshing = false, error = outcome.failure.message) }
+                }
                 is ListOutcome.Projects -> {
                     val names = ProjectPick.order(outcome.names)
                     // The remembered pick is only read here, never overwritten: a project that
                     // is missing from one answer is selected again when it is back.
-                    val pick = withContext(Dispatchers.IO) {
+                    val stored = withContext(Dispatchers.IO) {
                         settings.fetchedProjects = names
-                        ProjectPick.choose(names, settings.pickedProject, settings.defaultProject, settings.homeProject)
+                        Triple(settings.pickedProject, settings.defaultProject, settings.homeProject)
                     }
+                    val empty = if (names.isEmpty()) "The bridge lists no projects." else null
                     _state.update {
                         it.copy(
                             refreshing = false,
                             projects = names,
-                            // A turn in flight keeps its project; the pick changes only when idle.
-                            project = if (it.phase == Phase.IDLE) pick else it.project,
-                            error = if (names.isEmpty() && it.homeProject.isBlank()) "The bridge lists no projects." else null,
+                            // What is selected stays selected while the list has it (D56); a turn
+                            // in flight keeps its project whatever the list says.
+                            project = if (it.phase == Phase.IDLE) {
+                                ProjectPick.keep(it.project, names, stored.first, stored.second, stored.third)
+                            } else {
+                                it.project
+                            },
+                            // Only the list's own earlier error is cleared, never a later one.
+                            error = empty ?: if (it.error != null && it.error == listError) null else it.error,
                         )
                     }
+                    listError = empty
                 }
+            }
+            if (refreshAgain) {
+                refreshAgain = false
+                refreshProjects()
             }
         }
     }
@@ -172,6 +200,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             TalkAction.STOP_PLAYBACK -> {
                 player.stop()
                 _state.update { it.copy(phase = Phase.IDLE) }
+                afterReply()
             }
             TalkAction.NONE -> Unit
         }
@@ -216,7 +245,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val outcome = withContext(Dispatchers.IO) {
                 // The token is read here, used for this one request, and not kept.
-                when (val built = TurnRequests.build(current.bridgeUrl, tokens.load(), current.project)) {
+                when (
+                    val built = TurnRequests.build(
+                        current.bridgeUrl, tokens.load(), current.project, typedList = !current.projectsFromBridge,
+                    )
+                ) {
                     is Built.Refused -> TurnOutcome.Failed(built.failure)
                     is Built.Ok -> send(built.value, Wav.encode(pcm))
                 }
@@ -227,8 +260,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 is TurnOutcome.Reply -> {
                     _state.update { it.copy(phase = Phase.PLAYING, summary = outcome.summary, error = null) }
                     // A new project is ready on the agent host (jarvis-general-conversation D56):
-                    // fetch the list again. The selection is not changed while a reply plays.
-                    if (outcome.projectsChanged) refreshProjects()
+                    // the list is fetched again once this reply has played.
+                    refreshAfterReply = outcome.projectsChanged
                     player.play(outcome.wav) { played ->
                         _state.update {
                             when {
@@ -237,10 +270,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 else -> it.copy(phase = Phase.IDLE, error = "The reply could not be played.")
                             }
                         }
+                        afterReply()
                     }
                 }
             }
         }
+    }
+
+    /** The reply has finished playing, or was stopped: the refresh it asked for, if any. */
+    private fun afterReply() {
+        if (!refreshAfterReply) return
+        refreshAfterReply = false
+        refreshProjects()
     }
 
     /**

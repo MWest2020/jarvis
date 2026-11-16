@@ -112,7 +112,8 @@ fun TalkScreen(
             }
         }
 
-        if (state.entries.isEmpty() && state.projectsFromBridge) {
+        // The hints count real projects; General is one of them under another label.
+        if (state.projects.isEmpty() && state.projectsFromBridge) {
             Text(
                 if (state.refreshing) "Asking the bridge for its projects…" else "No projects yet. Tap Refresh.",
                 color = Color(0xFF9FB0C0),
@@ -300,7 +301,8 @@ fun SettingsScreen(
         )
         Text(
             "General, the first entry on the main screen, is for just talking: it sends your " +
-                "questions to this project. Leave it empty to hide General.",
+                "questions to this project, and is shown when the project list has it. Leave it " +
+                "empty to hide General.",
             color = Color(0xFF9FB0C0),
         )
 
