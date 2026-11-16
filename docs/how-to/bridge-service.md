@@ -94,7 +94,7 @@ Settings for `full`, all refused at start when they are not what they should be:
 | `JARVIS_AGENT_PORT` | no (default `22`) | sshd's port. |
 | `JARVIS_AGENT_KEY_FILE` | yes | Absolute path of the bridge's private key: a dedicated key whose `authorized_keys` line on the agent host forces the wrapper. A file, never a variable. |
 | `JARVIS_AGENT_KNOWN_HOSTS_FILE` | yes | Absolute path of a `known_hosts` file with the agent host's public host key, for exactly the name (and port, as `[name]:port`, when it is not 22) in `JARVIS_AGENT_HOST`. An unknown or changed host key fails the turn; there is no trust on first use. |
-| `JARVIS_AGENT_TIMEOUT_S` | no (default `660`) | Seconds the bridge waits for the agent host. Keep it above the agent host's own turn timeout (600 s by default), so its answer arrives first. |
+| `JARVIS_AGENT_TIMEOUT_S` | no (default `170`, at most `175`) | Seconds the bridge waits for the agent host before it tells the phone that the turn is still running. The phone itself gives up after 180 seconds (the Android app's read timeout), and the bridge must have answered before that. The turn may take longer on the agent host (its own timeout is 600 s by default): the bridge only stops waiting. |
 | `JARVIS_CONFIRM_YES` | no (default `yes,ja`) | The closed list of affirmations, comma-separated, written as they are compared: lower case, no punctuation. |
 | `JARVIS_CONFIRM_NO` | no (default `no,nee`) | The closed list of refusals. A word cannot be on both lists. |
 | `JARVIS_CONFIRM_MIN_SPEECH_S` | no (default `0.3`) | The least detected speech, in seconds, a recording must hold before it counts as an utterance at all in `full` mode, a yes included. |
@@ -119,16 +119,35 @@ never sent and is answered read-only too.
 ssh -T -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<known-hosts file>
     -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=15
-    -o LogLevel=VERBOSE -E <a temporary file> -i <key file> -p <port> <user>@<host>
+    -o LogLevel=VERBOSE -E <a temporary file> -o IdentityFile=<key file>
+    -p <port> <user>@<host>
 ```
 
-That is the list of design D32 plus `LogLevel=VERBOSE` and `-E`, added after review. They
+That is the list of design D32 with two changes made after review. The key is named with
+`-o IdentityFile=`, not `-i`: with `-i` a key file that is not there is dropped with a
+warning and ssh goes on with the default keys in `~/.ssh`; with the option it stays the
+only identity (a test asks `ssh -G`). And `LogLevel=VERBOSE` with `-E` are added. They
 change nothing about what the connection may do. They make ssh write its own account of the
 connection to a file of the bridge's (mode `0600`, in the temporary directory, removed
 after the turn), apart from whatever the remote command prints on stderr.
 
 `ssh` gets `PATH` and `HOME` and no other variable: not the token, not the Claude
-credentials. The request goes over stdin.
+credentials. The request goes over stdin. Before every turn, not only at start, the key
+file and the known-hosts file are checked again (there, regular files, nothing for group
+or others); when one fails, ssh is not started and the turn is answered read-only as "could
+not be reached". The reply and the remote stderr are read as they come and never kept
+beyond 64 KB plus a small margin: more than that is not a reply, ssh is stopped and the
+turn is reported as failed.
+
+**When a turn takes longer than the wait.** After `JARVIS_AGENT_TIMEOUT_S` the bridge stops
+waiting, frees the project for the next request and says "It's still running at the desk.
+Ask me for the result in a bit." It does not cut the connection: ssh is left alone until it
+ends by itself, so the turn on the agent host runs to its end and is recorded there; what
+it still sends back is read and thrown away. (An ssh that is still there after 15 minutes
+is stopped.) The agent host runs one turn at a time, so a request during that time gets
+"The agent host is busy"; afterwards the next turn resumes the same session there, which
+knows what happened. A read-back that arrives after the bridge stopped waiting is not
+heard and expires on the agent host.
 
 **Read-only for one turn.** A `full` turn is answered by the `readonly` adapter instead,
 and its first sentence says why, in exactly four cases, all before a turn can have started
@@ -144,7 +163,10 @@ lines OpenSSH only writes before authentication: `ssh: connect to host …`, `ss
 resolve hostname …`, `kex_exchange_identification: …`, a banner-exchange failure, or
 `…: Permission denied (publickey).`. Anything else is "a turn may have started":
 `Connection reset by …` and `Connection closed by …` (OpenSSH writes them for a session
-that broke later too), an empty log, any other exit status. What the wrapper, the agent or
+that broke later too), any other exit status, and an empty log, with one exception: when
+the log is empty and ssh's real stderr holds exactly one line, `No user exists for uid …`
+(exit 255) or `Couldn't open logfile …` (exit 1), ssh stopped before it had a log or a
+connection, and that is "could not be made" too. What the wrapper, the agent or
 a git or ssh child on the agent host prints never counts, even when it is one of those
 very lines: it arrives on ssh's stderr, not in ssh's log. Checked with OpenSSH 9.6 against
 a real sshd with a forced command (2026-11-16): a closed port, an unknown name, a refused
@@ -191,7 +213,7 @@ faster-whisper (a file in the package, nothing is downloaded); if it cannot be m
 nothing counts as an utterance.
 
 When a yes was sent and no answer came back that says what happened (the connection broke,
-the agent host did not answer in time, its reply could not be read, `timeout`,
+its reply could not be read, `timeout`,
 `agent_failed`), the phone hears the failure and "I do not know whether it ran. Check at
 the desk." It never hears "Nothing was confirmed" in that case; that sentence is kept for
 when it is certain that the agent host started nothing.
@@ -211,6 +233,7 @@ the same summary filter as a read-only reply; the full reply never leaves the ag
 | `busy` | "The agent host is busy. Try again in a moment." |
 | `low_memory` | "The agent host is busy: it is short of memory. Try again later." |
 | `timeout` | "The agent took too long on the agent host and was stopped. I did not run it again." |
+| (the bridge stopped waiting) | "It's still running at the desk. Ask me for the result in a bit." |
 | `agent_failed` | "The agent turn failed on the agent host. I did not run it again." |
 | `expired` | "That took too long. Ask again." |
 | `bad_request` | "The agent host refused the request." |

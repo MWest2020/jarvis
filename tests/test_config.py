@@ -275,7 +275,7 @@ def test_loads_full_mode_with_its_defaults(monkeypatch, tmp_path):
     config = load_config()
     agent = config.agent_host
     assert config.agent_mode == "full"
-    assert (agent.host, agent.port, agent.user, agent.timeout_s) == ("agent.example", 22, "mark", 660)
+    assert (agent.host, agent.port, agent.user, agent.timeout_s) == ("agent.example", 22, "mark", 170)
     assert agent.key_file == secrets / "key"
     assert agent.known_hosts_file == secrets / "known_hosts"
     assert config.confirm_yes == ("yes", "ja") and config.confirm_no == ("no", "nee")
@@ -380,6 +380,8 @@ def test_full_mode_follows_a_mounted_secrets_links(monkeypatch, tmp_path):
     ("JARVIS_AGENT_PORT", "70000"),
     ("JARVIS_AGENT_PORT", "ssh"),
     ("JARVIS_AGENT_TIMEOUT_S", "-5"),
+    ("JARVIS_AGENT_TIMEOUT_S", "176"),      # the phone gives up at 180 s
+    ("JARVIS_AGENT_TIMEOUT_S", "660"),
     ("JARVIS_CONFIRM_MIN_SPEECH_S", "0"),
     ("JARVIS_CONFIRM_MIN_SPEECH_S", "-1"),
     ("JARVIS_CONFIRM_MIN_SPEECH_S", "nan"),
@@ -401,12 +403,12 @@ def test_full_mode_takes_its_own_words_port_and_minimum(monkeypatch, tmp_path):
     _full_env(monkeypatch, tmp_path, JARVIS_CONFIRM_YES="yes, ja, go ahead",
               JARVIS_CONFIRM_NO="no", JARVIS_CONFIRM_MIN_SPEECH_S="0.5",
               JARVIS_AGENT_PORT="2222", JARVIS_AGENT_HOST="100.64.0.7",
-              JARVIS_AGENT_TIMEOUT_S="900")
+              JARVIS_AGENT_TIMEOUT_S="175")
     config = load_config()
     assert config.confirm_yes == ("yes", "ja", "go ahead") and config.confirm_no == ("no",)
     assert config.confirm_min_speech_s == 0.5
     assert (config.agent_host.port, config.agent_host.host, config.agent_host.timeout_s) == (
-        2222, "100.64.0.7", 900)
+        2222, "100.64.0.7", 175)
 
 
 def test_a_confirm_word_is_kept_in_one_unicode_form(monkeypatch, tmp_path):

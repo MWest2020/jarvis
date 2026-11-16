@@ -40,6 +40,8 @@ NOT_HEARD = "Sorry, I didn't catch that."
 UNKNOWN_IF_RAN = "I do not know whether it ran. Check at the desk."
 NOTHING_CONFIRMED = "Nothing was confirmed."
 TOOK_TOO_LONG = "That took too long. Ask again."
+# The bridge stopped waiting so that the phone gets an answer; the turn goes on.
+STILL_RUNNING = "It's still running at the desk. Ask me for the result in a bit."
 # D36, step 6: put in front of an ordinary request that came instead of a yes.
 NOT_CONFIRMED_LINE = ("The driver did not confirm the action that was read back. "
                       "It was not run and is no longer pending.")
@@ -75,8 +77,6 @@ STARTED_LINES = {
     "agent_failed": "The agent turn failed on the agent host. I did not run it again.",
     AgentTurnFailed.LOST: "I lost the agent host during the turn. I did not run it again. "
                           "It may still be running there.",
-    AgentTurnFailed.NO_ANSWER: "The agent host did not answer in time. I did not run it "
-                               "again. It may still be running there.",
     AgentTurnFailed.PROTOCOL: "The agent host gave an answer I could not read. "
                               "I did not run it again.",
 }
@@ -231,6 +231,8 @@ def _code(exc: AgentUnavailable | AgentTurnFailed) -> str:
 def _failure_line(exc: AgentTurnFailed, *, confirmed: bool) -> str:
     if exc.code == "expired":
         return TOOK_TOO_LONG
+    if exc.code == AgentTurnFailed.STILL_RUNNING:
+        return STILL_RUNNING
     if exc.code == "agent_failed" and exc.notice == OUT_OF_BUDGET:
         # The usage limit is shared with the coding session (design, Risks).
         return NOTICE_SENTENCES[OUT_OF_BUDGET]

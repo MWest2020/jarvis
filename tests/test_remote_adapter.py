@@ -39,7 +39,7 @@ def _adapter(host, **kwargs):
 def test_the_ssh_argv_is_the_one_of_d32():
     agent = AgentHostConfig(host="agent.example", port=2222, user="mark",
                             key_file=Path("/secrets/agent/key"),
-                            known_hosts_file=Path("/secrets/agent/known_hosts"), timeout_s=660)
+                            known_hosts_file=Path("/secrets/agent/known_hosts"), timeout_s=170)
     assert build_ssh_command(agent, "/tmp/ssh.log") == [
         "ssh", "-T", "-F", "/dev/null",
         "-o", "BatchMode=yes",
@@ -351,11 +351,117 @@ def test_a_not_started_code_with_a_turn_id_is_a_turn_that_ran(host, code):
     assert (caught.value.code, caught.value.turn_id) == ("protocol", "t-9")
 
 
-def test_no_answer_within_the_timeout_fails_and_kills_ssh(host):
-    host.scenario(mode="hang")
+def _alive(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A process that ended and was not reaped yet still answers to signal 0.
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+def _wait_until(condition, seconds=10.0):
+    import time
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
+
+
+def test_when_the_wait_is_over_the_bridge_stops_waiting_and_does_not_cut_the_turn(host):
+    import time
+    host.scenario(mode="slow", delay=2)
+    started = time.monotonic()
     with pytest.raises(AgentTurnFailed) as caught:
-        _adapter(host, timeout_s=1).run_turn(project=DEMO, prompt="hello")
-    assert caught.value.code == "no_answer"
+        _adapter(host, timeout_s=0.5).run_turn(project=DEMO, prompt="the long thing")
+    assert caught.value.code == "still_running"
+    assert time.monotonic() - started < 1.5              # the phone gets its answer
+    pid = host.pids()[0]
+    assert _alive(pid)                                   # ssh was not killed
+    # The connection stays, so the turn runs to its end by itself...
+    assert _wait_until(lambda: (host.dir / "finished").exists())
+    assert host.turns()[0]["prompt"] == "the long thing"
+    # ...and then ssh is gone and its log file with it: nothing piles up.
+    assert _wait_until(lambda: not _alive(pid))
+    log_file = host.calls()[0]["argv"][host.calls()[0]["argv"].index("-E") + 1]
+    assert _wait_until(lambda: not Path(log_file).exists())
+
+
+def test_an_ssh_that_never_ends_is_stopped_in_the_end(host):
+    host.scenario(mode="hang")
+    adapter = RemoteAdapter(host.config(timeout_s=0.3), reap_after_s=0.5)
+    with pytest.raises(AgentTurnFailed) as caught:
+        adapter.run_turn(project=DEMO, prompt="hello")
+    assert caught.value.code == "still_running"
+    assert _wait_until(lambda: not _alive(host.pids()[0]))
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_more_than_64_kb_is_not_read_and_ssh_is_stopped(host, stream):
+    import time
+    host.scenario(mode="flood", stream=stream)
+    started = time.monotonic()
+    with pytest.raises(AgentTurnFailed) as caught:
+        _adapter(host).run_turn(project=DEMO, prompt="hello")
+    assert caught.value.code == "protocol"
+    assert time.monotonic() - started < 10
+    assert not _alive(host.pids()[0])                    # killed, not left writing
+
+
+def test_a_reply_of_exactly_the_cap_is_still_read(host):
+    reply = json.loads(_reply())
+    reply["spoken"] = "SPOKEN SUMMARY: " + "a " * 100
+    body = json.dumps(reply)
+    body += " " * (64 * 1024 - len(body))                # JSON may end in spaces
+    host.scenario(mode="raw", stdout=body)
+    assert _adapter(host).run_turn(project=DEMO, prompt="x").ref == "t-1"
+    host.scenario(mode="raw", stdout=body + " ")
+    with pytest.raises(AgentTurnFailed) as caught:
+        _adapter(host).run_turn(project=DEMO, prompt="x")
+    assert caught.value.code == "protocol"
+
+
+def test_the_kill_switch_answers_without_reading_the_request(host):
+    # The real wrapper does not read stdin when it is disabled; the bridge must
+    # not trip over the closed pipe, however large the request.
+    host.scenario(mode="wrapper", error="disabled")
+    with pytest.raises(AgentUnavailable) as caught:
+        _adapter(host).run_turn(project=DEMO, prompt="x" * 60000)
+    assert caught.value.reason == "disabled"
+    assert "stdin" not in host.calls()[0]
+
+
+# ssh stopped before it had a log at all.
+
+def test_no_passwd_entry_for_the_bridges_uid_is_never_connected(host):
+    host.scenario(mode="no_user")
+    with pytest.raises(AgentUnavailable) as caught:
+        _adapter(host).run_turn(project=DEMO, prompt="hello")
+    assert caught.value.reason == "unreachable"
+
+
+@pytest.mark.parametrize("rc,stderr,expected", [
+    (255, "No user exists for uid 10001\n", "unreachable"),
+    (1, "Couldn't open logfile /tmp/jarvis-ssh-x.log: No space left on device\n", "unreachable"),
+    # Not ssh's exit status for that line, or not the only line, or not the line.
+    (1, "No user exists for uid 10001\n", "lost"),
+    (255, "Couldn't open logfile /tmp/x.log: Permission denied\n", "lost"),
+    (255, "No user exists for uid 10001\nConnection to a closed by remote host.\n", "lost"),
+    (255, "remote: No user exists for uid 10001\n", "lost"),
+    (255, "ssh: connect to host a port 22: Connection refused\n", "lost"),
+    (255, "", "lost"),
+])
+def test_an_empty_log_is_only_never_connected_on_sshs_own_two_lines(rc, stderr, expected):
+    assert remote_adapter.classify_no_reply(rc, "", stderr) == expected
+    # With anything in ssh's log the real stderr decides nothing.
+    assert remote_adapter.classify_no_reply(rc, AUTH, stderr) == "lost"
 
 
 @pytest.mark.parametrize("name", ["_private", "a/b", "..", "-rf", "x" * 65, "has space"])

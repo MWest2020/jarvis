@@ -169,9 +169,13 @@ DEFAULT_CONFIRM_YES: tuple[str, ...] = ("yes", "ja")
 DEFAULT_CONFIRM_NO: tuple[str, ...] = ("no", "nee")
 DEFAULT_CONFIRM_MIN_SPEECH_S = 0.3
 
-# The agent host's own turn timeout is 600 s by default (D34); the bridge waits a
-# little longer, so the wrapper's `timeout` answer normally arrives first.
-DEFAULT_AGENT_TIMEOUT_S = 660
+# How long the bridge waits for the agent host before it answers the phone that
+# the turn is still running. The phone gives up after 180 s (the Android app's read
+# timeout), and the bridge must have spoken before that, so the wait is 170 s and
+# can be set no higher than 175. The turn itself may take longer on the agent host
+# (its own timeout is 600 s by default, D34); the bridge only stops waiting.
+DEFAULT_AGENT_TIMEOUT_S = 170
+MAX_AGENT_TIMEOUT_S = 175
 
 # What may stand in the ssh argv (D32). A host is a DNS name or an address, a user
 # a Unix login; neither can start with "-" and so neither can be read as an option.
@@ -303,7 +307,7 @@ def _agent_host_from_env(projects: dict[str, ProjectConfig],
         key_file=_private_file("JARVIS_AGENT_KEY_FILE", project_dirs),
         known_hosts_file=_private_file("JARVIS_AGENT_KNOWN_HOSTS_FILE", project_dirs),
         timeout_s=_positive_int("JARVIS_AGENT_TIMEOUT_S", DEFAULT_AGENT_TIMEOUT_S,
-                                maximum=24 * 3600),
+                                maximum=MAX_AGENT_TIMEOUT_S),
     )
 
 

@@ -81,15 +81,16 @@ class AgentTurnFailed(Exception):
     """A `full` turn failed, or may have started. Never answered by a second run.
 
     `code` is one of the agent host's error codes (`busy`, `low_memory`,
-    `timeout`, `agent_failed`, `bad_request`) or one of the bridge's own:
-    `host_key` (the pinned host key did not match), `lost` (the connection ended
-    without a usable reply), `no_answer` (the bridge's own timeout) and
-    `protocol` (a reply that is not the agreed shape).
+    `timeout`, `agent_failed`, `bad_request`, `expired`) or one of the bridge's
+    own: `host_key` (the pinned host key did not match), `lost` (the connection
+    ended without a usable reply), `still_running` (the bridge stopped waiting;
+    the turn goes on at the agent host) and `protocol` (a reply that is not the
+    agreed shape).
     """
 
     HOST_KEY = "host_key"
     LOST = "lost"
-    NO_ANSWER = "no_answer"
+    STILL_RUNNING = "still_running"
     PROTOCOL = "protocol"
 
     def __init__(self, code: str, detail: str = "", turn_id: str = "",

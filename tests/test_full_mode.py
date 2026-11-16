@@ -234,7 +234,7 @@ def test_the_minimum_of_speech_is_the_configured_one():
     assert rig.say("merge it").needs_confirmation
 
 
-@pytest.mark.parametrize("code", ["lost", "no_answer", "protocol", "timeout", "agent_failed"])
+@pytest.mark.parametrize("code", ["lost", "protocol", "timeout", "agent_failed"])
 def test_after_a_yes_an_unknown_outcome_is_never_called_not_confirmed(code):
     rig = Rig(_read_back(), AgentTurnFailed(code))
     rig.say("merge it")
@@ -244,10 +244,21 @@ def test_after_a_yes_an_unknown_outcome_is_never_called_not_confirmed(code):
     assert rig.readonly.asked == [] and len(rig.remote.asked) == 2
 
 
-@pytest.mark.parametrize("code", ["lost", "no_answer", "protocol", "timeout", "agent_failed"])
+@pytest.mark.parametrize("code", ["lost", "protocol", "timeout", "agent_failed"])
 def test_without_a_yes_the_unknown_outcome_line_is_not_added(code):
     rig = Rig(AgentTurnFailed(code))
     assert "Check at the desk" not in rig.say("do something").spoken
+
+
+@pytest.mark.parametrize("after_a_yes", [False, True])
+def test_when_the_bridge_stops_waiting_it_says_the_turn_is_still_running(after_a_yes):
+    answers = [_read_back()] if after_a_yes else []
+    rig = Rig(*answers, AgentTurnFailed("still_running"))
+    if after_a_yes:
+        rig.say("merge it")
+    out = rig.say("yes" if after_a_yes else "run the long thing")
+    assert out.spoken == "It's still running at the desk. Ask me for the result in a bit."
+    assert rig.readonly.asked == []                  # and it is not run again
 
 
 @pytest.mark.parametrize("code", ["busy", "low_memory", "bad_request", "host_key"])
@@ -311,7 +322,7 @@ def test_the_fallback_gets_what_the_driver_said_not_the_line_in_front():
 
 
 @pytest.mark.parametrize("code", ["busy", "low_memory", "timeout", "agent_failed", "bad_request",
-                                  "host_key", "lost", "no_answer", "protocol", "expired"])
+                                  "host_key", "lost", "still_running", "protocol", "expired"])
 def test_a_failed_turn_is_never_run_again_in_any_mode(code):
     rig = Rig(AgentTurnFailed(code, turn_id="turn-4"))
     out = rig.say("merge it")
@@ -358,6 +369,7 @@ def test_a_yes_that_cannot_be_delivered_confirms_nothing_and_is_not_asked_read_o
 def test_every_spoken_line_of_the_bridge_passes_the_spoken_filter():
     from bridge.summary import _SECRET_LIKE, _UNSPEAKABLE
     lines = [full_mode.CANCELLED, full_mode.UNKNOWN_IF_RAN, full_mode.TOOK_TOO_LONG,
+             full_mode.STILL_RUNNING,
              full_mode.NOTHING_CONFIRMED, *remote_adapter.NOTICE_SENTENCES.values(),
              *full_mode.FALLBACK_SENTENCES.values(), *full_mode.NOT_STARTED_LINES.values(),
              *full_mode.STARTED_LINES.values()]

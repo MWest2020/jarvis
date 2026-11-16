@@ -20,6 +20,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
+import time
 import unicodedata
 
 from bridge.agent import (
@@ -121,6 +123,15 @@ _AUTHENTICATED = "Authenticated to "
 _HOST_KEY_FAILED = "Host key verification failed."
 SSH_CONNECT_FAILED_EXIT = 255
 MAX_LOGGED_CHARS = 4000
+# While reading: the cap on a reply plus a margin, so that "exactly 64 KB" and
+# "more" can be told apart. Beyond it nothing is kept.
+MAX_READ_BYTES = MAX_MESSAGE_BYTES + 1024
+READ_CHUNK_BYTES = 16 * 1024
+WAIT_STEP_S = 0.05
+JOIN_S = 5.0
+# An ssh the bridge stopped waiting for is left to end by itself, but not for
+# ever: the agent host's own turn timeout is 600 s by default (D34).
+REAP_AFTER_S = 900.0
 
 
 def build_ssh_command(agent: AgentHostConfig, log_file: str) -> list[str]:
@@ -277,14 +288,31 @@ def speakable_readback(readback: str) -> str | None:
     return text
 
 
-def classify_no_reply(returncode: int, ssh_log: str) -> str:
-    """Why nothing came back, from ssh's own log: "unreachable", "host_key" or "lost".
+# With an empty log, two things ssh says on its real stderr before it has a log
+# or a connection at all: the bridge's uid has no passwd entry (exit 255), or the
+# log file could not be opened (exit 1). Only when that line is all there is.
+_BEFORE_ANY_LOG = (
+    (255, re.compile(r"No user exists for uid \d+")),
+    (1, re.compile(r"Couldn't open logfile \S+: .+")),
+)
 
-    Only "unreachable" allows the read-only fallback, and only "unreachable" and
-    "host_key" mean that the forced command cannot have run. Everything that is not
-    certain is "lost": a turn may have started.
+
+def classify_no_reply(returncode: int, ssh_log: str, stderr: str = "") -> str:
+    """Why nothing came back: "unreachable", "host_key" or "lost".
+
+    Read from ssh's own log. Only "unreachable" allows the read-only fallback, and
+    only "unreachable" and "host_key" mean that the forced command cannot have
+    run. Everything that is not certain is "lost": a turn may have started.
     """
     lines = [ln.strip() for ln in ssh_log.splitlines() if ln.strip()]
+    if not lines:
+        # No log at all. ssh may have stopped before it could write one; then its
+        # real stderr holds that one line and nothing else.
+        said = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+        if len(said) == 1 and any(returncode == code and pattern.fullmatch(said[0])
+                                  for code, pattern in _BEFORE_ANY_LOG):
+            return AgentUnavailable.UNREACHABLE
+        return AgentTurnFailed.LOST
     if returncode != SSH_CONNECT_FAILED_EXIT:
         return AgentTurnFailed.LOST
     if any(ln.startswith(_AUTHENTICATED) for ln in lines):
@@ -305,8 +333,9 @@ def check_ssh() -> None:
 class RemoteAdapter:
     name = "full"
 
-    def __init__(self, agent: AgentHostConfig) -> None:
+    def __init__(self, agent: AgentHostConfig, *, reap_after_s: float = REAP_AFTER_S) -> None:
         self._agent = agent
+        self._reap_after_s = reap_after_s
 
     def run_turn(self, *, project: ProjectConfig, prompt: str,
                  confirm: ConfirmAnswer | None = None) -> AgentTurn:
@@ -368,7 +397,7 @@ class RemoteAdapter:
         request = build_request(project=project, prompt=prompt, confirm=confirm)
         returncode, stdout, ssh_log, remote_stderr = self._exchange(request)
         if not stdout.strip():
-            why = classify_no_reply(returncode, ssh_log)
+            why = classify_no_reply(returncode, ssh_log, remote_stderr)
             detail = (f"ssh exited {returncode} without a reply; its log: "
                       f"{ssh_log.strip()[:MAX_LOGGED_CHARS]!r}; the remote stderr: "
                       f"{remote_stderr.strip()[:MAX_LOGGED_CHARS]!r}")
@@ -384,7 +413,13 @@ class RemoteAdapter:
             raise AgentTurnFailed(AgentTurnFailed.PROTOCOL, str(exc)) from exc
 
     def _exchange(self, request: bytes) -> tuple[int, bytes, str, str]:
-        """Run ssh once. Returns its exit status, stdout, its own log, the remote stderr."""
+        """Run ssh once. Returns its exit status, stdout, its own log, the remote stderr.
+
+        Both streams are read as they come and never kept beyond the cap; more than
+        that is not a reply, and ssh is stopped. When the wait is over and ssh is
+        still there, the bridge stops waiting and does nothing else: the connection
+        stays, the turn on the agent host goes on and is recorded there (D34).
+        """
         # ssh gets a path and a home, nothing else: not the phone's token, not the
         # Claude credentials, no agent socket. With -F /dev/null it forwards no
         # variable anyway, so nothing of the pod reaches the agent host.
@@ -396,6 +431,7 @@ class RemoteAdapter:
         except OSError as exc:
             raise AgentUnavailable(AgentUnavailable.UNREACHABLE,
                                    f"no file for ssh's log: {exc}") from exc
+        handed_over = False
         try:
             command = build_ssh_command(self._agent, log_file)
             try:
@@ -407,30 +443,125 @@ class RemoteAdapter:
                 # No ssh client, or it cannot be started: nothing left this machine.
                 raise AgentUnavailable(AgentUnavailable.UNREACHABLE,
                                        f"ssh could not be started: {exc}") from exc
-            try:
-                stdout, stderr = proc.communicate(request, timeout=self._agent.timeout_s)
-            except subprocess.TimeoutExpired as exc:
+            overflow = threading.Event()
+            out = _Capture(proc.stdout, MAX_READ_BYTES, overflow)
+            err = _Capture(proc.stderr, MAX_READ_BYTES, overflow)
+            feeder = threading.Thread(target=_feed, args=(proc.stdin, request), daemon=True)
+            threads = (out, err, feeder)
+            for thread in threads:
+                thread.start()
+
+            deadline = time.monotonic() + self._agent.timeout_s
+            while True:
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                    proc.wait(timeout=WAIT_STEP_S)
+                    break
+                except subprocess.TimeoutExpired:
                     pass
-                proc.communicate()
-                # Only the connection is cut. The turn on the agent host runs to its
-                # end or to its own timeout, and is recorded there (D34).
-                raise AgentTurnFailed(
-                    AgentTurnFailed.NO_ANSWER,
-                    f"no reply from the agent host within {self._agent.timeout_s}s") from exc
+                if overflow.is_set():
+                    _kill(proc)
+                    break
+                if time.monotonic() >= deadline:
+                    handed_over = True
+                    threading.Thread(target=self._reap, args=(proc, threads, log_file),
+                                     daemon=True).start()
+                    raise AgentTurnFailed(
+                        AgentTurnFailed.STILL_RUNNING,
+                        f"no reply from the agent host within {self._agent.timeout_s}s; "
+                        f"the bridge stopped waiting, the turn goes on there")
+            for thread in (out, err):
+                thread.join(timeout=JOIN_S)
+            if overflow.is_set():
+                raise AgentTurnFailed(AgentTurnFailed.PROTOCOL,
+                                      "more than 64 KB came back; ssh was stopped")
             try:
                 with open(log_file, encoding="utf-8", errors="replace") as fh:
                     ssh_log = fh.read(MAX_MESSAGE_BYTES)
             except OSError:
                 ssh_log = ""    # no account of the connection: nothing is assumed
-            return proc.returncode, stdout, ssh_log, stderr.decode("utf-8", "replace")
+            return proc.returncode, out.data(), ssh_log, err.data().decode("utf-8", "replace")
+        finally:
+            if not handed_over:
+                _unlink(log_file)
+
+    def _reap(self, proc: subprocess.Popen, threads: tuple, log_file: str) -> None:
+        """An ssh the bridge stopped waiting for: left alone until it ends by itself,
+        so the connection is not cut under a running turn. Whatever it still says is
+        read and thrown away. One that outlives every turn timeout is stopped."""
+        try:
+            try:
+                proc.wait(timeout=self._reap_after_s)
+            except subprocess.TimeoutExpired:
+                logger.warning("agent=full: ssh pid %s still there after %ss; stopped",
+                               proc.pid, self._reap_after_s)
+                _kill(proc)
+            for thread in threads:
+                thread.join(timeout=JOIN_S)
+        finally:
+            _unlink(log_file)
+
+
+class _Capture(threading.Thread):
+    """Reads a pipe to its end, keeps at most `limit` bytes, says when there was more."""
+
+    def __init__(self, pipe, limit: int, overflow: threading.Event) -> None:
+        super().__init__(daemon=True)
+        self._pipe = pipe
+        self._limit = limit
+        self._overflow = overflow
+        self._chunks: list[bytes] = []
+        self._kept = 0
+
+    def run(self) -> None:
+        try:
+            while chunk := self._pipe.read1(READ_CHUNK_BYTES):
+                room = self._limit - self._kept
+                if len(chunk) > room:
+                    self._overflow.set()      # read on, keep nothing more
+                    chunk = chunk[:room]
+                if chunk:
+                    self._chunks.append(chunk)
+                    self._kept += len(chunk)
+        except (OSError, ValueError):
+            pass
         finally:
             try:
-                os.unlink(log_file)
+                self._pipe.close()
             except OSError:
                 pass
+
+    def data(self) -> bytes:
+        return b"".join(self._chunks)
+
+
+def _feed(pipe, request: bytes) -> None:
+    """The request on stdin, then end of input. A wrapper that answers without
+    reading (its kill switch) closes the pipe first; that is not an error."""
+    try:
+        pipe.write(request)
+        pipe.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            pipe.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    proc.wait()
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _spoken(notice: str, marker_line: str) -> str:

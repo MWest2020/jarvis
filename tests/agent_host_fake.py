@@ -39,7 +39,10 @@ class FakeAgentHost:
     def scenario(self, **fields) -> None:
         (self.dir / "scenario.json").write_text(json.dumps(fields))
 
-    def config(self, *, timeout_s: int = 20) -> AgentHostConfig:
+    def pids(self) -> list[int]:
+        return [c["pid"] for c in self.calls()]
+
+    def config(self, *, timeout_s: float = 20) -> AgentHostConfig:
         return AgentHostConfig(host="agent.example", port=22, user="jarvis",
                                key_file=self.key_file,
                                known_hosts_file=self.known_hosts_file, timeout_s=timeout_s)
