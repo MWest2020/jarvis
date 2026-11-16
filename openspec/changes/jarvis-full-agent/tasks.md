@@ -1,6 +1,6 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 1b1 (The gate: what is gated, and what it refuses)
+## Current phase: 1b2 (Naming, the hash and grant, the read-back)
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
 1b2, 1c). The last task of every phase
@@ -75,7 +75,7 @@ the finished guarantee.
 
 ### 1b1. The gate: what is gated, and what it refuses
 
-- [ ] 1.7 `agent_host/gate`: the PreToolUse hook, for every tool. Rules from
+- [x] 1.7 `agent_host/gate`: the PreToolUse hook, for every tool. Rules from
   `agent_host/gate_rules.toml` and `/etc/jarvis-agent/rules.d/`. Default rules (D36): for
   `kubectl`, `helm`, `argocd`, the secrets client, `gh`, `docker` and the infrastructure CLIs named in the rules (`terraform`, `tofu`, `aws`,
   `gcloud`, `az`, `doctl`, `hcloud`, `pulumi`) every
@@ -90,20 +90,20 @@ the finished guarantee.
   nothing is pending and nothing is confirmable before 1b2. It fails closed (unreadable
   rules, an unparsable call, a crash: denied) and exits 0 without reading anything when the
   turn marker is absent
-- [ ] 1.7b The class `self` (the paths of D36, including the user's instructions file,
+- [x] 1.7b The class `self` (the paths of D36, including the user's instructions file,
   managed settings and every file a configured hook runs; writes by `Edit`, `Write` and
   shell commands): always desk-only, never pending
-- [ ] 1.7d The checkout settings rule: the wrapper refuses a turn (`unsafe_settings`) when
+- [x] 1.7d The checkout settings rule: the wrapper refuses a turn (`unsafe_settings`) when
   `.claude/settings.json` or `settings.local.json` of the checkout contains `env`, `hooks`
   or `disableAllHooks`; checked before every turn (the confirming one too) and again after
   it. And in the gate, on every call: both files of the turn's checkout are re-read, and
   both files at the git top level of the hook input's `cwd` (the agent's own worktree), and
   while any of them contains one of the three keys every gated call is denied, with or without a
   grant, with "project settings changed, needs the desk"; nothing becomes pending
-- [ ] 1.8a A gated `Bash` call with a separator, pipe, substitution or newline anywhere in
+- [x] 1.8a A gated `Bash` call with a separator, pipe, substitution or newline anywhere in
   its string (quoted, or inside a nested shell or `ssh` argument), or with `eval`, `xargs`
   or `source`, denied with "run it alone"; it never becomes pending
-- [ ] 1.14a Tests for build 1b1, carved out of 1.14: one per gate pattern (a match, and a
+- [x] 1.14a Tests for build 1b1, carved out of 1.14: one per gate pattern (a match, and a
   near miss that must not match), with at least `git push -f`, `-fu`, `--mirror`,
   `--delete`, `origin :branch`, `--prune`, `-d`, `--all`, `--tags`, `-uf`, a bare `git push`
   on a default branch and on a feature branch; `gh api -X DELETE`, `gh api -f`, a GraphQL
@@ -122,7 +122,7 @@ the finished guarantee.
   worktree named by the call's `cwd`: every gated call is denied, an ungated call still
   runs, and removing the key lifts the denial; an unreadable settings file denies; a broken
   rules file denies; no turn marker in the environment exits 0 and reads nothing
-- [ ] 1.14c Phase heading to 1b2; the `jarvis-full-agent` row of `docs/index.md`
+- [x] 1.14c Phase heading to 1b2; the `jarvis-full-agent` row of `docs/index.md`
 
 ### 1b2. Naming, the hash and grant, the read-back
 

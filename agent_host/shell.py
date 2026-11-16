@@ -46,6 +46,8 @@ _MAX_DEPTH = 8
 
 # Prefixes that run the rest of the line unchanged.
 _PLAIN_PREFIXES = frozenset({"command", "exec", "nohup", "time", "builtin", "stdbuf", "setsid"})
+# Shell keywords a command can stand behind (`if gh pr merge 1; then ...`).
+_KEYWORDS = frozenset({"if", "then", "else", "elif", "do", "while", "until"})
 _TIMEOUT_VALUE_OPTIONS = frozenset({"-k", "-s", "--kill-after", "--signal"})
 _ENV_FLAGS = frozenset({"-i", "-", "--ignore-environment", "-0", "--null"})
 _ENV_VALUE_OPTIONS = frozenset({"-u", "--unset", "-C", "--chdir"})
@@ -115,7 +117,7 @@ def strip_prefixes(argv: list[str]) -> tuple[list[str], bool]:
     while words:
         word = words[0]
         name = program_name(word)
-        if _ASSIGNMENT_RE.match(word) or word == "!":
+        if _ASSIGNMENT_RE.match(word) or word == "!" or word in _KEYWORDS:
             words = words[1:]
         elif name in _PLAIN_PREFIXES:
             words = words[1:]
@@ -251,11 +253,13 @@ def analyse(
 
         if name == "ssh":
             rest = _after_options(argv[1:], _SSH_VALUE_OPTIONS)
-            if len(rest) < 2:  # no host, or no remote command
+            # ssh also takes options behind the host (`ssh host -t cmd`).
+            remote = _after_options(rest[1:], _SSH_VALUE_OPTIONS)
+            if not rest or not remote:  # no host, or no remote command
                 return Analysis(False, (Command(tuple(argv), wrappers),), root_word)
             # ssh joins its arguments with spaces and the remote shell reads
             # the result again: that string is what is judged.
-            return one(" ".join(rest[1:]), wrappers + (("ssh", rest[0]),), depth + 1)
+            return one(" ".join(remote), wrappers + (("ssh", rest[0]),), depth + 1)
 
         return Analysis(False, (Command(tuple(argv), wrappers),), root_word)
 

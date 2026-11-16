@@ -425,6 +425,9 @@ def test_a_plain_http_read_is_not_gated(ctx, command):
     ("/usr/bin/git push origin main", ["merge"]),
     # git's own options that the gate cannot place, with a push behind them.
     ("git --unknown-option push origin feature", []),
+    # An alias defined on the command line that is a push.
+    ("git -c alias.p=push p origin main", []),
+    ("git -c alias.p='push -f' p", []),
 ])
 def test_a_push_is_classified_by_git_option_grammar(ctx, command, classes):
     _assert(ctx, command, True, classes)
@@ -451,6 +454,8 @@ def test_a_push_is_classified_by_git_option_grammar(ctx, command, classes):
     "git fetch --prune --tags",
     "git branch -d feature",
     "git stash push -m wip",
+    "git -c alias.l=log l",
+    "git -c user.name=x commit -m y",
 ])
 def test_a_push_of_a_feature_branch_and_other_git_work_is_not_gated(ctx, command):
     _assert(ctx, command, False)

@@ -612,7 +612,11 @@ def _judge_rm(args: list[str], ctx: Context) -> Verdict:
 # --- git push ---------------------------------------------------------------------------
 
 def _git_subcommand(args: list[str]) -> tuple[str | None, list[str], bool, bool]:
-    """(subcommand, its arguments, placed, redirected)."""
+    """(subcommand, its arguments, placed, redirected).
+
+    An alias defined on the command line (`git -c alias.p=push p ...`) makes
+    the subcommand a word of the caller's choosing: not placed.
+    """
     redirected = False
     index = 0
     while index < len(args):
@@ -620,6 +624,8 @@ def _git_subcommand(args: list[str]) -> tuple[str | None, list[str], bool, bool]
         if not word.startswith("-"):
             return word, args[index + 1:], True, redirected
         name = word.split("=", 1)[0]
+        if name == "-c" and index + 1 < len(args) and args[index + 1].lower().startswith("alias."):
+            return None, args[index:], False, redirected
         if name in _GIT_REDIRECTING:
             redirected = True
         if "=" in word and name.startswith("--"):
@@ -727,7 +733,7 @@ def push_destinations(push: Push) -> list[str] | None:
 def _judge_git(args: list[str], ctx: Context) -> Verdict:
     subcommand, rest, placed, redirected = _git_subcommand(args)
     if not placed:
-        if "push" in args:
+        if "push" in args or any("push" in arg for arg in args if arg.lower().startswith("alias.")):
             return Verdict(gated=True, rule="push:option-before-subcommand")
         return UNGATED
     if subcommand != "push":
