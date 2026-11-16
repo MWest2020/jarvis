@@ -64,7 +64,8 @@ class Named:
     covers: frozenset[str]
     # What the wrapper must fetch to complete the read-back, or None:
     # ("merge", number, "owner/name", full sha) or
-    # ("push", remote, ((source, destination), ...)).
+    # ("push", remote, ((source, destination), ...)) or
+    # ("create", "owner/name") for `gh repo create`.
     status: tuple | None = None
 
 
@@ -194,6 +195,10 @@ def _name_gh(subpath, args, rest, ctx, config) -> Named | Missing:
             valued={"--description": "description", "-d": "description"},
         )
         words = _after(positional, subpath)
+        if flags & {"--clone", "-c"}:
+            # It would clone into the turn's checkout, a repository inside a
+            # repository. The wrapper sets it up as a project instead (D53).
+            raise NotNameable("a repository creation with --clone")
         if len(words) != 1:
             raise NotNameable("a repository creation names exactly one repository")
         repo = targets.repository(words[0], config.own_owners)
@@ -202,7 +207,10 @@ def _name_gh(subpath, args, rest, ctx, config) -> Named | Missing:
             raise NotNameable("more than one visibility")
         # When the call does not say, it is read back as public (D36).
         word = visibility.pop()[2:] if visibility else "public"
-        return Named(f"Create the {word} repository {repo.spoken}.", frozenset({"create"}))
+        # The repository rides along for what the wrapper does after the
+        # creation ran: clone it as a project (jarvis-general-conversation D53).
+        return Named(f"Create the {word} repository {repo.spoken}.", frozenset({"create"}),
+                     status=("create", repo.value))
 
     if subpath in (("repo", "delete"), ("repo", "archive")):
         _, _, positional = read_options(args, flags={"--yes", "-y"}, valued={})
@@ -754,6 +762,30 @@ def name_call(tool_name: str, tool_input: dict, verdict: classify.Verdict, ctx, 
     if tool_name == "Bash":
         return _name_command(verdict, ctx, config)
     return _name_tool(tool_name, tool_input, ctx, config, verdict.classes)
+
+
+CREATE_WITH_CLONE_HINT = (
+    "[create_clone] A repository is not created with --clone by voice: it would be"
+    " cloned into this checkout, a repository inside a repository. Run the same gh repo"
+    " create once more without --clone (and without -c), as one call. It is then read"
+    " back to the driver, and after it ran Jarvis sets the new repository up as a"
+    " project itself. Nothing was run."
+)
+
+
+def desk_hint(verdict: classify.Verdict) -> str | None:
+    """The whole refusal for a call that can be asked for again in a form that
+    can be read back, or None. Only for `gh repo create --clone`
+    (jarvis-general-conversation D53)."""
+    command = verdict.command
+    if command is None or not command.argv or command.argv[0] != "gh":
+        return None
+    argv = list(command.argv)
+    if argv[1:3] != ["repo", "create"]:
+        return None
+    if any(word in ("--clone", "-c") or word.startswith("--clone=") for word in argv[3:]):
+        return CREATE_WITH_CLONE_HINT
+    return None
 
 
 def derive(tool_name: str, tool_input: dict, ctx: classify.Context,

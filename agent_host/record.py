@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -216,14 +217,46 @@ def append_action(actions_dir: Path, turn_id: str, line: dict) -> Path:
 
 # --- retention (1.12b; the timer is 4.1 and 4.2) ---------------------------------------
 
-def prune(state_dir: Path, retention_days: int, now: float | None = None) -> list[Path]:
+# The staging directories of the clones of jarvis-general-conversation D53
+# (agent_host/clones.py), directly under the project root. Hidden, so no list
+# names one. One older than this is left from an attempt that was cut off.
+CLONE_DIR_PREFIX = ".jarvis-clone-"
+STALE_STAGING_S = 3600
+
+
+def remove_stale_staging(root: Path, now: float | None = None) -> list[Path]:
+    """Remove `.jarvis-clone-*` directories under `root` older than an hour."""
+    cutoff = (time.time() if now is None else now) - STALE_STAGING_S
+    removed: list[Path] = []
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return removed
+    for path in entries:
+        if not path.name.startswith(CLONE_DIR_PREFIX):
+            continue
+        try:
+            if path.is_symlink() or not path.is_dir() or path.lstat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed.append(path)
+    return removed
+
+
+def prune(state_dir: Path, retention_days: int, now: float | None = None,
+          staging_root: Path | None = None) -> list[Path]:
     """Remove records, action logs and gate state older than
-    `retention_days`. Returns what was removed. Session ids, the lock and a
-    pending call are not touched."""
+    `retention_days`, and with `staging_root` (the project root) clone staging
+    directories older than an hour. Returns what was removed. Session ids, the
+    lock and a pending call are not touched."""
     if retention_days < 1:
         raise ValueError("retention_days must be at least 1")
     cutoff = (time.time() if now is None else now) - retention_days * 86400
     removed: list[Path] = []
+    if staging_root is not None:
+        removed += remove_stale_staging(staging_root, now)
     for name in ("records", "actions", "gate"):
         directory = state_dir / name
         try:

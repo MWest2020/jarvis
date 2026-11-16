@@ -30,6 +30,16 @@ itself, and behaves as `scenario.json` next to itself says:
                                writes without end
   {"mode": "hang"}             never answers
 
+  With the wrapper, also (jarvis-general-conversation):
+  "projects": [...]            the agent host's projects: the answer to a list
+                               request, and a turn for any other name is
+                               `no_checkout`. Without it every name is a project
+                               and the list is ["demo", "other"]
+  "old_wrapper": true          a wrapper from before the list request: it
+                               answers the list `bad_request`
+  "project": {...}             the optional `project` field, added to the reply
+                               of every agent turn, read-back and error included
+
 THE FAKE WRAPPER AND THE REAL ONE. The fake wrapper speaks version 1 of the
 contract (design D33): the same request rules as agent_host/request.py, the nine
 reply fields, no stdin read when the kill switch is set, a turn id on `timeout`
@@ -77,11 +87,17 @@ def _log(entry):
         fh.write(json.dumps(entry) + "\n")
 
 
+PROJECT = {}
+
+
 def _reply(**fields):
-    """Version 1: always exactly these nine fields."""
+    """Version 1: always exactly these nine fields, and `project` when the
+    scenario has one (jarvis-general-conversation D53)."""
     reply = {"v": 1, "status": "ok", "error": None, "turn": None, "spoken": "",
              "pending": False, "readback": None, "confirm": None, "notice": None}
     reply.update(fields)
+    if "project" in PROJECT and reply.get("turn") is not None:
+        reply["project"] = PROJECT["project"]
     sys.stdout.write(json.dumps(reply))
     return 0
 
@@ -94,11 +110,22 @@ STARTED_ERRORS = ("timeout", "agent_failed")    # a turn ran: these carry its id
 
 
 def wrapper(raw: bytes, scenario: dict) -> int:
+    if "project" in scenario:
+        PROJECT["project"] = scenario["project"]
     state = _load("state.json", {"pending": {}, "turns": [], "n": 0})
     try:
         if len(raw) > MAX_BYTES:
             raise ValueError("too large")
         request = json.loads(raw.decode("utf-8"))
+        if isinstance(request, dict) and "list" in request and not scenario.get("old_wrapper"):
+            if set(request) != {"v", "list"} or request["v"] != 1 or request["list"] is not True:
+                raise ValueError("list shape")
+            if scenario.get("error"):
+                return _error(scenario["error"])
+            names = sorted(scenario.get("projects", ["demo", "other"]))
+            sys.stdout.write(json.dumps({"v": 1, "status": "ok", "error": None,
+                                         "projects": names}))
+            return 0
         if not isinstance(request, dict) or set(request) != REQUEST_KEYS or request["v"] != 1:
             raise ValueError("shape")
         confirm = request["confirm"]
@@ -121,6 +148,8 @@ def wrapper(raw: bytes, scenario: dict) -> int:
         return _error(code, **extra)
 
     project = request["project"]
+    if "projects" in scenario and project not in scenario["projects"]:
+        return _error("no_checkout")
     state["n"] += 1
     turn_id = f"turn-{state['n']}"
     # Cleared by the next request for the project, whatever that request is.

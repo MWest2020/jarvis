@@ -88,7 +88,7 @@ def _through_the_bridge(host, *, prompt, confirm=None):
     """One request as the bridge builds it, one reply as the bridge reads it."""
     reply = wrapper.handle_request(
         build_request(project="demo", prompt=prompt, confirm=confirm), host.config)
-    assert set(reply) == remote_adapter.REPLY_KEYS
+    assert set(reply) - {"project"} == remote_adapter.REPLY_KEYS
     return reply, parse_reply(_wire(reply))
 
 
@@ -190,3 +190,103 @@ def test_both_sides_agree_on_the_length_of_a_read_back_and_the_60_seconds():
     from agent_host.config import PENDING_SECONDS
     assert wrapper.MAX_READBACK_CHARS == remote_adapter.MAX_READBACK_CHARS
     assert PENDING_SECONDS == remote_adapter.MAX_EXPIRES_S
+
+
+# --- jarvis-general-conversation: the list request and the new project (D51, D53) ----------
+
+from agent_host import projects as wrapper_projects  # noqa: E402
+from bridge.remote_adapter import (  # noqa: E402
+    ListRefused,
+    build_list_request,
+    parse_list_reply,
+)
+
+
+def test_the_wrapper_reads_the_bridges_list_request():
+    assert isinstance(wrapper_request.parse_request(build_list_request()),
+                      wrapper_request.ListRequest)
+
+
+def test_both_sides_agree_on_the_list_answer():
+    assert set(wrapper.LIST_FIELDS) == remote_adapter.LIST_REPLY_KEYS
+    assert wrapper_projects.MAX_LISTED == remote_adapter.MAX_LISTED
+    assert parse_list_reply(_wire(wrapper.list_reply(["b", "a"]))) == ["a", "b"]
+    assert parse_list_reply(_wire(wrapper.list_reply([]))) == []
+
+
+@pytest.mark.parametrize("reply,code", [
+    (wrapper.disabled_reply(), "disabled"),
+    (wrapper._reply(status="error", error="bad_request"), "bad_request"),
+])
+def test_the_bridge_reads_a_refused_list(reply, code):
+    with pytest.raises(ListRefused) as refused:
+        parse_list_reply(_wire(reply))
+    assert refused.value.code == code
+
+
+def test_the_real_wrapper_lists_for_the_bridge(host):
+    reply = wrapper.handle_request(build_list_request(), host.config)
+    assert parse_list_reply(_wire(reply)) == ["demo"]
+
+
+def test_an_old_wrapper_s_refusal_of_the_list_falls_back_to_the_pods_list(tmp_path, monkeypatch):
+    """A wrapper from before D51 reads `list` as an unknown field and answers with
+    its own `bad_request` reply: the nine fields, as `wrapper._reply` builds them.
+    That reply, through a real ssh process and the real adapter, gives the pod's
+    list."""
+    from bridge.full_mode import FullMode
+    from bridge.remote_adapter import RemoteAdapter
+    from tests.agent_host_fake import FakeAgentHost
+    old_reply = wrapper._reply(status="error", error="bad_request")
+    assert set(old_reply) == set(wrapper.V1_FIELDS)          # the old shape exactly
+    host = FakeAgentHost(tmp_path / "agent-host")
+    host.install(monkeypatch)
+    host.scenario(mode="raw", stdout=json.dumps(old_reply))
+    full = FullMode(remote=RemoteAdapter(host.config()), readonly=None,
+                    confirm_yes=("yes",), confirm_no=("no",), min_speech_s=0.3)
+    assert full.project_names(lambda: ["pod"]) == (["pod"], "bridge")
+    assert host.requests() == [{"v": 1, "list": True}]
+
+
+def test_every_project_field_the_wrapper_builds_is_read_by_the_bridge():
+    from agent_host import clones
+    from bridge.contract import PROJECT_REASONS
+    for state in ("ready", *sorted(PROJECT_REASONS)):
+        field = clones.Outcome(state, "why").field("birdsong")
+        reply = wrapper._reply(status="ok", turn=str(uuid.uuid4()), project=field)
+        news = parse_reply(_wire(reply))["project"]
+        assert (news.name, news.ready, news.reason) == (field["name"], field["ready"], field["reason"])
+        error = wrapper._reply(status="error", error="agent_failed", turn=str(uuid.uuid4()),
+                               project=field)
+        assert parse_reply(_wire(error))["project"] == news
+
+
+@pytest.mark.parametrize("field", [
+    {"name": "birdsong", "ready": True},
+    {"name": "birdsong", "ready": True, "reason": "retrying"},
+    {"name": "birdsong", "ready": False, "reason": None},
+    {"name": "birdsong", "ready": False, "reason": "other"},
+    {"name": "../x", "ready": True, "reason": None},
+    {"name": "birdsong", "ready": 1, "reason": None},
+    "ready",
+])
+def test_the_bridge_refuses_a_project_field_of_another_shape(field):
+    reply = dict(wrapper._reply(status="ok", turn=str(uuid.uuid4())), project=field)
+    with pytest.raises(remote_adapter.ReplyError):
+        parse_reply(_wire(reply))
+
+
+def test_the_bridge_reads_the_real_wrappers_new_project(tmp_path, monkeypatch):
+    from bridge.agent import ProjectNews
+    from tests.test_agent_host_general import CREATE, CloneHost
+    host = CloneHost(tmp_path)
+    host.agent(monkeypatch, [CREATE])
+    _, asked = _through_the_bridge(host, prompt="make a repo called birdsong")
+    pending = asked["confirmation"]
+    host.agent(monkeypatch, [CREATE], reply="made.\nSPOKEN SUMMARY: I created birdsong.")
+    _, parsed = _through_the_bridge(
+        host, prompt="", confirm=ConfirmAnswer(pending.id, pending.sha256, "yes"))
+    assert parsed["project"] == ProjectNews("birdsong", True, None)
+    assert parsed["notice"] == ""
+    listed = parse_list_reply(_wire(wrapper.handle_request(build_list_request(), host.config)))
+    assert "birdsong" in listed

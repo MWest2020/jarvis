@@ -20,6 +20,14 @@ class TurnRequestTest {
     }
 
     @Test
+    fun aTypedListSaysSoInAHeader() {
+        val base = "http://jarvis.example.ts.net:8787"
+        assertEquals(null, ok(base).headers[TurnRequests.TYPED_LIST_HEADER])
+        val typed = (TurnRequests.build(base, "s3cret-token", "demo", typedList = true) as Built.Ok).value
+        assertEquals("typed", typed.headers["X-Jarvis-Projects"])
+    }
+
+    @Test
     fun toleratesSpacesATrailingSlashAndAPathPrefix() {
         assertEquals(
             "http://jarvis.example.ts.net:8787/turn?project=demo",

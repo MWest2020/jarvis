@@ -17,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bridge import contract
+
 # 1.3 (weekend slice): a fixed, read-only allow-list. No approval flow yet,
 # so nothing that writes or executes is ever on this list (D6).
 READ_ONLY_ALLOWED_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
@@ -102,7 +104,9 @@ def _check_private_host(host: str, *, behind_proxy: bool = False) -> str:
 @dataclass(frozen=True)
 class ProjectConfig:
     name: str
-    working_dir: Path
+    # None for a project that only the agent host has (`full` mode,
+    # jarvis-general-conversation D52): there is no copy here to answer from.
+    working_dir: Path | None
 
 
 # JARVIS_PROJECTS=* (add-project-list): every git checkout directly under
@@ -176,6 +180,11 @@ DEFAULT_CONFIRM_MIN_SPEECH_S = 0.3
 # (its own timeout is 600 s by default, D34); the bridge only stops waiting.
 DEFAULT_AGENT_TIMEOUT_S = 170
 MAX_AGENT_TIMEOUT_S = 175
+
+# The project names the agent host accepts (jarvis-full-agent D33). In `full` mode
+# the agent host decides which projects exist (jarvis-general-conversation D52);
+# the bridge only checks this shape, so a name is never a path.
+AGENT_PROJECT_NAME = contract.PROJECT_NAME
 
 # What may stand in the ssh argv (D32). A host is a DNS name or an address, a user
 # a Unix login; neither can start with "-" and so neither can be read as an option.
@@ -390,6 +399,18 @@ class BridgeConfig:
             return self.current_projects()[name]
         except KeyError:
             raise ConfigError(f"unknown project {name!r}") from None
+
+    def project_for_turn(self, name: str) -> ProjectConfig:
+        """The project a turn is sent for. In `readonly` mode one of the bridge's
+        own; in `full` mode any name of the agent host's shape, since the agent
+        host decides per turn (D52). Without a copy here, `working_dir` is None and
+        the read-only fallback is not available for it."""
+        try:
+            return self.project(name)
+        except ConfigError:
+            if self.agent_mode != MODE_FULL or not AGENT_PROJECT_NAME.fullmatch(name):
+                raise
+            return ProjectConfig(name=name, working_dir=None)
 
 
 def _parse_projects(raw: str) -> dict[str, ProjectConfig]:

@@ -33,8 +33,9 @@ FORCED_COMMAND="$LIB_DIR/turn"
 ENTRY_POINTS=(turn gate confirm action-log)
 # Data files that get a fixed path directly under LIB_DIR as well.
 DATA_FILES=(gate_rules.toml prompt.md)
-# The one module of bridge/ the wrapper imports (the marker line of the spoken summary).
-BRIDGE_FILES=(__init__.py summary.py)
+# The modules of bridge/ the wrapper imports: the marker line of the spoken summary, and
+# what both sides share of the wire contract.
+BRIDGE_FILES=(__init__.py contract.py summary.py)
 # Files in agent_host/ that are not part of what runs on the host.
 NOT_INSTALLED=(install.sh config.example.toml turn-settings.json)
 

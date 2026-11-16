@@ -54,13 +54,23 @@ BUSY_SEND_TIMEOUT_S = 1.0
 HEAD_DEADLINE_S = 10.0
 HEAD_DEADLINE_ENV = "JARVIS_HEADER_DEADLINE_S"
 TIMEOUT_MESSAGE = b"the request did not arrive in time"
+# Held per project while its turn runs. In `full` mode any name of the agent host's
+# shape can be asked for (D52), so a lock lives only while it is held: taken and
+# dropped under one guard, so two turns can never hold two locks for one name.
 _project_locks: dict[str, threading.Lock] = {}
 _project_locks_guard = threading.Lock()
 
 
-def _project_lock(name: str) -> threading.Lock:
+def _try_project_lock(name: str) -> bool:
     with _project_locks_guard:
-        return _project_locks.setdefault(name, threading.Lock())
+        lock = _project_locks.setdefault(name, threading.Lock())
+        return lock.acquire(blocking=False)
+
+
+def _release_project_lock(name: str) -> None:
+    with _project_locks_guard:
+        lock = _project_locks.pop(name)
+        lock.release()
 
 
 def _parse_content_length(value: str | None) -> int | None:
@@ -218,12 +228,18 @@ class Handler(BaseHTTPRequestHandler):
         keep_alive = length == 0 or (length is not None and length <= MAX_AUDIO_BYTES
                                      and self._drain(length))
         try:
-            names = self.config.project_names()
+            if self.full is not None:
+                # `full` mode: the agent host's list, or the bridge's own when it
+                # cannot give one, and which it is (jarvis-general-conversation D52).
+                names, source = self.full.project_names(self.config.project_names)
+                listing = {"projects": names, "source": source}
+            else:
+                listing = {"projects": self.config.project_names()}
         except Exception:  # noqa: BLE001 - the list is best effort, never a traceback to the phone
             logger.exception("listing the projects failed")
             self._respond_error(500, "internal error", close=not keep_alive)
             return
-        body = json.dumps({"projects": names}).encode("utf-8")
+        body = json.dumps(listing).encode("utf-8")
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -258,7 +274,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            project = self.config.project(project_name)
+            # In `full` mode the agent host decides which projects exist (D52).
+            project = self.config.project_for_turn(project_name)
         except ConfigError as exc:
             self._reject(400, str(exc))
             return
@@ -275,8 +292,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         audio_bytes = self.rfile.read(length)
 
-        lock = _project_lock(project_name)
-        if not lock.acquire(blocking=False):
+        if not _try_project_lock(project_name):
             # Two turns on one session would race on its id (session continuity).
             self._respond_error(409, "this project is busy with another turn")
             return
@@ -293,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
             logger.exception("unexpected error handling turn for %s", project_name)
             self._respond_error(500, "internal error")
         finally:
-            lock.release()
+            _release_project_lock(project_name)
 
     def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes) -> None:
         project_name = project.name
@@ -312,13 +328,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.full is not None:
             # The pending confirmation, the fallback and the spoken errors of
             # `full` mode. A yes is only ever read from this transcript.
-            outcome = self.full.handle(project, transcript,
-                                       lambda: stt.speech_seconds(audio))
+            outcome = self.full.handle(
+                project, transcript, lambda: stt.speech_seconds(audio),
+                typed_list=self.headers.get("X-Jarvis-Projects", "") == "typed")
             logger.info("project=%s summary=%r", project_name, outcome.spoken)
             try:
                 audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
                 self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
-                                    needs_confirmation=outcome.needs_confirmation)
+                                    needs_confirmation=outcome.needs_confirmation,
+                                    projects_changed=outcome.projects_changed)
             except BaseException:
                 # A read-back that was not spoken, or did not reach the phone, was
                 # not heard: nothing stays pending, here or on the agent host.
@@ -335,7 +353,8 @@ class Handler(BaseHTTPRequestHandler):
         self._respond_audio(audio_reply, summary, turn.ref)
 
     def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
-                       needs_confirmation: bool = False) -> None:
+                       needs_confirmation: bool = False,
+                       projects_changed: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(audio_reply)))
@@ -344,6 +363,10 @@ class Handler(BaseHTTPRequestHandler):
         if needs_confirmation:
             # D36: this reply is a read-back; the next utterance is the answer.
             self.send_header("X-Jarvis-Needs-Confirmation", "1")
+        if projects_changed:
+            # jarvis-general-conversation D56: a new project is ready; the phone
+            # fetches GET /projects again.
+            self.send_header("X-Jarvis-Projects-Changed", "1")
         self.end_headers()
         self.wfile.write(audio_reply)
 

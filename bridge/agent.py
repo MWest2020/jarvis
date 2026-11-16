@@ -40,6 +40,17 @@ class ConfirmAnswer:
 
 
 @dataclass(frozen=True)
+class ProjectNews:
+    """What became of a repository a confirmed `gh repo create` made on the agent
+    host (jarvis-general-conversation D53). `reason` is None when `ready`, else
+    one of bridge.contract.PROJECT_REASONS."""
+
+    name: str
+    ready: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class AgentTurn:
     """One finished turn.
 
@@ -54,6 +65,8 @@ class AgentTurn:
     confirmation: PendingConfirmation | None = None
     # With a confirmation: how long the agent host keeps the call, when it said so.
     expires_s: float | None = None
+    # A repository this turn created, and whether it is a project now (D53).
+    project: ProjectNews | None = None
 
 
 class AgentUnavailable(Exception):
@@ -99,12 +112,14 @@ class AgentTurnFailed(Exception):
     PROTOCOL = "protocol"
 
     def __init__(self, code: str, detail: str = "", turn_id: str = "",
-                 notice: str = "") -> None:
+                 notice: str = "", project: ProjectNews | None = None) -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
         self.code = code
         self.detail = detail
         self.turn_id = turn_id
         self.notice = notice   # the agent host's notice code that came with the error
+        # A repository the failed turn still created (D53): told even after an error.
+        self.project = project
 
 
 class AgentAdapter(Protocol):

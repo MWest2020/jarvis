@@ -1,6 +1,7 @@
 package io.github.mwest2020.jarvis
 
 import android.content.Context
+import io.github.mwest2020.jarvis.core.ProjectMenu
 import io.github.mwest2020.jarvis.core.ProjectSetting
 
 /**
@@ -37,4 +38,12 @@ class SettingsStore(context: Context) {
     var defaultProject: String
         get() = prefs.getString("default_project", "").orEmpty()
         set(value) = prefs.edit().putString("default_project", value.trim()).apply()
+
+    /**
+     * The "Home project" setting: the project the General entry talks to. [ProjectMenu.DEFAULT_HOME]
+     * until it is saved; saved blank, there is no General entry.
+     */
+    var homeProject: String
+        get() = if (prefs.contains("home_project")) prefs.getString("home_project", "").orEmpty() else ProjectMenu.DEFAULT_HOME
+        set(value) = prefs.edit().putString("home_project", value.trim()).apply()
 }

@@ -102,7 +102,6 @@ def test_a_merge_with_a_misshapen_target_or_an_unknown_option_is_not_nameable(en
     ("gh repo create them/new --internal --description 'x y'", "Create the internal repository new of them."),
     # The call does not say: read back as public.
     ("gh repo create me/new", "Create the public repository new."),
-    ("gh repo create me/new --clone", "Create the public repository new."),
     (f"gh repo delete {M} --yes", "Delete the repository demo."),
     (f"gh repo archive {F}", "Archive the repository demo of them."),
     (f"gh issue delete 5 --repo {M} --yes", "Delete issue 5 on demo."),
@@ -148,6 +147,9 @@ def test_other_gh_actions_have_their_sentence(env, command, sentence):
     f"gh pr review --repo {F} --approve",
     "gh gist create notes.txt",
     "gh repo fork them/demo",
+    # jarvis-general-conversation D53: it would clone into the turn's checkout.
+    "gh repo create me/new --clone",
+    "gh repo create me/new -c --private",
     f"gh workflow run build.yml --repo {M}",
     f"gh release create v1 --repo {M}",
     "gh secret set TOKEN --repo " + M,

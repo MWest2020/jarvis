@@ -86,6 +86,14 @@ class BridgeClientTest {
         assertArrayEquals(wavReply, outcome.wav)
         assertEquals("It uses faster-whisper and Kokoro.", outcome.summary)
         assertEquals("abc-123", outcome.sessionId)
+        assertEquals(false, outcome.projectsChanged)
+    }
+
+    @Test
+    fun aReplyCanSayThatTheProjectsChanged() {
+        val base = serve { respond(it, 200, wavReply, mapOf("X-Jarvis-Projects-Changed" to "1")) }
+        val outcome = loopbackClient.turn(request(base), ByteArray(100)) as TurnOutcome.Reply
+        assertEquals(true, outcome.projectsChanged)
     }
 
     @Test

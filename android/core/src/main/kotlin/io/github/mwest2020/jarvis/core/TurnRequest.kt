@@ -76,11 +76,17 @@ object BridgeUrl {
 }
 
 object TurnRequests {
+    /** The header that tells the bridge the app shows typed project names (jarvis-general-conversation D53). */
+    const val TYPED_LIST_HEADER = "X-Jarvis-Projects"
+    const val TYPED_LIST_VALUE = "typed"
+
     /**
      * Builds the request for one turn, or says what is missing. The token must be visible
      * ASCII without spaces, so it can never break out of the `Authorization` header.
+     * [typedList]: the projects come from the settings, not from the bridge's list, so a new
+     * project has to be added there by hand; the bridge then says so.
      */
-    fun build(baseUrl: String, token: String?, project: String?): Built<TurnRequest> {
+    fun build(baseUrl: String, token: String?, project: String?, typedList: Boolean = false): Built<TurnRequest> {
         val base = when (val checked = BridgeUrl.validate(baseUrl)) {
             is Built.Refused -> return checked
             is Built.Ok -> checked.value
@@ -97,11 +103,12 @@ object TurnRequests {
         if (project.isNullOrBlank()) {
             return refuse(FailureKind.NOT_CONFIGURED, "Pick a project first.")
         }
-        val headers = mapOf(
-            "Authorization" to "Bearer $token",
-            "Content-Type" to "audio/wav",
-            "Accept" to "audio/wav",
-        )
+        val headers = buildMap {
+            put("Authorization", "Bearer $token")
+            put("Content-Type", "audio/wav")
+            put("Accept", "audio/wav")
+            if (typedList) put(TYPED_LIST_HEADER, TYPED_LIST_VALUE)
+        }
         return Built.Ok(TurnRequest(BridgeUrl.turnUrl(base, project.trim()), headers))
     }
 

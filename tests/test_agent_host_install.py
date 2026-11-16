@@ -31,7 +31,7 @@ def source(tmp_path):
     shutil.copytree(REPO_ROOT / "agent_host", src / "agent_host",
                     ignore=shutil.ignore_patterns("__pycache__"))
     (src / "bridge").mkdir()
-    for name in ("__init__.py", "summary.py"):
+    for name in ("__init__.py", "contract.py", "summary.py"):
         shutil.copy(REPO_ROOT / "bridge" / name, src / "bridge" / name)
     for name in (*ENTRY_POINTS, "gate_rules.toml"):
         assert (src / "agent_host" / name).is_file(), f"agent_host/{name} is not in the repository"
@@ -271,7 +271,7 @@ def test_only_committed_files_are_installed(source, destdir):
     (source / "bridge" / "planted.py").write_text("x = 1\n")
     assert install(source, destdir).returncode == 0
     assert not (destdir / LIB / "src/agent_host/sitecustomize.py").exists()
-    assert sorted(p.name for p in (destdir / LIB / "src/bridge").iterdir()) == ["__init__.py", "summary.py"]
+    assert sorted(p.name for p in (destdir / LIB / "src/bridge").iterdir()) == ["__init__.py", "contract.py", "summary.py"]
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, capture_output=True, text=True)
     assert (destdir / LIB / "VERSION").read_text() == head.stdout
 

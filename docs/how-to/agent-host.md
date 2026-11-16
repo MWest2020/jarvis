@@ -192,10 +192,79 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
+| `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name> <destination> -- --depth 1`. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
+| `clone_timeout_s` | no (default `45`, at most `90`) | How long one clone attempt may take before it is stopped and removed. |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
-directly under the root, and it must be a git repository with a work tree. A project must
-also be on the bridge's own list to be reachable by voice.
+directly under the root, and it must be a git repository with a work tree. **This list is
+what can be asked by voice** (change `jarvis-general-conversation`, D52): the bridge asks
+the agent host for it (`GET /projects` on the phone) and no longer refuses a project
+because its pod has no copy. So every checkout under `projects_root` that is not in
+`project_exclusions` is reachable by voice, a fork or an organisation's repository cloned
+there by hand included. Keep the exclusions up to date; review them before an update that
+brings this change.
+
+### The list request
+
+Next to a turn, the wrapper answers one other request, `{"v":1,"list":true}` (exactly
+those two fields), with `{"v":1,"status":"ok","error":null,"projects":[...]}`: the names
+sorted, at most 500, each one a turn would accept (every candidate goes through the
+turn's own resolver). An entry that cannot even be looked at (permissions) is left out
+and named on stderr; a `projects_root` that cannot be listed at all is answered
+`no_checkout`, never an empty list, so the bridge lists its own copies and logs why. A list
+touches no pending call, starts no agent and writes no record. With the kill switch set
+it is answered `disabled`, like a turn. An older wrapper answers it `bad_request`; the
+bridge then lists its own copies. When clones are pending (below), a list starts their
+retry in the background after it has answered, and only when no turn holds the lock.
+
+### A new repository becomes a project
+
+After a confirming turn in which a confirmed `gh repo create <owner>/<name>` ran (the
+action log says `ran`), the wrapper (not the agent) clones the repository to
+`<projects_root>/<name>`, so it is a project at the next turn. Only a plain
+`gh repo create`: not one behind `sudo` or an ssh host, not a fork, not a connector tool,
+not `gh api`, and not one that ran without a read-back (confirmation off, or `create` in
+`confirm_skip`). A `gh repo create ... --clone` (or `-c`) is refused with a reason that
+tells the agent to ask again without it: it would clone into the turn's checkout.
+
+What became of it goes back to the bridge in the reply's optional `project` field,
+`{"name", "ready", "reason"}`, on every reply of that turn: with the agent's summary,
+with a new read-back, after a notice, and with an error. The bridge says it after the
+summary (before a read-back):
+
+| Outcome | `reason` | Jarvis says |
+|---|---|---|
+| Cloned, or already a checkout whose `origin` is exactly that repository | (ready) | "It's ready. You can switch to it." (or, when the app shows typed names, "It's ready. Add it to your project list in the app.") |
+| The clone failed or took longer than `clone_timeout_s` | `retrying` | "I'm still setting it up at the desk." |
+| A different folder with that name is already there | `name_taken` | "A different folder with that name exists. That needs the desk." |
+| A `[projects]` table, another owner than `own_owners`, an excluded or invalid name, or three attempts used up | `needs_desk` | "The repository was created, but I could not set it up as a project. That needs the desk." |
+
+The clone runs `clone_command <owner>/<name> <destination> -- --depth 1` (a new
+repository has one commit or none, and a shallow clone has a work tree like any other)
+with the turn's environment minus the grant variables, in the root, with stdin closed,
+into a fresh hidden directory `.jarvis-clone-<random>/` under the root. Its process group
+is killed at `clone_timeout_s` and on every other way out. It is moved into place only
+when it exited 0 and is a work tree, with a rename that never replaces anything
+(`renameat2` with `RENAME_NOREPLACE`; where the C library or the file system lacks it, a
+check right before a plain rename, which leaves a short window in which only an empty
+directory could be replaced). Whatever is left of an attempt is removed.
+
+A failed attempt leaves a marker in `state_dir/clones/<name>.json`. Every later wrapper
+request retries one pending clone, the oldest: a turn first, under its lock, before the
+agent runs; a list after answering, in the background. So whoever holds the lock holds it
+for at most one attempt. Three attempts per repository in all; the last failure clears the
+marker and is recorded as `needs_desk`. Each retry writes a record with outcome `clone`.
+Staging directories older than an hour are removed at the start of every retry.
+(`record.prune` can do the same when it is given the root, but nothing calls `prune` yet:
+the retention timer is task 4.1 of `jarvis-full-agent`.) The state directory is writable by
+the agent, so a marker is checked in full before it is used: the worst a planted one can
+do is have one of your own repositories cloned to an empty name under the root.
+
+The turn record says what happened in the confirmed action's `project` field (`ready`, or
+`not ready (<reason>): <why>`). A repository whose name the forge accepts but a project
+cannot have (`.github`, over 64 characters) is not cloned; it is in the record only, the
+reply has no `project` field, and Jarvis says "That one needs the desk." with the summary. The agent cannot clone into the home directory itself:
+that write is in the class `self`.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A
 turn starts from nothing but this file plus the turn variables: `JARVIS_TURN=1`,
@@ -310,6 +379,12 @@ every connection of the bridge's key by itself (`journalctl -u ssh`).
 
 **Jarvis itself.** Pull the repository, review, and run `install.sh` again. Compare
 `/etc/jarvis-agent/config.toml` with `config.toml.example` for new keys.
+
+**Update the bridge before the agent host** when both change the wire contract. For
+`jarvis-general-conversation` (D55): a new bridge with an old agent host works (the list
+falls back to the pod's copies, nothing is cloned); an old bridge with a new agent host
+cannot read the reply of a confirming turn that created a repository. Before installing
+that change here, review `project_exclusions` (see [Configuration](#configuration)).
 
 **Claude Code.** The gate depends on how Claude Code treats hooks and settings, and that
 can change with a version. On every version bump on the agent host, **before Jarvis uses

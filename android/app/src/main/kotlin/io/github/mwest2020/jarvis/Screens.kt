@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.ProjectMenu
 import io.github.mwest2020.jarvis.core.ProjectSetting
 
 private val Background = Color(0xFF0B0F14)
@@ -111,6 +112,7 @@ fun TalkScreen(
             }
         }
 
+        // The hints count real projects; General is one of them under another label.
         if (state.projects.isEmpty() && state.projectsFromBridge) {
             Text(
                 if (state.refreshing) "Asking the bridge for its projects…" else "No projects yet. Tap Refresh.",
@@ -119,22 +121,24 @@ fun TalkScreen(
             )
         }
 
-        if (state.projects.isNotEmpty() && state.project.isEmpty()) {
+        if (state.entries.isNotEmpty() && state.project.isEmpty()) {
             // Nothing is selected by itself: no remembered pick, no default project that is in the list.
             Text("Pick a project.", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
 
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.projects) { name ->
+            // General first (the home project under its own label), then the projects.
+            items(state.entries) { entry ->
                 val padding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)
-                if (name == state.project) {
-                    Button(onClick = {}, contentPadding = padding) { Text(name, fontSize = 18.sp) }
+                val weight = if (entry.general) FontWeight.Bold else FontWeight.Normal
+                if (entry.project == state.project) {
+                    Button(onClick = {}, contentPadding = padding) { Text(entry.label, fontSize = 18.sp, fontWeight = weight) }
                 } else {
                     OutlinedButton(
-                        onClick = { onSelectProject(name) },
+                        onClick = { onSelectProject(entry.project) },
                         enabled = state.phase == Phase.IDLE,
                         contentPadding = padding,
-                    ) { Text(name, fontSize = 18.sp) }
+                    ) { Text(entry.label, fontSize = 18.sp, fontWeight = weight) }
                 }
             }
         }
@@ -209,7 +213,7 @@ private fun TalkButton(phase: Phase, onPress: () -> Unit, onRelease: () -> Unit,
 @Composable
 fun SettingsScreen(
     state: UiState,
-    onSave: (url: String, token: String, projects: String, defaultProject: String, done: (String?) -> Unit) -> Unit,
+    onSave: (url: String, token: String, projects: String, defaultProject: String, homeProject: String, done: (String?) -> Unit) -> Unit,
     onForgetToken: () -> Unit,
     onClose: (() -> Unit)?,
 ) {
@@ -220,6 +224,7 @@ fun SettingsScreen(
         mutableStateOf(if (state.projectsFromBridge) ProjectSetting.FROM_BRIDGE else state.projects.joinToString(", "))
     }
     var defaultProject by rememberSaveable { mutableStateOf(state.defaultProject) }
+    var homeProject by rememberSaveable { mutableStateOf(state.homeProject) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
 
     Column(
@@ -282,7 +287,22 @@ fun SettingsScreen(
         )
         Text(
             "The app remembers the project you picked last. Until you have picked one it " +
-                "selects this project, or none: it never takes the first of a longer list.",
+                "selects this project, or else General: it never takes the first of a longer list.",
+            color = Color(0xFF9FB0C0),
+        )
+
+        OutlinedTextField(
+            value = homeProject,
+            onValueChange = { homeProject = it },
+            label = { Text("Home project (for General)") },
+            placeholder = { Text(ProjectMenu.DEFAULT_HOME) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "General, the first entry on the main screen, is for just talking: it sends your " +
+                "questions to this project, and is shown when the project list has it. Leave it " +
+                "empty to hide General.",
             color = Color(0xFF9FB0C0),
         )
 
@@ -291,7 +311,7 @@ fun SettingsScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = {
-                    onSave(url, token, projects, defaultProject) { refused ->
+                    onSave(url, token, projects, defaultProject, homeProject) { refused ->
                         error = refused
                         if (refused == null) token = ""
                     }

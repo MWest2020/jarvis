@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-15
+last_reviewed: 2026-11-16
 ---
 # The Android app: install, set up, use
 
@@ -67,21 +67,50 @@ settings again. A release key fixes this; see "The signing key" below.
    exactly those and never asks. A bridge older than 2026-11-15 has no list route; type the
    names for it.
 5. **Default project (optional):** the name of the project the app selects while you have
-   not picked one yourself. Leave it empty and the app selects nothing until you pick.
-6. Save. On the main screen pick a project (see "Which project is selected" below).
-7. Press the button. The first time, Android asks for the microphone; allow it and press
+   not picked one yourself. Leave it empty and the app selects General (below), or nothing
+   when General is off.
+6. **Home project (for General):** the project the **General** entry talks to, `jarvis-home`
+   unless you change it. General is shown when the project list has it. Leave it empty to
+   hide General.
+7. Save. With `jarvis-home` in the list the main screen opens with General selected; pick a
+   project to talk about that one instead (see "Which project is selected" below).
+8. Press the button. The first time, Android asks for the microphone; allow it and press
    again.
+
+### General: just talk
+
+The first entry on the main screen is **General** (change
+[`jarvis-general-conversation`](../../openspec/changes/jarvis-general-conversation/design.md),
+D50). It is not a mode: it sends your turns to the home project, `jarvis-home` by default,
+whose own `CLAUDE.md` makes Jarvis a sparring partner there. It is shown only when the
+project list has the home project (from the bridge, or typed); an app that was set up
+before, with a list without it, looks exactly as before. Think out loud, discuss an
+idea; when it is worth keeping Jarvis writes it down in that repository. Say you want to
+build it and Jarvis proposes a repository: you hear the read-back ("Create the private
+repository birdsong. Say yes to go ahead."), say yes, and with the bridge in `full` mode
+the agent host makes it a project at once: Jarvis ends with "It's ready. You can switch to
+it.", the app fetches its list again by itself once the reply has played, and the new
+project is there to tap. What you had selected stays selected. When setting it up takes
+longer, Jarvis says "I'm still setting it up at the desk." and the agent host tries again
+with your next questions; tap Refresh later. With project names typed in the settings, the
+app tells the bridge so with each question (header `X-Jarvis-Projects: typed`) and Jarvis
+says "It's ready. Add it to your project list in the app." instead.
+
+The home project is shown once, as General, and not again under its own name.
 
 ### Which project is selected
 
-A list of exactly one project (typed or from the bridge) is selected: there is nothing to
-choose. With more than one, the app never takes the first of the list by itself. In this order:
+A list of exactly one project is selected: there is nothing to choose (General, when it is
+there, is that same project). With more than one, the app never takes the first of the list
+by itself. In this order:
 
-1. **The project you tapped last.** It is remembered across restarts and refreshes. If it is
-   missing from the bridge's list for a while, it is selected again once it is back.
+1. **The entry you tapped last** (General included). It is remembered across restarts and
+   refreshes. If it is missing from the bridge's list for a while, it is selected again once
+   it is back.
 2. Otherwise the **Default project** from the settings, when the list has it (upper and lower
    case do not matter).
-3. Otherwise **none**: the main screen says "Pick a project." and the button answers "Pick a
+3. Otherwise **General**, when the list has the home project.
+4. Otherwise **none**: the main screen says "Pick a project." and the button answers "Pick a
    project first." until you tap one.
 
 The list from the bridge is shown alphabetically, upper and lower case together.
@@ -98,6 +127,11 @@ project once.
 - A beep confirms the recording has gone out; a soft tick every three seconds means the
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
+- When a reply says a new project is ready (the bridge's header
+  `X-Jarvis-Projects-Changed: 1`), the app fetches the project list again by itself once the
+  reply has played or you stopped it, if the list comes from the bridge (if a refresh is
+  already running, one more follows). The selection stays where it was, and a message on
+  screen from after the reply stays too.
 - A recording stops by itself after two minutes. Leaving the app while recording discards
   the recording.
 - The screen stays on while the app is in front.
