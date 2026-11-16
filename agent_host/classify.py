@@ -60,7 +60,9 @@ from agent_host.rules import Program, Rules
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 _REMOTE_NAME_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
-_REMOTE_SPEC_RE = re.compile(r"(?:[^@/:]+@)?(\[[0-9A-Fa-f:.]+\]|[^/:\[\]]+):")
+# A bracketed host is taken whole, whatever is in it (`[fe80::1%eth0]:`): a
+# copy to it is outward, and the target shapes decide whether it is named.
+_REMOTE_SPEC_RE = re.compile(r"(?:[^@/:]+@)?(\[[^\]/]*\]|[^/:\[\]]+):")
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 _GLOB_RE = re.compile(r"[*?\[]")
 _NOT_PLAIN_RE = re.compile(r"[\"'\\$*?\[\]{}~]")
@@ -163,7 +165,7 @@ class Protected:
 
     def covers(self, path: str | os.PathLike) -> bool:
         for form in self._forms(path):
-            if _is_claude_settings(form):
+            if _is_claude_settings(form) or _is_git_control(form):
                 return True
             if any(form == p or form.startswith(p + os.sep) for p in self.paths):
                 return True
@@ -194,6 +196,23 @@ def _is_claude_settings(real: str) -> bool:
         os.path.basename(os.path.dirname(real)) == ".claude"
         and fnmatch.fnmatchcase(os.path.basename(real), "settings*.json")
     )
+
+
+_GIT_CONTROL = frozenset({"config", "config.worktree", "hooks", "info"})
+
+
+def _is_git_control(real: str) -> bool:
+    """A repository's configuration, hooks or info (`.git/config`,
+    `.git/hooks/…`, `.git/info/…`, also under `.git/worktrees/<name>/` and
+    `.git/modules/<name>/`): a write there decides where a later push goes
+    and which commands git runs, so it is Jarvis's own rules too."""
+    parts = real.split(os.sep)
+    if ".git" not in parts:
+        return False
+    after = parts[parts.index(".git") + 1:]
+    while len(after) >= 2 and after[0] in ("worktrees", "modules"):
+        after = after[2:]
+    return bool(after) and after[0] in _GIT_CONTROL
 
 
 def hook_files(settings_path: Path, home: Path) -> set[str]:
@@ -822,9 +841,9 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
         return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     if program.startswith("git-") and program != "git-lfs":
         # `git-push`, `/usr/lib/git-core/git-push`: git by another name.
-        return _judge_git([program[len("git-"):], *args], ctx)
+        return _judge_git([program[len("git-"):], *args], ctx, command.env)
     if program == "git":
-        return _judge_git(args, ctx)
+        return _judge_git(args, ctx, command.env)
     if program in ("rm", "find") and remote:
         return UNGATED  # judged by the caller as a remote command, never against local paths
     if program == "rm":
@@ -1494,7 +1513,14 @@ def _is_default_destination(destination: str, defaults: set[str]) -> bool:
     return destination in defaults
 
 
-def _judge_git(args: list[str], ctx: Context) -> Verdict:
+# Set in front of a push, these make it run in, or for, another repository
+# than the directory says (`env -C`, `env --chdir` and `sudo -D` show up as
+# the name `--chdir`).
+_GIT_ELSEWHERE = frozenset({"--chdir", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+                            "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES"})
+
+
+def _judge_git(args: list[str], ctx: Context, env: tuple[str, ...] = ()) -> Verdict:
     call = read_git(args)
     if call.dangerous_config:
         # An alias, a command git will run, or another address, set on the
@@ -1532,9 +1558,9 @@ def _judge_git(args: list[str], ctx: Context) -> Verdict:
         classes.append("force")
     if push.wide:
         return Verdict(gated=True, classes=tuple(classes), rule="push:wide")
-    if call.redirected:
-        # --git-dir, --work-tree, -c: which repository and which
-        # configuration this push uses is not what the directory says.
+    if call.redirected or _GIT_ELSEWHERE.intersection(env):
+        # --git-dir, --work-tree, -c, `env -C`, GIT_DIR=: which repository
+        # and which configuration this push uses is not what the directory says.
         return Verdict(gated=True, classes=tuple(classes), rule="push:redirected")
 
     # `git -C <dir> push`: the push runs there, so that is where git is asked.

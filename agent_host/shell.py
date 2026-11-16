@@ -493,12 +493,15 @@ def analyse(
                 return compound(text, wrappers, everywhere=True)
             if len(rest) != len(argv) - 1:
                 odd_wrapper = True  # sudo with any option: -u, -g, -i, -D ...
+            chdir = ("--chdir",) if any(
+                word in ("-D", "--chdir") or word.startswith("--chdir=")
+                for word in argv[1:len(argv) - len(rest)]) else ()
             rest, ok, more = _strip(rest)
             if not ok:
                 return compound(text, wrappers, everywhere=True)
             if not rest:
                 return single(argv, wrappers, names, True)
-            return unwrap(rest, text, wrappers, depth + 1, names + tuple(more))
+            return unwrap(rest, text, wrappers, depth + 1, names + chdir + tuple(more))
 
         if name in shells:
             inner = _shell_c_string(argv[1:])
