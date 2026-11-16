@@ -122,9 +122,13 @@ The app SHALL be built in CI as an APK for sideloading and SHALL NOT be publishe
 - **WHEN** a change to the app is merged
 - **THEN** CI offers the APK as a download to people with access to the private repository
 
-#### Scenario: No signing key yet
-- **WHEN** the signing secrets do not exist
-- **THEN** CI builds a debug-signed APK and no release-signed one
+#### Scenario: A push to main without the signing secrets
+- **WHEN** a signing secret is missing or empty on a push to main
+- **THEN** the CI run fails and offers no APK
+
+#### Scenario: A pull request build
+- **WHEN** CI builds the app for a pull request
+- **THEN** the APK gets a per-run key and is never signed with the stable key
 
 ### Requirement: Parked use
 The app SHALL be usable on one screen with large controls and type, and its documentation SHALL state that it is for use while parked, not while driving.
