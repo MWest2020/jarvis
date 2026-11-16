@@ -6,6 +6,12 @@ plant - `BASH_ENV`, `ENV` - reaches the child), only the root-owned
 environment file plus the turn variables this module adds. No
 `GIT_AUTHOR_*`, `GIT_COMMITTER_*` or `user.email`: commits carry the host's
 global git identity, exactly as the coding session's do.
+
+The gate (agent_host/gate, 1b1) is a hook: a separate process that Claude
+Code starts, with this environment. What it needs and cannot derive is put
+here by the wrapper: where the configuration is (`JARVIS_AGENT_CONFIG`) and
+which checkout the turn was started in (`JARVIS_TURN_CHECKOUT`). Both are
+set after the environment file is read, so the file cannot override them.
 """
 from __future__ import annotations
 
@@ -33,9 +39,13 @@ def build_child_env(
     identity_env_var: str,
     session_identity: str,
     turn_id: str,
+    config_path: Path,
+    checkout: Path,
 ) -> dict[str, str]:
     env = read_environment_file(environment_file)
     env[identity_env_var] = session_identity
     env["JARVIS_TURN"] = "1"
     env["JARVIS_TURN_ID"] = turn_id
+    env["JARVIS_AGENT_CONFIG"] = str(config_path)
+    env["JARVIS_TURN_CHECKOUT"] = str(checkout)
     return env

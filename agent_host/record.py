@@ -34,6 +34,9 @@ class TurnRecord:
     duration_s: float
     outcome: str
     gated_actions: list[dict] = field(default_factory=list)
+    # Why the checkout's own settings were unsafe when the turn ended (1.7d,
+    # D36), or None. They were safe when it started, or it would not have.
+    settings_changed: str | None = None
 
     def redacted(self) -> "TurnRecord":
         return TurnRecord(
@@ -46,6 +49,7 @@ class TurnRecord:
             duration_s=self.duration_s,
             outcome=self.outcome,
             gated_actions=self.gated_actions,
+            settings_changed=self.settings_changed,
         )
 
 
