@@ -42,8 +42,8 @@ class MainActivity : ComponentActivity() {
                     BackHandler(enabled = showSettings && state.configured) { showSettings = false }
                     SettingsScreen(
                         state = state,
-                        onSave = { url, token, projects, done ->
-                            viewModel.saveSettings(url, token, projects) { error ->
+                        onSave = { url, token, projects, defaultProject, done ->
+                            viewModel.saveSettings(url, token, projects, defaultProject) { error ->
                                 if (error == null) showSettings = false
                                 done(error)
                             }

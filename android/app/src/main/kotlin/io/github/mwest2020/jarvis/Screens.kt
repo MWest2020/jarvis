@@ -119,6 +119,11 @@ fun TalkScreen(
             )
         }
 
+        if (state.projects.isNotEmpty() && state.project.isEmpty()) {
+            // Nothing is selected by itself: no remembered pick, no default project that is in the list.
+            Text("Pick a project.", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        }
+
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(state.projects) { name ->
                 val padding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)
@@ -204,7 +209,7 @@ private fun TalkButton(phase: Phase, onPress: () -> Unit, onRelease: () -> Unit,
 @Composable
 fun SettingsScreen(
     state: UiState,
-    onSave: (url: String, token: String, projects: String, done: (String?) -> Unit) -> Unit,
+    onSave: (url: String, token: String, projects: String, defaultProject: String, done: (String?) -> Unit) -> Unit,
     onForgetToken: () -> Unit,
     onClose: (() -> Unit)?,
 ) {
@@ -214,6 +219,7 @@ fun SettingsScreen(
     var projects by rememberSaveable {
         mutableStateOf(if (state.projectsFromBridge) ProjectSetting.FROM_BRIDGE else state.projects.joinToString(", "))
     }
+    var defaultProject by rememberSaveable { mutableStateOf(state.defaultProject) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
 
     Column(
@@ -267,12 +273,25 @@ fun SettingsScreen(
             color = Color(0xFF9FB0C0),
         )
 
+        OutlinedTextField(
+            value = defaultProject,
+            onValueChange = { defaultProject = it },
+            label = { Text("Default project (optional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "The app remembers the project you picked last. Until you have picked one it " +
+                "selects this project, or none: it never takes the first of a longer list.",
+            color = Color(0xFF9FB0C0),
+        )
+
         error?.let { Text(it, color = ErrorText, fontSize = 18.sp) }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = {
-                    onSave(url, token, projects) { refused ->
+                    onSave(url, token, projects, defaultProject) { refused ->
                         error = refused
                         if (refused == null) token = ""
                     }
