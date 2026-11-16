@@ -13,6 +13,7 @@ import io.github.mwest2020.jarvis.core.ListOutcome
 import io.github.mwest2020.jarvis.core.ListRequest
 import io.github.mwest2020.jarvis.core.Phase
 import io.github.mwest2020.jarvis.core.ProjectList
+import io.github.mwest2020.jarvis.core.ProjectPick
 import io.github.mwest2020.jarvis.core.ProjectSetting
 import io.github.mwest2020.jarvis.core.TalkAction
 import io.github.mwest2020.jarvis.core.TalkGesture
@@ -35,7 +36,10 @@ import java.security.ProviderException
 data class UiState(
     val phase: Phase = Phase.IDLE,
     val projects: List<String> = emptyList(),
+    /** The selected project; empty until one is picked (it is never the first of the list by itself). */
     val project: String = "",
+    /** The "Default project" setting, used when no pick is remembered. */
+    val defaultProject: String = "",
     val summary: String = "",
     val error: String? = null,
     val bridgeUrl: String = "",
@@ -80,13 +84,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val stored = withContext(Dispatchers.IO) {
             val setting = settings.projectSetting
             val projects = when (setting) {
-                ProjectSetting.FromBridge -> settings.fetchedProjects
+                ProjectSetting.FromBridge -> ProjectPick.order(settings.fetchedProjects)
                 is ProjectSetting.Named -> setting.names
             }
+            val default = settings.defaultProject
             UiState(
                 projects = projects,
                 projectsFromBridge = setting == ProjectSetting.FromBridge,
-                project = settings.project.takeIf { it in projects } ?: projects.firstOrNull().orEmpty(),
+                project = ProjectPick.choose(projects, settings.pickedProject, default),
+                defaultProject = default,
                 bridgeUrl = settings.bridgeUrl,
                 hasToken = tokens.hasToken(),
                 loaded = true,
@@ -116,11 +122,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             when (outcome) {
                 is ListOutcome.Failed -> _state.update { it.copy(refreshing = false, error = outcome.failure.message) }
                 is ListOutcome.Projects -> {
-                    val names = outcome.names
-                    val pick = state.value.project.takeIf { it in names } ?: names.firstOrNull().orEmpty()
-                    withContext(Dispatchers.IO) {
+                    val names = ProjectPick.order(outcome.names)
+                    // The remembered pick is only read here, never overwritten: a project that
+                    // is missing from one answer is selected again when it is back.
+                    val pick = withContext(Dispatchers.IO) {
                         settings.fetchedProjects = names
-                        settings.project = pick
+                        ProjectPick.choose(names, settings.pickedProject, settings.defaultProject)
                     }
                     _state.update {
                         it.copy(
@@ -253,7 +260,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectProject(name: String) {
         if (state.value.phase != Phase.IDLE) return
-        settings.project = name
+        settings.pickedProject = name
         _state.update { it.copy(project = name, summary = "", error = null) }
     }
 
@@ -262,7 +269,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * [newToken] keeps the stored one. The Keystore and the files are used off the main
      * thread; [onResult] runs on it.
      */
-    fun saveSettings(bridgeUrl: String, newToken: String, projectsText: String, onResult: (String?) -> Unit) {
+    fun saveSettings(
+        bridgeUrl: String,
+        newToken: String,
+        projectsText: String,
+        defaultProject: String,
+        onResult: (String?) -> Unit,
+    ) {
         val url = when (val checked = BridgeUrl.validate(bridgeUrl)) {
             is Built.Refused -> return onResult(checked.failure.message)
             is Built.Ok -> checked.value.toString()
@@ -278,9 +291,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (token.isNotEmpty()) tokens.save(token)
                     settings.bridgeUrl = url
                     settings.projectSetting = setting
-                    if (setting is ProjectSetting.Named && settings.project !in setting.names) {
-                        settings.project = setting.names.first()
-                    }
+                    settings.defaultProject = defaultProject
                     null
                 } catch (_: GeneralSecurityException) {
                     KEYSTORE_REFUSED

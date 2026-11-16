@@ -66,9 +66,30 @@ settings again. A release key fixes this; see "The signing key" below.
    the next start. Or type the names the bridge knows, separated by commas: then the app shows
    exactly those and never asks. A bridge older than 2026-11-15 has no list route; type the
    names for it.
-5. Save. On the main screen pick a project.
-6. Press the button. The first time, Android asks for the microphone; allow it and press
+5. **Default project (optional):** the name of the project the app selects while you have
+   not picked one yourself. Leave it empty and the app selects nothing until you pick.
+6. Save. On the main screen pick a project (see "Which project is selected" below).
+7. Press the button. The first time, Android asks for the microphone; allow it and press
    again.
+
+### Which project is selected
+
+The app never takes the first project of the list by itself. In this order:
+
+1. **The project you tapped last.** It is remembered across restarts and refreshes. If it is
+   missing from the bridge's list for a while, it is selected again once it is back.
+2. Otherwise the **Default project** from the settings, when the list has it (upper and lower
+   case do not matter).
+3. Otherwise **none**: the main screen says "Pick a project." and the button answers "Pick a
+   project first." until you tap one.
+
+The list from the bridge is shown alphabetically, upper and lower case together.
+`GET /projects` gives names only, so there is no "most recently pushed first" yet; that needs
+a date in the bridge's answer.
+
+A version of the app from before 2026-11-16 selected the first project by itself and stored
+that as if it were your pick. That stored value is ignored: after the update, pick your
+project once.
 
 ## Using it
 
