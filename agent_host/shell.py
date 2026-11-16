@@ -156,7 +156,7 @@ def _has_root_word(words, root_programs: frozenset[str]) -> bool:
 
 def _candidates(
     command: str, wrappers: tuple[tuple[str, str], ...], *,
-    known_programs: frozenset[str], follow_all: frozenset[str],
+    known_programs: frozenset[str], follow_all: frozenset[str], everywhere: bool = False,
 ) -> tuple[Command, ...]:
     """Every place in a compound string where a command could start.
 
@@ -165,7 +165,9 @@ def _candidates(
     shell, `ssh`, `sudo`, `xargs`, `find` ...), or the prefixes could not be
     read, every later word that is a program some rule knows starts a
     candidate too: `bash -c 'gh pr merge 1; gh repo delete x'` is cut at the
-    semicolon, and the merge is found behind `bash -c`.
+    semicolon, and the merge is found behind `bash -c`. With `everywhere`
+    that holds for every piece: the caller could not tell where the program
+    of the call is at all (`>out gh repo delete x`).
     """
     out: list[Command] = []
     for words in lenient_segments(command):
@@ -173,7 +175,7 @@ def _candidates(
         if not stripped:
             continue
         out.append(Command(tuple(stripped), wrappers))
-        if not ok or program_name(stripped[0]) in follow_all:
+        if everywhere or not ok or program_name(stripped[0]) in follow_all:
             for index in range(1, len(stripped)):
                 if program_name(stripped[index]) in known_programs:
                     out.append(Command(tuple(stripped[index:]), wrappers))
@@ -191,14 +193,14 @@ def analyse(
     follow_all = shells | indirect | root_programs | {"ssh", "env"}
     root_word = False
 
-    def compound(text: str, wrappers) -> Analysis:
+    def compound(text: str, wrappers, everywhere: bool = False) -> Analysis:
         # Quotes mean nothing here, so a root program counts wherever the
         # word stands in the whole call.
         all_words = [word for segment in lenient_segments(command) for word in segment]
         return Analysis(
             compound=True,
             commands=_candidates(text, wrappers, known_programs=known_programs,
-                                 follow_all=follow_all),
+                                 follow_all=follow_all, everywhere=everywhere),
             root_word=root_word or _has_root_word(all_words, root_programs),
         )
 
@@ -213,11 +215,11 @@ def analyse(
         root_word = root_word or _has_root_word(words, root_programs)
         argv, ok = strip_prefixes(words)
         if not ok:
-            return compound(text, wrappers)
+            return compound(text, wrappers, everywhere=True)
         if not argv:
             return Analysis(compound=False, commands=(), root_word=root_word)
         if _NOT_A_PROGRAM_RE.match(argv[0]):
-            return compound(text, wrappers)
+            return compound(text, wrappers, everywhere=True)
         return unwrap(argv, text, wrappers, depth)
 
     def unwrap(argv: list[str], text: str, wrappers, depth: int) -> Analysis:
