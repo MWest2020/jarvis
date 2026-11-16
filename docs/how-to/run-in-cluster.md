@@ -306,9 +306,12 @@ network with the agent host.
    securityContext: { runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001 }
    ```
 
-**Which projects.** Unchanged: the pod's synced copies decide what can be asked and what
-`GET /projects` lists. A project that exists only on the agent host cannot be reached by
-voice; one that is only in the pod is answered read-only.
+**Which projects.** The agent host's list decides (change `jarvis-general-conversation`,
+D52): `GET /projects` asks the agent host, and a turn for a project that is only there runs
+there. The pod's synced copies, still cloned at pod start, serve the read-only fallback
+only: a project that is only in the pod is answered read-only, and when the agent host
+cannot be reached the phone gets the pod's list. A repository created by voice reaches the
+pod at its next restart; nothing in the pod's configuration changes for this.
 
 **What a reader of that Secret can now reach.** Before this, the cluster had no road to
 the agent host. With it, anyone who can read the Secret and send from the bridge's node,

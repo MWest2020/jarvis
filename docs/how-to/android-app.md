@@ -89,9 +89,9 @@ the agent host makes it a project at once: Jarvis ends with "It's ready. You can
 it.", the app fetches its list again by itself, and the new project is there to tap.
 
 The home project is shown once, as General, and not again under its own name. General is
-shown even when the bridge does not list the home project; a question then gets "The bridge
-did not accept the request: unknown project", which tells you to fix the setting or the
-bridge.
+shown even when the bridge does not list the home project; a question then gets an error
+that says the bridge (or, in `full` mode, the agent host) does not have that project, which
+tells you to fix the setting or clone the repository.
 
 ### Which project is selected
 
