@@ -46,7 +46,7 @@ from agent_host.rules import Program, Rules
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 _REMOTE_NAME_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
-_REMOTE_SPEC_RE = re.compile(r"(?:[^@/:\s]+@)?(\[[0-9A-Fa-f:.]+\]|[^/:\s\[\]]+):")
+_REMOTE_SPEC_RE = re.compile(r"(?:[^@/:]+@)?(\[[0-9A-Fa-f:.]+\]|[^/:\[\]]+):")
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 _GLOB_RE = re.compile(r"[*?\[]")
 _HTTP_METHOD_RE = re.compile(r"[A-Za-z]+")

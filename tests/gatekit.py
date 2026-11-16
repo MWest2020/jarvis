@@ -83,3 +83,13 @@ def run_git(path: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=path, check=True, capture_output=True, text=True,
     ).stdout.strip()
+
+
+SHA = "3f9c2ab" + "0123456789abcdef0123456789abcdef0"
+
+
+def derive(command: str, ctx: classify.Context, config, tool: str = "Bash", tool_input=None):
+    """naming.derive for one Bash command (or another tool's input)."""
+    from agent_host import naming
+    return naming.derive(tool, tool_input if tool_input is not None else {"command": command},
+                         ctx, config)
