@@ -23,6 +23,19 @@ shell start-up files, every file a configured hook runs, and any checkout's
 `.claude/settings*.json`. A write to one of them, by `Edit`, `Write` or a
 shell command, is always desk-only and never pending.
 
+**What this is, and what it is not (D40).** These are rules over the text
+of a call. They will never read a shell command exactly as bash does, and
+after two reviews and their patch rounds that is the standing description,
+not a list of things still to fix: the gate is a seatbelt against mistakes
+(a misheard sentence, an agent that tries a gated action in a shape the
+rules know), not a wall against an agent that has been turned against its
+own host. Where the rules cannot fully understand a command they refuse
+it, which closes the roads somebody thought of. A script in the
+repository, a `make` target, an alias in a shell start-up file or a
+program the rules have never heard of goes around it; there the
+classifier, the user's hooks and the agent's own judgement stand, as they
+do for the coding session.
+
 Looking at the surroundings is allowed here and only here: *that* a bare
 `git push` is gated depends on where it would land. Naming a target from
 the surroundings is never allowed (1b2).
