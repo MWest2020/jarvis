@@ -34,8 +34,9 @@ def _stopped(ctx, command):
 
 @pytest.mark.parametrize("command", [
     'echo "gh repo delete x" | bash',
-    'echo "gh repo delete x" | cat',
     'echo "gh repo delete x" | sh',
+    'echo "gh repo delete x" | cat | bash',
+    'echo "gh repo delete x" | xargs -I{} sh -c {}',
     "cd / && rm -rf etc",
     "cd ../other && git push",
     "cd ../other; git push origin main",

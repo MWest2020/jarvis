@@ -182,6 +182,58 @@ def separators_only_inside_quotes(command: str) -> bool:
     return state == ""
 
 
+def top_level(command: str) -> tuple[list[str], list[str]] | None:
+    """The pieces of a command between its unquoted operators, and those
+    operators (`&&`, `||`, `|`, `|&`, `;`, `&`), in order. None when a quote
+    is left open. The caller has already made sure nothing in the command
+    substitutes a command."""
+    pieces: list[str] = []
+    operators: list[str] = []
+    current: list[str] = []
+    state = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if state == "'":
+            current.append(char)
+            if char == "'":
+                state = ""
+        elif state == '"':
+            current.append(char)
+            if char == "\\" and index + 1 < len(command):
+                index += 1
+                current.append(command[index])
+            elif char == '"':
+                state = ""
+        elif char == "\\" and index + 1 < len(command):
+            current.append(char)
+            index += 1
+            current.append(command[index])
+        elif char in "'\"":
+            state = char
+            current.append(char)
+        elif char in ";&|":
+            two = command[index:index + 2]
+            operator = two if two in ("&&", "||", "|&") else char
+            pieces.append("".join(current))
+            operators.append(operator)
+            current = []
+            index += len(operator) - 1
+        else:
+            current.append(char)
+        index += 1
+    if state:
+        return None
+    pieces.append("".join(current))
+    return pieces, operators
+
+
+def substitutes(command: str) -> bool:
+    """Something in the text can run a command inside an argument, or is
+    quoting shlex does not read as bash does."""
+    return any(mark in command for mark in _SUBSTITUTIONS)
+
+
 def lenient_segments(command: str) -> list[list[str]]:
     """The words of every piece between separators, quotes ignored."""
     segments = []

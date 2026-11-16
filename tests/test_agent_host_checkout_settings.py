@@ -52,6 +52,9 @@ def test_each_of_the_three_keys_in_either_file_is_unsafe(tmp_path, name, key, va
     {"$schema": "https://example.invalid/schema.json", "cleanupPeriodDays": 30, "outputStyle": "x"},
     {"permissions": {}},
     {"permissions": {"deny": ["Bash(rm:*)"], "ask": ["Bash(git push:*)"]}},
+    # An allow rule cannot skip the gate (a hook runs before permission
+    # rules); it skips the classifier only, like the user's own (D40).
+    {"permissions": {"allow": ["Bash(ls:*)"], "deny": []}},
 ])
 def test_settings_with_only_harmless_keys_are_safe(tmp_path, name, content):
     checkout = _checkout(tmp_path)
@@ -72,7 +75,6 @@ def test_settings_with_only_harmless_keys_are_safe(tmp_path, name, content):
     ({"enabledMcpjsonServers": ["x"]}, "enabledMcpjsonServers"),
     ({"model": "x", "somethingNew": 1}, "somethingNew"),
     ({"Env": {}}, "Env"),
-    ({"permissions": {"allow": ["Bash(ls:*)"]}}, "permissions.allow"),
     ({"permissions": {"deny": [], "defaultMode": "bypassPermissions"}}, "permissions.defaultMode"),
     ({"permissions": {"additionalDirectories": ["/"]}}, "permissions.additionalDirectories"),
     ({"permissions": ["allow"]}, "permissions"),

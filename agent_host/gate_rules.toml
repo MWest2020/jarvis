@@ -238,6 +238,18 @@ harmless = [
     "which", "type", "id", "whoami", "uname", "sleep", "uptime", "free", "ps",
     "nproc", "hostname",
 ]
+# Three everyday forms of a compound command are read in full instead of
+# refused (agent_host/classify.py, `_everyday_form`): `cd <dir> && <one
+# command>`, `<one command> | <filter> | ...`, and a here-document into one
+# command. The filters of the second form: they read stdin and print. `tee`
+# may only write under the checkout or a temp root.
+filters = ["head", "tail", "grep", "rg", "sort", "uniq", "wc", "cut", "tr", "jq", "cat", "tee"]
+# Programs that run what they read from stdin, besides the shells and the
+# interpreters: a here-document into one of them is not "text for a program".
+stdin_runners = [
+    "ssh", "at", "batch", "crontab", "psql", "mysql", "sqlite3", "nc", "ncat",
+    "telnet", "ftp", "kubectl", "docker", "podman", "make", "sed", "awk", "gawk",
+]
 # `git <subcommand>` counts as harmless for these subcommands, with nothing
 # between the two words.
 harmless_git = ["status", "log", "diff", "show", "rev-parse", "ls-files", "describe", "blame"]

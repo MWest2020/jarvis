@@ -153,7 +153,6 @@ RUN_ALONE = [
     # Running as root, anywhere in a compound command.
     "echo hello; sudo systemctl restart web",
     "ls | sudo tee /etc/thing",
-    "echo 'sudo is mentioned' | wc -c",
     # An unbalanced quote: not one command the gate can read.
     f"gh pr merge 1 --repo {M} --body 'unfinished",
 ]
@@ -198,30 +197,21 @@ NOT_UNDERSTOOD = [
     "cd / && rm -rf etc",
     "cd ../other && git push",
     "cd /srv/repo && pytest -q",
-    "pytest -q 2>&1 | tail -5",
     "for f in *.py; do wc -l $f; done",
     "source .venv/bin/activate && pytest -q",
     "find . -name '*.py' | xargs wc -l",
     "git add -A && git commit -m 'fix: one; two'",
     "make test && make lint",
-    "cat <<'EOF' > notes.txt\nhello\nEOF",
-    "ls | tee listing.txt",
     "cat notes.txt | sh",
     "cat notes.txt | python3",
     "ls | awk '{print $1}'",
     "ls; ./deploy.sh",
     "true && mystery-program",
-    "FOO=1 ls | wc -l",
     "echo $(date)",
     "echo 'unfinished",
-    'echo "gh repo delete x" | cat',
-    "/tmp/ls | wc -l",
-    "git -C /elsewhere status | cat",
-    "git commit -am x | cat",
     # A read of a default-gated program counts only in a call without quoting.
     'kubectl -n "x get" delete pod y | cat',
     'aws --profile "p ec2 describe-instances" s3 rm s3://b/k | cat',
-    "kubectl get pods -n $NS | cat",
     # Programs that run other commands, alone or not.
     "eval \"$(ssh-agent)\"",
     "eval true",
