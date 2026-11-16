@@ -127,6 +127,7 @@ project once.
 - A beep confirms the recording has gone out; a soft tick every three seconds means the
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
+- The summary (and an error) can be selected: long-press it to copy a link or a command.
 - When a reply says a new project is ready (the bridge's header
   `X-Jarvis-Projects-Changed: 1`), the app fetches the project list again by itself once the
   reply has played or you stopped it, if the list comes from the bridge (if a refresh is

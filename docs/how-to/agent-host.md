@@ -323,6 +323,19 @@ without reading the request, and the bridge answers that turn read-only and says
 Nothing in sshd changes. Set it back to `true` to switch `full` mode on again. To cut the
 road itself, remove the line from `authorized_keys`.
 
+## Reads that need no yes
+
+For the programs the gate knows (`kubectl`, `helm`, `argocd`, `gh`, `docker`, cloud CLIs
+and more), every subcommand needs a yes unless its verb is a read verb: the shared list
+in `gate_rules.toml` (`get`, `describe`, `logs`, `list`, `status`, `top`, …) plus a
+program's own. `kubectl` has its own: `config get-contexts`, `current-context`,
+`get-clusters`, `get-users`, `api-resources`, `api-versions`, `events`, `auth can-i`
+and `auth whoami`. They also pass through `ssh jumpy kubectl …`. A config write
+(`use-context`, `set-context`, `set-credentials`, …) still needs a yes. `cluster-info`
+is left out, because `cluster-info dump --output-directory` writes files. A read the
+gate does not know sends the turn to the desk: add its verb here, with a test in
+`tests/test_agent_host_gate_rules.py`.
+
 ## Host-local rules
 
 `/etc/jarvis-agent/rules.d/` holds gate rules that belong to this machine and that the
