@@ -366,11 +366,14 @@ def test_the_gate_lets_the_forms_through_in_silence_and_still_refuses_the_rest(t
     config = make_config(tmp_path)
     checkout = tmp_path / "projects" / "demo"
     (checkout / "sub").mkdir()
+    import uuid
+    turn_id = str(uuid.uuid4())
 
     def decide(command):
         return decision.decide(
             {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(checkout)},
-            config, turn_checkout=checkout, home=tmp_path / "home", lib_dir=tmp_path / "lib")
+            config, turn_checkout=checkout, turn_id=turn_id,
+            home=tmp_path / "home", lib_dir=tmp_path / "lib")
 
     for command in ("cd sub && make test", "make test 2>&1 | tail -5", COMMIT,
                     "git commit -F - <<'EOF'\nfix\nEOF"):
@@ -380,3 +383,18 @@ def test_the_gate_lets_the_forms_through_in_silence_and_still_refuses_the_rest(t
     assert decide("make | bash").reason == decision.REASON_RUN_ALONE
     assert decide("cd sub && gh pr merge 1").reason == decision.REASON_RUN_ALONE
     assert decide("gh pr merge 1 | cat").reason == decision.REASON_RUN_ALONE
+
+
+def test_in_the_confirmation_flow_a_form_never_makes_a_gated_command_pending(tmp_path):
+    from tests.gatekit import SHA, Turn
+    turn = Turn(tmp_path)
+    (tmp_path / "projects" / "demo" / "sub").mkdir()
+    merge = f"gh pr merge 21 --repo me/demo --match-head-commit {SHA}"
+    for command in (f"cd sub && {merge}", f"{merge} | cat", f"{merge} --body-file - <<'EOF'\ntext\nEOF"):
+        result = turn.call(command)
+        assert result.reason == decision.REASON_RUN_ALONE, command
+    assert turn.state()["pending"] is None
+    assert turn.call("cd sub && make test").allow
+    assert turn.call(COMMIT).allow
+    # The same merge, alone, can then be asked for.
+    assert turn.call(merge).reason == decision.REASON_PENDING

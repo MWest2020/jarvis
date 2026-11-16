@@ -10,18 +10,18 @@
   whether it can ever be read back;
 - must it be run alone (a gated command inside a compound `Bash` string).
 
-Phase 1b1 stops there. The gate (`agent_host.decision`) denies every gated
-call; nothing is pending and nothing is confirmable until 1b2 adds naming,
-the hash and the grant on top of this same function. The wrapper will call
-this module too, so that what is read back and what is released can never
-be judged by two sets of rules.
+Whether a gated call can be read back, and with which sentence, is
+`agent_host.naming`'s; what the gate then answers is `agent_host.decision`'s.
+The gate and the wrapper both come through this one function, so what is
+read back and what is released can never be judged by two sets of rules.
 
 The class `self` is Jarvis's own rules: the gate, the wrapper, their rules,
 settings and configuration, `authorized_keys`, Claude Code's user and
 managed settings, the user's instructions, agents, skills and plugins, the
 shell start-up files, every file a configured hook runs, and any checkout's
 `.claude/settings*.json`. A write to one of them, by `Edit`, `Write` or a
-shell command, is always desk-only and never pending.
+shell command, is always desk-only and never pending. The one exception is
+the fixed command `sudo <confirm program> on|off [class]`, matched exactly.
 
 **What this is, and what it is not (D40).** These are rules over the text
 of a call. They will never read a shell command exactly as bash does, and
@@ -55,14 +55,14 @@ from typing import Callable
 
 from agent_host import shell
 from agent_host.checkout_settings import git_top_level
-from agent_host.config import AgentHostConfig
+from agent_host.config import CONFIRM_CLASSES, AgentHostConfig
 from agent_host.rules import Program, Rules
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 _REMOTE_NAME_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
 # A bracketed host is taken whole, whatever is in it (`[fe80::1%eth0]:`): a
 # copy to it is outward, and the target shapes decide whether it is named.
-_REMOTE_SPEC_RE = re.compile(r"(?:[^@/:\s]+@)?(\[[^\]/\s]*\]|[^/:\s\[\]]+):")
+_REMOTE_SPEC_RE = re.compile(r"(?:[^@/:]+@)?(\[[^\]/]*\]|[^/:\[\]]+):")
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 _GLOB_RE = re.compile(r"[*?\[]")
 _NOT_PLAIN_RE = re.compile(r"[\"'\\$*?\[\]{}~]")
@@ -88,6 +88,9 @@ _GIT_FLAGS = frozenset({
 _PUSH_VALUE_OPTIONS = ("--repo", "--receive-pack", "--exec", "--push-option")
 
 
+RULE_CONFIRM_SWITCH = "self:confirm-switch"
+
+
 @dataclass(frozen=True)
 class Verdict:
     gated: bool = False
@@ -100,7 +103,9 @@ class Verdict:
 
     @property
     def desk_only(self) -> bool:
-        return "self" in self.classes
+        """The class `self` is never confirmable by voice, with one
+        exception: the fixed confirmation switch (D36)."""
+        return "self" in self.classes and self.rule != RULE_CONFIRM_SWITCH
 
 
 UNGATED = Verdict()
@@ -109,18 +114,25 @@ UNGATED = Verdict()
 GitRunner = Callable[[list[str], Path], "str | None"]
 
 
-def run_git(args: list[str], cwd: Path) -> str | None:
+def run_git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str | None:
     """`git <args>` in `cwd`: its output, or None when it fails for any reason."""
     try:
         proc = subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
         return None
     return proc.stdout.strip()
+
+
+def git_runner(env: dict[str, str]) -> GitRunner:
+    """A `git` that runs in the given environment. The gate inherits the
+    turn's environment from Claude Code; the wrapper's own comes from sshd,
+    so it passes the turn's (agent_host.identity) to see what the gate saw."""
+    return lambda args, cwd: run_git(args, cwd, env)
 
 
 # --- the protected paths of the class `self` ------------------------------------
@@ -256,6 +268,11 @@ def protected_paths(
         config.prompt_path,
         config.user_settings_path,
         config.managed_settings_path,
+        config.confirm_program,
+        # The gate's state, the pending calls, the records and the action
+        # log: what a grant was used for and what was read back. Out of
+        # reach of the agent's tools (D40 says what that is worth).
+        config.state_dir,
     }
     if config.second_prompt_path is not None:
         paths.add(config.second_prompt_path)
@@ -291,6 +308,8 @@ class Context:
     protected: Protected
     temp_roots: tuple[str, ...]
     git: GitRunner = field(default=run_git)
+    # The root-owned program that switches confirmation (D36).
+    confirm_program: str = ""
 
 
 def context_for(
@@ -309,12 +328,23 @@ def context_for(
         protected=protected_paths(config, rules, home=home, lib_dir=lib_dir),
         temp_roots=tuple(os.path.realpath(root) for root in roots if root),
         git=git,
+        confirm_program=str(config.confirm_program),
     )
 
 
 # --- the entry point ------------------------------------------------------------
 
 RULE_NOT_UNDERSTOOD = "compound:not-understood"
+# A push whose destination the configuration or the environment decides
+# (`remote.<name>.push`, `push.default = upstream`, `env -C`, `GIT_DIR`):
+# where it lands is not what the call says, so it has no sentence.
+PUSH_NOT_NAMEABLE = frozenset({"push:mapped", "push:redirected"})
+# Pushes whose destination the gate did not resolve at all. Confirmation
+# off never covers them: "off" means "do not ask me", not "do not look".
+PUSH_UNRESOLVED = PUSH_NOT_NAMEABLE | frozenset({
+    "push:bare-unresolved", "push:head-unresolved", "push:refspec-unreadable",
+    "push:option-before-subcommand", "push:wide", "push:plumbing", "push:subtree",
+})
 
 
 def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
@@ -337,7 +367,8 @@ def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
         name = tool_name.lower()
         for word in rules.mcp_words:
             if word in name:
-                return Verdict(gated=True, rule=f"mcp:{word}")
+                cls = next((c for w, c in rules.mcp_classes if w in name), "tool")
+                return Verdict(gated=True, classes=(cls,), rule=f"mcp:{word}")
         return UNGATED
 
     if tool_name in rules.tools_ungated:
@@ -372,6 +403,10 @@ def is_harmless(words, ctx: Context) -> bool:
 
 def _classify_bash(command: str, ctx: Context) -> Verdict:
     rules = ctx.rules
+    switch = _confirm_switch(command, ctx)
+    if switch is not None:
+        return Verdict(gated=True, classes=("self",), rule=RULE_CONFIRM_SWITCH,
+                       command=shell.Command(switch, (("root", "sudo"),)))
     if _shell_writes_protected(command, ctx):
         return Verdict(gated=True, classes=("self",), rule="self:shell")
 
@@ -466,6 +501,30 @@ def _single_verdict(analysis: shell.Analysis, ctx: Context) -> Verdict:
     # quotes too, is not read back.
     return Verdict(gated=True, classes=tuple(classes), rule=verdict.rule or "root:any-position",
                    command=inner, run_alone=analysis.quoted_separator)
+
+
+def _confirm_switch(command: str, ctx: Context) -> tuple[str, ...] | None:
+    """The one fixed command of the class `self` that can be confirmed by
+    voice: exactly `sudo <confirm program> on|off [class]`, written out, with
+    nothing before, between or after. Every other form that names the
+    program is an ordinary write to Jarvis's own rules: desk-only.
+
+    Returns (program, program, state[, class]) shaped as the argv after
+    `sudo`, or None.
+    """
+    if not ctx.confirm_program or shell.has_separator(command):
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    if len(words) not in (3, 4) or words[0] != "sudo" or words[1] != ctx.confirm_program:
+        return None
+    if words[2] not in ("on", "off"):
+        return None
+    if len(words) == 4 and words[3] not in CONFIRM_CLASSES:
+        return None
+    return ("sudo", *words[1:])
 
 
 # --- three everyday forms of a compound command, read in full ---------------------------
@@ -1091,11 +1150,52 @@ def _judge_http(program: str, args: list[str], ctx: Context, env: tuple[str, ...
 
 # --- scp, rsync, sftp --------------------------------------------------------------------
 
+# Per copy program: the short options that take a value (as the next word
+# or attached), and those of them, or flags, that change how the host is
+# reached or what runs there or here (a proxy, a config file, a program to
+# run instead of ssh, a batch of commands, an option for the remote side).
+TRANSFER_VALUED = {"scp": "cDFiJlPoSX", "sftp": "BbcDFiJloPRSsX", "rsync": "efTBM"}
+TRANSFER_REACH = {"scp": "oFJSD", "sftp": "oFJSDbs", "rsync": "eM"}
+TRANSFER_REACH_LONG = ("--rsh", "--rsync-path", "--remote-option")
+
+
+def transfer_reach(program: str, args: list[str]) -> bool:
+    """An option of `scp`, `sftp` or `rsync` that changes how the host is
+    reached: a host named in the sentence would not be the whole truth."""
+    valued = TRANSFER_VALUED.get(program, "")
+    reach = TRANSFER_REACH.get(program, "")
+    for arg in args:
+        if "proxycommand" in arg.lower() or "proxyjump" in arg.lower():
+            return True
+        if arg.startswith("--"):
+            if arg.split("=", 1)[0] in TRANSFER_REACH_LONG:
+                return True
+            continue
+        if not arg.startswith("-") or arg == "-":
+            continue
+        for letter in arg[1:]:
+            if letter in reach:
+                return True
+            if letter in valued:
+                break  # the rest of the word is its value
+    return False
+
+
 def remote_hosts(program: str, args: list[str], ctx: Context) -> list[str]:
     """The other hosts a copy command names, as written."""
     hosts: list[str] = []
+    valued = TRANSFER_VALUED.get(program, "")
+    skip = False
     for word in args:
+        if skip:
+            skip = False
+            continue
         if word.startswith("-"):
+            if not word.startswith("--") and len(word) > 1:
+                for index, letter in enumerate(word[1:], start=1):
+                    if letter in valued:
+                        skip = index == len(word) - 1  # the value is the next word
+                        break
             continue
         if _URL_RE.match(word):
             hosts.append(word)
@@ -1392,6 +1492,23 @@ def _git_config_writes(args: list[str]) -> bool:
     return len(positional) != 1
 
 
+def default_branch_names(remote: str | None, ctx: Context, where: Path) -> set[str]:
+    """The branch names that count as a default branch for a push to
+    `remote`: the configured ones, and the remote's own HEAD when it can be
+    read. One function, for the gate's verdict and for the wrapper's
+    read-back."""
+    defaults = set(ctx.rules.default_branches)
+    if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
+        head = ctx.git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], where)
+        if head and head.startswith(remote + "/"):
+            defaults.add(head[len(remote) + 1:])
+    return defaults
+
+
+def is_default_destination(destination: str, defaults: set[str]) -> bool:
+    return _is_default_destination(destination, defaults)
+
+
 def _is_default_destination(destination: str, defaults: set[str]) -> bool:
     """A destination that is, or can resolve to, a default branch. git
     completes a short name itself: `main`, `heads/main` and
@@ -1487,11 +1604,7 @@ def _judge_git(args: list[str], ctx: Context, env: tuple[str, ...] = ()) -> Verd
         if mapped or default in ("upstream", "tracking"):
             return Verdict(gated=True, classes=tuple(classes), rule="push:mapped")
 
-    defaults = set(ctx.rules.default_branches)
-    if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
-        head = ctx.git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], where)
-        if head and head.startswith(remote + "/"):
-            defaults.add(head[len(remote) + 1:])
+    defaults = default_branch_names(remote, ctx, where)
 
     for destination in destinations:
         if destination in ("HEAD", "@"):

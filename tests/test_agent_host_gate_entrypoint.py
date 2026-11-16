@@ -1,13 +1,16 @@
 """The real agent_host/gate script, run as a process with a hook input on
 stdin, and the decision behind it (tasks 1.7, 1.7b, 1.7d, 1.8a, 1.14a; D36).
 
-Phase 1b1: every gated call is denied, nothing is pending, nothing is
-confirmable. An ungated call is let through in silence.
+An ungated call is let through in silence; a gated one is denied unless its
+hash is the grant in the environment. The flow around a confirmation is in
+test_agent_host_gate_confirm.py; here it is the process: its input, its
+output, its environment, and failing closed.
 """
 import json
 import os
 import subprocess
 import sys
+import uuid
 
 import pytest
 
@@ -50,7 +53,9 @@ def _payload(tool="Bash", tool_input=None, cwd=None, **extra):
 
 def _run(config_path, checkout, payload, *, env=None, raw=None):
     if env is None:
-        env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": "t1",
+        # A new turn for every call, unless the test says otherwise: the
+        # gate's state carries from call to call within one turn.
+        env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": str(uuid.uuid4()),
                "JARVIS_AGENT_CONFIG": str(config_path), "JARVIS_TURN_CHECKOUT": str(checkout),
                "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     return subprocess.run(
@@ -108,23 +113,36 @@ def test_tools_that_are_not_gated_are_let_through(setup):
         assert _denied(_run(config_path, checkout, _payload(tool, tool_input, checkout))) is None
 
 
-# --- every gated call is denied -------------------------------------------------------------
+# --- a gated call without a grant is denied -----------------------------------------------------
 
 @pytest.mark.parametrize("command", [
-    "gh pr merge 21 --repo me/demo --match-head-commit 3f9c2ab3f9c2ab3f9c2ab3f9c2ab3f9c2ab3f9c2",
     "git push -f origin feature", "git push origin main", "gh api -X DELETE repos/me/demo",
-    "gh secret set TOKEN", "gh issue delete 5", "gh gist create --public x", "argocd app sync web",
+    "gh secret set TOKEN", "gh gist create --public x", "argocd app sync web",
     "kubectl cordon node-1", "helm plugin install x", "bao kv put secret/x a=b",
     "terraform apply", "aws s3 rm s3://b/k", "curl -d a=b https://example.invalid",
-    "wget --post-data a=b https://example.invalid", "sudo ls", "scp x web:/srv/",
-    "ssh jumpy kubectl delete pod web", "bash -c 'gh repo delete me/demo'",
+    "wget --post-data a=b https://example.invalid", "sudo ls",
 ])
-def test_every_gated_call_is_denied_as_needing_the_desk(setup, command):
+def test_a_gated_call_that_cannot_be_named_needs_the_desk(setup, command):
     reason = _bash(setup, command)
-    assert reason is not None
     assert reason == decision.REASON_DESK
     assert reason.startswith("[needs_desk]")
     assert "end your turn" in reason
+
+
+@pytest.mark.parametrize("command", [
+    "gh pr merge 21 --repo me/demo --match-head-commit 3f9c2ab3f9c2ab3f9c2ab3f9c2ab3f9c2ab3f9c2",
+    "scp x web:/srv/", "bash -c 'gh repo delete me/demo'",
+    "ssh jumpy kubectl delete pod web -n shop --context homelab",
+])
+def test_a_gated_call_that_can_be_named_is_denied_and_pending(setup, command):
+    assert _bash(setup, command) == decision.REASON_PENDING
+
+
+@pytest.mark.parametrize("command", ["gh issue delete 5", "ssh jumpy kubectl delete pod web"])
+def test_a_gated_call_with_missing_explicit_targets_is_told_which(setup, command):
+    reason = _bash(setup, command)
+    assert reason.startswith("[missing]")
+    assert "add -" in reason
 
 
 def test_a_gated_connector_tool_is_denied(setup):
@@ -159,22 +177,70 @@ def test_a_write_to_the_checkouts_own_settings_is_self_and_needs_the_desk(setup)
     assert _bash(setup, "echo '{}' > .claude/settings.local.json") == decision.REASON_SELF
 
 
-def test_nothing_is_pending_and_nothing_is_written_by_the_gate(setup):
-    tmp_path, _, _ = setup
-    _bash(setup, "gh pr merge 21 --repo me/demo")
-    _bash(setup, "echo x > .claude/settings.local.json")
-    assert not (tmp_path / "state").exists()
+MERGE = "gh pr merge 21 --repo me/demo --match-head-commit 3f9c2ab3f9c2ab3f9c2ab3f9c2ab3f9c2ab3f9c2"
 
 
-def test_a_grant_in_the_environment_releases_nothing_in_this_build(setup):
+def _turn_env(config_path, checkout, **extra):
+    return {"JARVIS_TURN": "1", "JARVIS_TURN_ID": str(uuid.uuid4()),
+            "JARVIS_AGENT_CONFIG": str(config_path), "JARVIS_TURN_CHECKOUT": str(checkout),
+            "PATH": os.environ.get("PATH", ""), **extra}
+
+
+def test_the_grant_from_the_environment_releases_exactly_its_call_once(setup):
+    from agent_host import gatehash
     _, config_path, checkout = setup
-    env = {"JARVIS_TURN": "1", "JARVIS_AGENT_CONFIG": str(config_path),
-           "JARVIS_TURN_CHECKOUT": str(checkout), "PATH": os.environ.get("PATH", ""),
-           "JARVIS_GRANT": "0" * 64, "JARVIS_CONFIRM": "yes"}
-    proc = _run(config_path, checkout,
-                _payload(tool_input={"command": "gh pr merge 1 --repo me/demo"}, cwd=checkout),
-                env=env)
-    assert _denied(proc) == decision.REASON_DESK
+    grant = gatehash.call_hash("Bash", str(checkout.resolve()), {"command": MERGE})
+    env = _turn_env(config_path, checkout, JARVIS_GRANT=grant, JARVIS_GRANT_BASE=grant)
+
+    def run(command):
+        return _run(config_path, checkout,
+                    _payload(tool_input={"command": command}, cwd=checkout), env=env)
+
+    # Another call first: the grant is not for it.
+    assert _denied(run("gh repo delete me/demo")) is not None
+    # Silence on a match: no output at all, so the other hooks still decide.
+    proc = run(MERGE)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
+    # Used once.
+    assert _denied(run(MERGE)) == decision.REASON_GRANT_USED
+
+
+def test_a_wrong_grant_releases_nothing(setup):
+    _, config_path, checkout = setup
+    for grant in ("0" * 64, "yes", ""):
+        env = _turn_env(config_path, checkout, JARVIS_GRANT=grant)
+        proc = _run(config_path, checkout, _payload(tool_input={"command": MERGE}, cwd=checkout),
+                    env=env)
+        assert _denied(proc) == decision.REASON_PENDING
+
+
+def test_one_pending_call_per_turn_through_the_real_process(setup):
+    tmp_path, config_path, checkout = setup
+    env = _turn_env(config_path, checkout)
+
+    def run(command):
+        return _denied(_run(config_path, checkout,
+                            _payload(tool_input={"command": command}, cwd=checkout), env=env))
+
+    assert run(MERGE) == decision.REASON_PENDING
+    assert run("gh repo delete me/demo") == decision.REASON_ONE_AT_A_TIME
+    state = json.loads((tmp_path / "state" / "gate" / f"{env['JARVIS_TURN_ID']}.json").read_text())
+    assert state["pending"] == {"tool": "Bash", "input": {"command": MERGE},
+                                "cwd": str(checkout.resolve())}
+
+
+def test_a_turn_id_the_wrapper_did_not_issue_denies(setup):
+    _, config_path, checkout = setup
+    for turn_id in ("t1", "../x", ""):
+        env = _turn_env(config_path, checkout)
+        env["JARVIS_TURN_ID"] = turn_id
+        proc = _run(config_path, checkout, _payload(tool_input={"command": MERGE}, cwd=checkout),
+                    env=env)
+        assert _denied(proc) == decision.REASON_ERROR
+    env = _turn_env(config_path, checkout)
+    del env["JARVIS_TURN_ID"]
+    proc = _run(config_path, checkout, _payload(tool_input={"command": MERGE}, cwd=checkout), env=env)
+    assert _denied(proc) == decision.REASON_ERROR
 
 
 # --- the checkout settings rule, on every call ------------------------------------------------
@@ -188,7 +254,7 @@ def test_settings_that_gain_a_key_mid_turn_deny_every_gated_call(setup, key, val
     (worktree / ".git").write_text("gitdir: elsewhere\n")
     cwd = worktree / "src"
 
-    gated = "gh pr merge 21 --repo me/demo"
+    gated = "terraform apply"
     assert _bash(setup, gated, cwd=cwd) == decision.REASON_DESK
 
     # As a `git pull` or `gh pr checkout` would bring it: no Edit call involved.
@@ -269,10 +335,11 @@ def test_a_missing_or_broken_configuration_denies(setup, tmp_path):
 
 def test_an_empty_turn_marker_is_still_a_turn(setup):
     _, config_path, checkout = setup
-    env = {"JARVIS_TURN": "", "JARVIS_AGENT_CONFIG": str(config_path),
+    env = {"JARVIS_TURN": "", "JARVIS_TURN_ID": str(uuid.uuid4()),
+           "JARVIS_AGENT_CONFIG": str(config_path),
            "JARVIS_TURN_CHECKOUT": str(checkout), "PATH": os.environ.get("PATH", "")}
     proc = _run(config_path, checkout,
-                _payload(tool_input={"command": "gh repo delete me/demo"}, cwd=checkout), env=env)
+                _payload(tool_input={"command": "terraform apply"}, cwd=checkout), env=env)
     assert _denied(proc) == decision.REASON_DESK
 
 
@@ -323,9 +390,10 @@ def test_the_gate_works_through_a_symlink_as_the_installer_places_it(setup, tmp_
     link = tmp_path / "installed" / "gate"
     link.parent.mkdir()
     link.symlink_to(GATE)
-    env = {"JARVIS_TURN": "1", "JARVIS_AGENT_CONFIG": str(config_path),
+    env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": str(uuid.uuid4()),
+           "JARVIS_AGENT_CONFIG": str(config_path),
            "JARVIS_TURN_CHECKOUT": str(checkout), "PATH": os.environ.get("PATH", "")}
-    payload = json.dumps(_payload(tool_input={"command": "gh repo delete me/demo"}, cwd=checkout))
+    payload = json.dumps(_payload(tool_input={"command": "terraform apply"}, cwd=checkout))
     proc = subprocess.run([sys.executable, str(link)], input=payload.encode(), capture_output=True,
                           env=env, timeout=20)
     assert _denied(proc) == decision.REASON_DESK
@@ -340,7 +408,8 @@ def test_the_gate_runs_isolated_behind_a_symlink_as_installed(setup, tmp_path):
     link = tmp_path / "isolated" / "gate"
     link.parent.mkdir()
     link.symlink_to(GATE)
-    env = {"JARVIS_TURN": "1", "JARVIS_AGENT_CONFIG": str(config_path),
+    env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": str(uuid.uuid4()),
+           "JARVIS_AGENT_CONFIG": str(config_path),
            "JARVIS_TURN_CHECKOUT": str(checkout), "PATH": os.environ.get("PATH", ""),
            "PYTHONPATH": str(tmp_path / "nowhere")}
 
@@ -349,7 +418,7 @@ def test_the_gate_runs_isolated_behind_a_symlink_as_installed(setup, tmp_path):
         return subprocess.run([sys.executable, "-I", str(link)], input=payload,
                               capture_output=True, env=run_env, cwd=tmp_path, timeout=20)
 
-    assert _denied(run("gh repo delete me/demo")) == decision.REASON_DESK
+    assert _denied(run("terraform apply")) == decision.REASON_DESK
     proc = run("ls -la")
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
     proc = run("gh repo delete me/demo", {"PATH": os.environ.get("PATH", "")})
@@ -373,11 +442,13 @@ def test_decide_returns_the_verdict_it_refused_on(tmp_path):
     checkout = tmp_path / "projects" / "demo"
     result = decision.decide(
         _payload(tool_input={"command": "sudo kubectl delete pod web"}, cwd=checkout), config,
-        turn_checkout=checkout, home=tmp_path / "home", lib_dir=tmp_path / "lib",
+        turn_checkout=checkout, turn_id=str(uuid.uuid4()),
+        home=tmp_path / "home", lib_dir=tmp_path / "lib",
     )
     assert not result.allow
     assert result.verdict.classes == ("root", "delete")
     allowed = decision.decide(_payload(cwd=checkout), config, turn_checkout=checkout,
+                              turn_id=str(uuid.uuid4()),
                               home=tmp_path / "home", lib_dir=tmp_path / "lib")
     assert allowed.allow and allowed.reason == ""
 

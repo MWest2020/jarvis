@@ -83,3 +83,55 @@ def run_git(path: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=path, check=True, capture_output=True, text=True,
     ).stdout.strip()
+
+
+SHA = "3f9c2ab" + "0123456789abcdef0123456789abcdef0"
+
+
+def derive(command: str, ctx: classify.Context, config, tool: str = "Bash", tool_input=None):
+    """naming.derive for one Bash command (or another tool's input)."""
+    from agent_host import naming
+    return naming.derive(tool, tool_input if tool_input is not None else {"command": command},
+                         ctx, config)
+
+
+class Turn:
+    """One turn as the gate sees it: the same turn id for every call, so
+    the gate's state (the pending call, the one repair, the used grant)
+    carries from call to call."""
+
+    def __init__(self, tmp_path: Path, config=None, *, cwd: Path | None = None, git=no_git,
+                 grant: str | None = None, grant_base: str | None = None):
+        import uuid
+        self.tmp_path = tmp_path
+        self.config = config or make_config(tmp_path)
+        self.cwd = cwd or tmp_path / "projects" / "demo"
+        self.git = git
+        self.turn_id = str(uuid.uuid4())
+        self.grant = grant
+        self.grant_base = grant_base
+
+    def call(self, command: str = "", *, tool: str = "Bash", tool_input=None, cwd=None):
+        from agent_host import decision
+        payload = {
+            "tool_name": tool,
+            "tool_input": tool_input if tool_input is not None else {"command": command},
+            "cwd": str(cwd or self.cwd),
+        }
+        return decision.decide(
+            payload, self.config, turn_checkout=self.tmp_path / "projects" / "demo",
+            turn_id=self.turn_id, grant=self.grant, grant_base=self.grant_base,
+            home=self.tmp_path / "home", lib_dir=self.tmp_path / "lib", git=self.git,
+        )
+
+    def state(self) -> dict:
+        from agent_host import pending
+        return pending.read_turn_state(self.config.gate_dir, self.turn_id)
+
+    def derive(self, command: str, cwd=None):
+        """What the wrapper would derive for this call, with the gate's rules."""
+        from agent_host import decision, naming
+        ctx = decision.build_context(
+            self.config, Path(cwd or self.cwd).resolve(), home=self.tmp_path / "home",
+            lib_dir=self.tmp_path / "lib", git=self.git)
+        return naming.derive("Bash", {"command": command}, ctx, self.config)

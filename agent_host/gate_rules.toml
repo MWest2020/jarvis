@@ -12,8 +12,9 @@
 #     gated unless its verb is a read verb. A subcommand nobody thought of is
 #     gated without a rule naming it.
 #   - rules that name an action ([[actions]], [[option_classes]]): they put a
-#     gated call in a class, so that it can be read back (the sentences are
-#     phase 1b2's). A gated call in no class has no sentence and needs the desk.
+#     gated call in a class, so that it can be read back (the sentences are in
+#     agent_host/naming.py). A gated call in no class has no sentence and
+#     needs the desk.
 #
 # Matching too much costs a trip to the desk; matching too little is the
 # failure. When in doubt, a rule here gates.
@@ -284,6 +285,13 @@ words = [
     "merge", "push", "create", "update", "write", "fork", "transfer",
     "approve", "dismiss", "close", "reopen", "assign",
 ]
+# The class of such a tool, by the first of these words in its name; a
+# gated connector tool with none of them is class `tool`. A class is what
+# `confirm_skip` and the `class` of a confirmation go by.
+delete = ["delete", "trash", "dismiss", "close"]
+merge = ["merge"]
+create = ["create", "fork"]
+message = ["send", "reply", "forward", "post", "message", "comment", "invite"]
 
 # --- built-in tools --------------------------------------------------------------
 # A tool that is neither `Bash`, a connector tool (`mcp__*`, above), nor on
@@ -344,6 +352,19 @@ tree_programs = ["rm", "mv", "find", "chmod", "chown", "chgrp"]
 # verbs:    or the verb itself is one of these, behind whatever groups.
 # Neither paths nor verbs: every call of the program is the action. For a
 # program that is not under [programs], a matching action is what gates it.
+#
+# Host-local rules only (the repository's own actions have their sentences in
+# agent_host/naming.py):
+# sentence: the fixed read-back of the command, with one {} per argument
+#           behind the path ("Start a build of {}.").
+# kinds:    the kind of each such argument, checked for its strict shape:
+#           number, label, name, host, ref or mail. A call with an option, or
+#           with more or fewer arguments, has no sentence and needs the desk.
+#
+# And for a connector tool that sends to people ([[tool_actions]], host-local
+# only): `tool` (a name, `*` allowed), `class`, and `recipients`, the input
+# fields that hold the addresses, in the order to, cc, bcc. The read-back
+# names every address in them, or the call is not nameable.
 
 [[actions]]
 class = "merge"

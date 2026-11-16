@@ -384,7 +384,8 @@ def test_h_a_checkout_settings_symlink_is_unsafe_for_the_gate(tmp_path):
     (checkout / ".claude" / "settings.local.json").symlink_to(harmless)
     result = decision.decide(
         {"tool_name": "Bash", "tool_input": {"command": "terraform apply"}, "cwd": str(checkout)},
-        config, turn_checkout=checkout, home=tmp_path / "home", lib_dir=tmp_path / "lib")
+        config, turn_checkout=checkout, turn_id=str(uuid.uuid4()),
+            home=tmp_path / "home", lib_dir=tmp_path / "lib")
     assert result.reason == decision.REASON_SETTINGS
 
 
@@ -531,7 +532,8 @@ def test_l_a_gated_built_in_tool_is_denied_as_needing_the_desk(tmp_path):
     checkout = tmp_path / "projects" / "demo"
     result = decision.decide(
         {"tool_name": "SendMessage", "tool_input": {"to": "main", "message": "x"}, "cwd": str(checkout)},
-        config, turn_checkout=checkout, home=tmp_path / "home", lib_dir=tmp_path / "lib")
+        config, turn_checkout=checkout, turn_id=str(uuid.uuid4()),
+            home=tmp_path / "home", lib_dir=tmp_path / "lib")
     assert not result.allow and result.reason == decision.REASON_DESK
 
 
@@ -559,7 +561,8 @@ def test_a_call_the_gate_cannot_read_is_told_to_split_it_and_may_go_on(tmp_path)
     def decide(command):
         return decision.decide(
             {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(checkout)},
-            config, turn_checkout=checkout, home=tmp_path / "home", lib_dir=tmp_path / "lib")
+            config, turn_checkout=checkout, turn_id=str(uuid.uuid4()),
+            home=tmp_path / "home", lib_dir=tmp_path / "lib")
 
     result = decide("cd /srv/repo && pytest -q")
     assert not result.allow

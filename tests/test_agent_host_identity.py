@@ -86,3 +86,16 @@ def test_the_environment_file_cannot_override_what_the_wrapper_sets(tmp_path):
     assert env["JARVIS_AGENT_CONFIG"] == str(tmp_path / "config.toml")
     assert env["JARVIS_TURN_CHECKOUT"] == str(tmp_path / "demo")
     assert env["JARVIS_TURN"] == "1"
+
+
+def test_an_ordinary_turn_never_starts_with_a_grant(tmp_path):
+    """1b2: the grant of a confirmed call is added by the wrapper to a
+    confirming turn only. Not even the root-owned environment file can
+    plant one."""
+    path = tmp_path / "environment"
+    path.write_text("JARVIS_GRANT=" + "0" * 64 + "\nJARVIS_GRANT_BASE=" + "0" * 64 + "\n")
+    env = build_child_env(
+        path, identity_env_var="IDENT", session_identity="jarvis", turn_id="turn-1",
+        config_path=tmp_path / "config.toml", checkout=tmp_path / "demo",
+    )
+    assert "JARVIS_GRANT" not in env and "JARVIS_GRANT_BASE" not in env

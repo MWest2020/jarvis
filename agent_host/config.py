@@ -25,6 +25,17 @@ DEFAULT_RULES_DIR = Path("/etc/jarvis-agent/rules.d")
 # Where Claude Code looks for managed settings on Linux. A configuration key,
 # so that no path of anyone's own setup is a constant (the class `self`, D36).
 DEFAULT_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
+# The confirmation path (1b2, D36/D38).
+DEFAULT_CONFIRM_PROGRAM = Path("/usr/local/lib/jarvis-agent/confirm")
+DEFAULT_PR_STATUS_COMMAND = ("gh", "pr", "view")
+DEFAULT_RETENTION_DAYS = 90
+PENDING_SECONDS = 60
+# The classes a confirmation can be switched off for. `self` is not one of
+# them: it stays desk-only whatever the switch says.
+CONFIRM_CLASSES = frozenset({
+    "merge", "deploy", "delete", "force", "api", "account", "message",
+    "create", "outward", "root", "tool",
+})
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,21 @@ class AgentHostConfig:
     managed_settings_path: Path = DEFAULT_MANAGED_SETTINGS_PATH
     # Whose repositories are "own" (D36): owner names on the forge host.
     own_owners: tuple[str, ...] = ()
+    # Voice confirmation (1b2, D36). "off" lets gated calls through
+    # unconfirmed; `confirm_skip` does that for single classes.
+    confirm: str = "on"
+    confirm_skip: frozenset[str] = frozenset()
+    # The root-owned `confirm on|off [class]` program: the one way to change
+    # the two settings above by voice.
+    confirm_program: Path = DEFAULT_CONFIRM_PROGRAM
+    # Run by the wrapper after a confirmed call ran, with the read-back as
+    # its last argument. Empty: no notification.
+    notify_command: tuple[str, ...] = ()
+    # Asked for a merge's review decision and check roll-up; the wrapper adds
+    # `<number> --repo <owner>/<name> --json ...`.
+    pr_status_command: tuple[str, ...] = DEFAULT_PR_STATUS_COMMAND
+    # How long records and action logs are kept (D38).
+    retention_days: int = DEFAULT_RETENTION_DAYS
 
     @property
     def lock_path(self) -> Path:
@@ -68,6 +94,21 @@ class AgentHostConfig:
     @property
     def records_dir(self) -> Path:
         return self.state_dir / "records"
+
+    @property
+    def gate_dir(self) -> Path:
+        """What the gate noted per turn (agent_host.pending)."""
+        return self.state_dir / "gate"
+
+    @property
+    def pending_dir(self) -> Path:
+        """The one pending call per project, between read-back and answer."""
+        return self.state_dir / "pending"
+
+    @property
+    def actions_dir(self) -> Path:
+        """The action log: one file of lines per turn (agent_host/action-log)."""
+        return self.state_dir / "actions"
 
 
 def hook_config_path(environ, package_dir: Path) -> Path:
@@ -97,6 +138,13 @@ def _require(data: dict, key: str) -> object:
     if key not in data:
         raise ConfigError(f"{key} is required in the agent host configuration")
     return data[key]
+
+
+def _string_list(data: dict, key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    value = data.get(key, list(default))
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ConfigError(f"{key} must be a list of non-empty strings")
+    return tuple(value)
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentHostConfig:
@@ -146,6 +194,20 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
     ):
         raise ConfigError("own_owners must be a list of owner names")
 
+    confirm = data.get("confirm", "on")
+    if confirm not in ("on", "off"):
+        raise ConfigError('confirm must be "on" or "off"')
+    confirm_skip = _string_list(data, "confirm_skip")
+    unknown = set(confirm_skip) - CONFIRM_CLASSES
+    if unknown:
+        raise ConfigError(f"confirm_skip: unknown class(es) {sorted(unknown)}")
+    pr_status_command = _string_list(data, "pr_status_command", DEFAULT_PR_STATUS_COMMAND)
+    if not pr_status_command:
+        raise ConfigError("pr_status_command must not be empty")
+    retention_days = data.get("retention_days", DEFAULT_RETENTION_DAYS)
+    if not isinstance(retention_days, int) or isinstance(retention_days, bool) or retention_days < 1:
+        raise ConfigError("retention_days must be a whole number of days, at least 1")
+
     return AgentHostConfig(
         enabled=bool(data.get("enabled", True)),
         projects=projects,
@@ -170,4 +232,10 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
             str(data.get("managed_settings_path", DEFAULT_MANAGED_SETTINGS_PATH))
         ).expanduser(),
         own_owners=tuple(own_owners_raw),
+        confirm=confirm,
+        confirm_skip=frozenset(confirm_skip),
+        confirm_program=Path(str(data.get("confirm_program", DEFAULT_CONFIRM_PROGRAM))).expanduser(),
+        notify_command=_string_list(data, "notify_command"),
+        pr_status_command=pr_status_command,
+        retention_days=retention_days,
     )

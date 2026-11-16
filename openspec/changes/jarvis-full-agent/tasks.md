@@ -1,6 +1,6 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 1b2 (Naming, the hash and grant, the read-back)
+## Current phase: 1c (Installer, docs and the host checks)
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
 1b2, 1c). The last task of every phase
@@ -126,16 +126,16 @@ the finished guarantee.
 
 ### 1b2. Naming, the hash and grant, the read-back
 
-- [ ] 1.7f The fixed `confirm on|off [class]` program (`agent_host/confirm`, root-owned at
+- [x] 1.7f The fixed `confirm on|off [class]` program (`agent_host/confirm`, root-owned at
   install) and its templated read-back, the one exception to the class `self`; any other
   argument form is desk-only. Written and unit-tested here, installed by 1.15, proven by
   voice in 4.3
-- [ ] 1.7c A target longer than 100 characters, or matching the secret-shaped pattern in
+- [x] 1.7c A target longer than 100 characters, or matching the secret-shaped pattern in
   its spoken form, makes the call not nameable; for a ref the pattern is applied per part
   between `-`, `/` and `_`, the length cap to the whole ref. Target shapes per kind (D36 table); every target of the call named (mail to, cc
   and bcc; every repository and ref of a push; namespace and resource); a missing or
   misshapen target, or more targets than the template holds, makes the call not nameable
-- [ ] 1.7e Explicit targets only: no repository, namespace, context, remote, refspec or
+- [x] 1.7e Explicit targets only: no repository, namespace, context, remote, refspec or
   recipient is taken from the surroundings; `--context` is required on every cluster call,
   whatever the number of configured contexts. `cwd` is used for two things: the explicit
   `--repo` of a `gh` call must equal the checkout's GitHub remote when there is one, and a
@@ -150,19 +150,19 @@ the finished guarantee.
   only for missing explicit targets is denied with the list of exactly those parts; the gate
   remembers it and accepts one repair in that turn (the same words plus only options from
   that list, the same `cwd`); anything else after such a refusal is denied with `needs_desk`
-- [ ] 1.8 The hash of D36 (tool name, zero byte, `cwd`, zero byte, command; or canonical input
+- [x] 1.8 The hash of D36 (tool name, zero byte, `cwd`, zero byte, command; or canonical input
   without `description` in place of the command), computed in one module that both the gate
   and the wrapper import; a call with the right bytes from another `cwd` is refused; the
   grant from the environment matched by that hash and used once; silence on a match; denial
   on any error
-- [ ] 1.9 The pending call: the gate stores the call and the hook input's `cwd` (real path),
+- [x] 1.9 The pending call: the gate stores the call and the hook input's `cwd` (real path),
   nothing derived; the wrapper re-derives classes,
   targets, hash and read-back from it with the same rules; 60 s expiry on the agent host,
   single use, cleared by the next request for the project (an exact no arrives as a
   `confirm` with answer `no`, clears it and starts no agent turn); the grant is the hash the
   bridge sent, and only when it equals the pending one; a `confirm` for a call that is gone or older than 60 s on the
   agent host answers `expired`
-- [ ] 1.10 Read-back templates per class, no agent text; all matched classes named; a call
+- [x] 1.10 Read-back templates per class, no agent text; all matched classes named; a call
   without a nameable target, and a call marked desk-only, answer "that one needs the desk";
   merge: nameable only with `--match-head-commit <sha>`; review decision and check roll-up
   fetched by the wrapper for that commit, "status unknown" when that fails, "the pull
@@ -172,12 +172,12 @@ the finished guarantee.
   never as the marker line, and is not checked against the free-text filter; when it cannot
   be built nothing is pending and the notice is `needs_desk`. While a confirmation is
   pending `spoken` is empty
-- [ ] 1.11 `confirm = "off"` and `confirm_skip`; the record marks such calls as not
+- [x] 1.11 `confirm = "off"` and `confirm_skip`; the record marks such calls as not
   confirmed. The notify command, run by the wrapper after a confirmed call (D36)
-- [ ] 1.12b The action log (PostToolUse hook) with redaction; gated actions and their
+- [x] 1.12b The action log (PostToolUse hook) with redaction; gated actions and their
   outcome added to the turn record; the retention setting and a pruning function with its test (D38); the timer that
   calls it is 4.1 and 4.2
-- [ ] 1.14 Tests for build 1b2: the rest of this list (1.14a proves the gating cases in
+- [x] 1.14 Tests for build 1b2: the rest of this list (1.14a proves the gating cases in
   1b1; with the grant they are proven again as released or refused). One per gate pattern (a match, and a near miss that must not match), with
   at least `git push -f`, `-fu`, `--mirror`, `--delete`, `origin :branch`, a bare `git push`
   on a default branch and on a feature branch, `gh api -X DELETE`, `gh api -f`, a GraphQL
@@ -226,7 +226,7 @@ the finished guarantee.
   (refused); a ref `release/1.2` and a 40-hex commit in a read-back (spoken as built,
   "slash" and seven digits, no fallback sentence); a read-back that cannot be built (nothing
   pending, `needs_desk`); a late `confirm` (`expired`)
-- [ ] 1.14b Phase heading to 1c; the `jarvis-full-agent` row of `docs/index.md`
+- [x] 1.14b Phase heading to 1c; the `jarvis-full-agent` row of `docs/index.md`
 
 ### 1c. Installer, docs and the host checks
 

@@ -118,6 +118,12 @@ class Command:
     # The names of the variables set in front of it (`GH_HOST=x gh ...`,
     # `env CURL_HOME=/tmp curl ...`).
     env: tuple[str, ...] = ()
+    # A wrapper was given an option that changes who runs the command,
+    # where, or through what (`sudo -u bob`, `sudo -D /x`, `env -C /x`,
+    # `ssh -o ProxyCommand=...`, `ssh -p 2222`, `ssh -J jump`). The command
+    # is judged all the same; a sentence about it would leave that out, so
+    # such a call is never read back (agent_host.naming).
+    odd_wrapper: bool = False
 
     @property
     def program(self) -> str:
@@ -432,6 +438,9 @@ def analyse(
         )
 
     quoted_separator = False
+    odd_wrapper = False
+    # ssh options that do not change which host is reached, as whom, or how.
+    plain_ssh = frozenset({"-t", "-tt", "-T", "-q", "-n", "-x", "-4", "-6", "-v"})
 
     def one(text: str, wrappers: tuple[tuple[str, str], ...], depth: int) -> Analysis:
         nonlocal quoted_separator
@@ -458,11 +467,12 @@ def analyse(
         return unwrap(argv, text, wrappers, depth, tuple(names))
 
     def single(argv, wrappers, names, root=None) -> Analysis:
-        return Analysis(False, (Command(tuple(argv), wrappers, names),),
+        return Analysis(False, (Command(tuple(argv), wrappers, names, odd_wrapper),),
                         root_word if root is None else root,
                         quoted_separator=quoted_separator)
 
     def unwrap(argv: list[str], text: str, wrappers, depth: int, names) -> Analysis:
+        nonlocal odd_wrapper
         name = program_name(argv[0])
 
         if _NOT_A_PROGRAM_RE.match(argv[0]) or _GLOB_IN_WORD_RE.search(argv[0]):
@@ -473,6 +483,7 @@ def analyse(
         if name in root_programs:
             wrappers = wrappers + (("root", name),)
             if name == "su":
+                odd_wrapper = True  # su is always "as somebody", with a shell of its own
                 inner = _option_value(argv[1:], ("-c", "--command"))
                 if inner is None:
                     return single(argv, wrappers, names, True)
@@ -480,6 +491,8 @@ def analyse(
             rest, ok = _skip_options(argv[1:], _SUDO_FLAGS, _SUDO_VALUE_OPTIONS, ())
             if not ok:
                 return compound(text, wrappers, everywhere=True)
+            if len(rest) != len(argv) - 1:
+                odd_wrapper = True  # sudo with any option: -u, -g, -i, -D ...
             chdir = ("--chdir",) if any(
                 word in ("-D", "--chdir") or word.startswith("--chdir=")
                 for word in argv[1:len(argv) - len(rest)]) else ()
@@ -502,6 +515,9 @@ def analyse(
             remote = _after_options(rest[1:], _SSH_VALUE_OPTIONS)
             if not rest or not remote:  # no host, or no remote command
                 return single(argv, wrappers, names)
+            given = argv[1:len(argv) - len(rest)] + rest[1:len(rest) - len(remote)]
+            if any(option not in plain_ssh for option in given):
+                odd_wrapper = True
             # ssh joins its arguments with spaces and the remote shell reads
             # the result again: that string is what is judged.
             return one(" ".join(remote), wrappers + (("ssh", rest[0]),), depth + 1)

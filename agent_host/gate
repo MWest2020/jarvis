@@ -13,9 +13,10 @@ Three answers:
 - no turn marker (`JARVIS_TURN`) in the environment: exit 0 at once,
   before anything is imported or read. The coding session is never gated,
   whether the rest of this script works or not;
-- a call no rule gates: exit 0 in silence;
-- a gated call: denied, with a reason for the agent. In this build (1b1)
-  that is every gated call; nothing is confirmable before 1b2.
+- a call no rule gates, and a gated call whose hash equals the grant in
+  `JARVIS_GRANT` (once): exit 0 in silence;
+- every other gated call: denied, with a reason for the agent. A nameable
+  one becomes the turn's pending call (agent_host.decision).
 
 Failing closed: inside a turn, unreadable rules, an unparsable call, a
 missing configuration or a crash all deny the call.
@@ -62,7 +63,12 @@ def main() -> int:
         checkout = os.environ["JARVIS_TURN_CHECKOUT"]
         if not os.path.isabs(checkout):
             raise ValueError("JARVIS_TURN_CHECKOUT is not an absolute path")
-        result = decision.decide(payload, config, turn_checkout=Path(checkout))
+        result = decision.decide(
+            payload, config, turn_checkout=Path(checkout),
+            turn_id=os.environ["JARVIS_TURN_ID"],
+            grant=os.environ.get("JARVIS_GRANT") or None,
+            grant_base=os.environ.get("JARVIS_GRANT_BASE") or None,
+        )
     except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
         _deny(locals().get("reason", _FALLBACK_REASON))
         return 0
