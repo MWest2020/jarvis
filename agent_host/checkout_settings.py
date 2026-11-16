@@ -1,11 +1,20 @@
 """The checkout settings rule (1.7d, D36 "The checkout's own settings").
 
 A project's `.claude/settings.json` and `settings.local.json` are loaded by
-Claude Code, and they can carry `env`, `hooks` and `disableAllHooks`. The
-grant of a confirmed call lives in the process environment (1b2), and an
-`env` entry in project settings is added to that same environment; `hooks`
-and `disableAllHooks` can change or stop the gate itself. Such a file needs
-no `Edit` call to appear: a `git pull` or a `gh pr checkout` brings it.
+Claude Code. They can carry `env` (the grant of a confirmed call lives in
+the process environment, 1b2), `hooks` and `disableAllHooks` (which can
+change or stop the gate itself), and a good deal more that runs a command
+or opens a door: `apiKeyHelper`, `statusLine`, `awsAuthRefresh`,
+`otelHeadersHelper`, `mcpServers`, `enableAllProjectMcpServers`,
+`enabledMcpjsonServers`, a `permissions` block that allows things or sets a
+mode. Such a file needs no `Edit` call to appear: a `git pull` or a
+`gh pr checkout` brings it.
+
+So the rule is an **allow-list**: a settings file is safe only when every
+top-level key is one of a few that cannot run anything or widen anything
+(`SAFE_KEYS`), and `permissions` only when it holds nothing but `deny` and
+`ask`. Every other key makes the checkout unsafe, the three D36 names and
+every key nobody has thought of yet.
 
 One function answers the question, for everyone who asks it:
 
@@ -13,27 +22,60 @@ One function answers the question, for everyone who asks it:
 - the gate, on every call, for the turn's checkout and for the git top
   level of the directory the call itself reports.
 
-A file that exists and cannot be read as a JSON object is unsafe: nobody
-can say what Claude Code would make of it. A file that is not there is
-safe. None of this depends on whether or when Claude Code re-reads its
+A file that is not there is safe. A file that is there and is not a
+regular file read as a JSON object is unsafe: a symlink (in the file or in
+`.claude` itself: what it points at can change without the checkout
+changing), a FIFO or a device (never opened in a way that can block), a
+directory, something unreadable, something too large, something that is not
+JSON. None of this depends on whether or when Claude Code re-reads its
 settings.
 """
 from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
+# The three names of D36. Kept for what they are: the reason the rule
+# exists. The rule itself is the allow-list below.
 UNSAFE_KEYS: tuple[str, ...] = ("env", "hooks", "disableAllHooks")
 SETTINGS_FILES: tuple[str, ...] = ("settings.json", "settings.local.json")
+# Top-level keys that cannot run a command, set the environment, add a
+# server or widen a permission. Everything else is unsafe.
+SAFE_KEYS: frozenset[str] = frozenset({
+    "$schema", "model", "includeCoAuthoredBy", "cleanupPeriodDays", "outputStyle",
+    "permissions",
+})
+# `permissions` may only take away: `allow`, `defaultMode`,
+# `additionalDirectories` and anything else in it widen what a turn may do.
+SAFE_PERMISSION_KEYS: frozenset[str] = frozenset({"deny", "ask"})
+MAX_SETTINGS_BYTES = 1024 * 1024
+
+
+def _read_regular(path: Path) -> bytes:
+    """The bytes of a regular file, never following a symlink and never
+    blocking on a FIFO or a device. Raises OSError otherwise."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        if info.st_size > MAX_SETTINGS_BYTES:
+            raise OSError("too large")
+        return os.read(fd, MAX_SETTINGS_BYTES + 1)
+    finally:
+        os.close(fd)
 
 
 def file_problem(path: Path) -> str | None:
     """Why this settings file is unsafe, or None when it is safe or absent."""
     if not os.path.lexists(path):
         return None
+    if os.path.islink(path):
+        return f"{path.name} is a symlink"
     try:
-        data = json.loads(path.read_bytes().decode("utf-8"))
+        data = json.loads(_read_regular(path).decode("utf-8"))
     except (OSError, ValueError):
         return f"{path.name} cannot be read"
     if not isinstance(data, dict):
@@ -41,12 +83,24 @@ def file_problem(path: Path) -> str | None:
     for key in UNSAFE_KEYS:
         if key in data:
             return f"{path.name} sets {key}"
+    for key in sorted(data):
+        if key not in SAFE_KEYS:
+            return f"{path.name} sets {key}"
+    permissions = data.get("permissions")
+    if permissions is not None:
+        if not isinstance(permissions, dict):
+            return f"{path.name} sets permissions"
+        for key in sorted(permissions):
+            if key not in SAFE_PERMISSION_KEYS:
+                return f"{path.name} sets permissions.{key}"
     return None
 
 
 def directory_problem(directory: Path) -> str | None:
     """The first problem in `<directory>/.claude/settings*.json`, or None."""
     claude_dir = directory / ".claude"
+    if os.path.islink(claude_dir):
+        return ".claude is a symlink"
     for name in SETTINGS_FILES:
         problem = file_problem(claude_dir / name)
         if problem is not None:

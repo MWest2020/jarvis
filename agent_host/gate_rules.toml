@@ -229,11 +229,12 @@ indirect = [
 # is one of these: programs that read and print and never run another
 # program. Their arguments are data. Everything else is refused with "run
 # it alone": what the gate cannot fully understand does not get through.
+# `echo` and `printf` are not on it: they are how text is fed to something.
 harmless = [
     "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "sort",
     "uniq", "jq", "cut", "tr", "column", "nl", "tac", "rev", "diff", "cmp",
     "stat", "file", "du", "df", "basename", "dirname", "realpath", "readlink",
-    "pwd", "cd", "echo", "printf", "true", "false", "test", "[", "date",
+    "pwd", "cd", "true", "false", "test", "[", "date",
     "which", "type", "id", "whoami", "uname", "sleep", "uptime", "free", "ps",
     "nproc", "hostname",
 ]

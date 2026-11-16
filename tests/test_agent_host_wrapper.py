@@ -370,6 +370,9 @@ def _checkout_settings(tmp_path, name, content):
     '{"disableAllHooks": true}',
     '{"disableAllHooks": false}',
     "{ not json",
+    '{"apiKeyHelper": "/tmp/x.sh"}',
+    '{"enabledMcpjsonServers": ["x"]}',
+    '{"permissions": {"allow": ["Bash(*)"]}}',
 ])
 def test_a_checkout_whose_settings_carry_one_of_the_three_keys_is_refused(
     tmp_path, monkeypatch, name, content,
@@ -389,10 +392,10 @@ def test_a_checkout_whose_settings_carry_one_of_the_three_keys_is_refused(
     assert not config.records_dir.exists()
 
 
-def test_checkout_settings_without_the_three_keys_do_not_stop_a_turn(tmp_path, monkeypatch):
+def test_checkout_settings_with_only_harmless_keys_do_not_stop_a_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _popen(stdout=_ok_payload("hi\nSPOKEN SUMMARY: hi.")))
     config = _config(tmp_path)
-    _checkout_settings(tmp_path, "settings.json", '{"permissions": {"allow": ["Bash(ls:*)"]}}')
+    _checkout_settings(tmp_path, "settings.json", '{"model": "x", "permissions": {"deny": ["Bash(rm:*)"]}}')
     _checkout_settings(tmp_path, "settings.local.json", "{}")
 
     reply = handle_request(_raw(), config)
@@ -477,3 +480,40 @@ def test_a_confirm_still_answers_expired_whatever_the_settings_say(tmp_path):
     reply = handle_request(raw, config)
     assert reply["error"] == "expired"
     assert reply["turn"] is None
+
+
+# --- one notice per reply, by a fixed order (review of #43) -------------------
+
+def test_notices_do_not_hide_each_other_by_accident():
+    from agent_host.wrapper import NOTICE_CODES, NOTICE_ORDER, most_important_notice
+    assert set(NOTICE_ORDER) == NOTICE_CODES and len(NOTICE_ORDER) == len(NOTICE_CODES)
+    assert NOTICE_ORDER[0] == "settings_changed" and NOTICE_ORDER[-1] == "new_session"
+    assert most_important_notice([]) is None
+    assert most_important_notice([None, None]) is None
+    assert most_important_notice(["new_session", None]) == "new_session"
+    assert most_important_notice(["new_session", "run_alone", "needs_desk"]) == "needs_desk"
+    assert most_important_notice(["needs_desk", "target_changed"]) == "target_changed"
+    assert most_important_notice(["run_alone", "settings_changed", "new_session"]) == "settings_changed"
+    for first, second in zip(NOTICE_ORDER, NOTICE_ORDER[1:]):
+        assert most_important_notice([second, first]) == first
+
+
+def test_a_relative_configuration_path_is_made_absolute_before_the_gate_is_told(tmp_path, monkeypatch):
+    """The gate runs in another directory than the wrapper: a relative
+    JARVIS_AGENT_CONFIG would name another file there."""
+    config = _config(tmp_path)
+    path = tmp_path / "etc" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(
+        f'projects_root = "{tmp_path / "projects"}"\nstate_dir = "{tmp_path / "state"}"\n'
+        f'environment_file = "{config.environment_file}"\nturn_settings = "{config.turn_settings_path}"\n'
+        f'prompt_file = "{config.prompt_path}"\nsession_identity = "jarvis"\n'
+        f'user_settings_path = "{config.user_settings_path}"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JARVIS_AGENT_CONFIG", "etc/config.toml")
+    loaded = wrapper.load_runtime_config()
+    assert loaded.config_path == path and loaded.config_path.is_absolute()
+
+    monkeypatch.setattr(subprocess, "Popen", _popen(stdout=_ok_payload("hi\nSPOKEN SUMMARY: hi.")))
+    handle_request(_raw(), loaded)
+    assert FakePopen.last.kwargs["env"]["JARVIS_AGENT_CONFIG"] == str(path)

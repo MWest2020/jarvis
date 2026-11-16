@@ -377,17 +377,22 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
         # mean nothing here and nothing about it can be checked locally.
         # Class `outward`; no sentence unless a host-local rule names it.
         classes.append("outward")
-        return Verdict(gated=True, classes=tuple(classes), rule="ssh:remote-command", command=inner)
+        return Verdict(gated=True, classes=tuple(classes), rule="ssh:remote-command", command=inner,
+                       run_alone=analysis.quoted_separator)
     if not verdict.gated and not is_root:
         return UNGATED
+    # D36: a gated call with a separator anywhere in its string, inside
+    # quotes too, is not read back.
     return Verdict(gated=True, classes=tuple(classes), rule=verdict.rule or "root:any-position",
-                   command=inner)
+                   command=inner, run_alone=analysis.quoted_separator)
 
 
 def _remote_read(command: shell.Command, ctx: Context) -> bool:
     """The remote command of an `ssh` call is a read: a harmless program, or
     a read verb of a program that is gated by default (`ssh jumpy kubectl
     get pods`)."""
+    if any(">" in arg or "<" in arg for arg in command.argv):
+        return False  # a redirection on the other host writes there
     return is_harmless(command.argv, ctx) or command.program in ctx.rules.programs
 
 

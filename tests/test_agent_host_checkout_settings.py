@@ -48,16 +48,73 @@ def test_each_of_the_three_keys_in_either_file_is_unsafe(tmp_path, name, key, va
 @pytest.mark.parametrize("name", SETTINGS_FILES)
 @pytest.mark.parametrize("content", [
     {},
-    {"permissions": {"allow": ["Bash(ls:*)"], "deny": []}},
     {"model": "x", "includeCoAuthoredBy": False},
-    # The words inside another key are not the keys.
-    {"permissions": {"env": 1, "hooks": 2, "disableAllHooks": True}},
-    {"environment": {}, "hook": {}, "Env": {}, "HOOKS": {}, "disableallhooks": True},
+    {"$schema": "https://example.invalid/schema.json", "cleanupPeriodDays": 30, "outputStyle": "x"},
+    {"permissions": {}},
+    {"permissions": {"deny": ["Bash(rm:*)"], "ask": ["Bash(git push:*)"]}},
 ])
-def test_settings_without_the_three_keys_are_safe(tmp_path, name, content):
+def test_settings_with_only_harmless_keys_are_safe(tmp_path, name, content):
     checkout = _checkout(tmp_path)
     _settings(checkout, name, content)
     assert problem(checkout) is None
+
+
+@pytest.mark.parametrize("name", SETTINGS_FILES)
+@pytest.mark.parametrize("content,said", [
+    # Everything that runs a command, sets the environment, adds a server
+    # or widens a permission, and every key nobody has thought of.
+    ({"apiKeyHelper": "/tmp/x.sh"}, "apiKeyHelper"),
+    ({"statusLine": {"type": "command", "command": "x"}}, "statusLine"),
+    ({"awsAuthRefresh": "x"}, "awsAuthRefresh"),
+    ({"otelHeadersHelper": "x"}, "otelHeadersHelper"),
+    ({"mcpServers": {"x": {"command": "x"}}}, "mcpServers"),
+    ({"enableAllProjectMcpServers": True}, "enableAllProjectMcpServers"),
+    ({"enabledMcpjsonServers": ["x"]}, "enabledMcpjsonServers"),
+    ({"model": "x", "somethingNew": 1}, "somethingNew"),
+    ({"Env": {}}, "Env"),
+    ({"permissions": {"allow": ["Bash(ls:*)"]}}, "permissions.allow"),
+    ({"permissions": {"deny": [], "defaultMode": "bypassPermissions"}}, "permissions.defaultMode"),
+    ({"permissions": {"additionalDirectories": ["/"]}}, "permissions.additionalDirectories"),
+    ({"permissions": ["allow"]}, "permissions"),
+    ({"permissions": {"env": 1}}, "permissions.env"),
+])
+def test_any_other_key_makes_the_checkout_unsafe(tmp_path, name, content, said):
+    checkout = _checkout(tmp_path)
+    _settings(checkout, name, content)
+    found = problem(checkout)
+    assert found == f"{name} sets {said}"
+
+
+def test_a_settings_file_that_is_a_symlink_is_unsafe_whatever_it_points_at(tmp_path):
+    checkout = _checkout(tmp_path)
+    harmless = tmp_path / "harmless.json"
+    harmless.write_text("{}")
+    (checkout / ".claude").mkdir()
+    (checkout / ".claude" / "settings.json").symlink_to(harmless)
+    assert problem(checkout) == "settings.json is a symlink"
+    (checkout / ".claude" / "settings.json").unlink()
+    assert problem(checkout) is None
+    # ... and so is a `.claude` that is itself a symlink.
+    other = tmp_path / "other-claude"
+    other.mkdir()
+    (other / "settings.json").write_text("{}")
+    (checkout / ".claude").rmdir()
+    (checkout / ".claude").symlink_to(other)
+    assert problem(checkout) == ".claude is a symlink"
+
+
+def test_a_fifo_where_the_settings_should_be_is_unsafe_and_does_not_hang(tmp_path):
+    checkout = _checkout(tmp_path)
+    (checkout / ".claude").mkdir()
+    os.mkfifo(checkout / ".claude" / "settings.local.json")
+    # Nobody ever writes to it: a plain open() would wait for ever.
+    assert problem(checkout) == "settings.local.json cannot be read"
+
+
+def test_a_settings_file_that_is_too_large_is_unsafe(tmp_path):
+    checkout = _checkout(tmp_path)
+    _settings(checkout, "settings.json", '{"model": "' + "x" * (checkout_settings.MAX_SETTINGS_BYTES) + '"}')
+    assert problem(checkout) == "settings.json cannot be read"
 
 
 @pytest.mark.parametrize("content", ["", "{not json", "[]", '"env"', "null", "\xff\xfe"])

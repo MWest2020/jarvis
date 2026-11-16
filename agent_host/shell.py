@@ -133,6 +133,12 @@ class Analysis:
     # classifier lets a compound call through only when every piece is a
     # known-harmless read program.
     segments: tuple[tuple[str, ...], ...] = ()
+    # One command, with a separator character inside a quoted argument
+    # (`grep -E 'a|b' f`, `git commit -m 'a & b'`). It runs like any other
+    # single command when no rule gates it; a gated one is refused with
+    # "run it alone", because D36 wants no such character anywhere in a
+    # call that is read back.
+    quoted_separator: bool = False
 
 
 def without_benign_redirects(command: str) -> str:
@@ -141,6 +147,39 @@ def without_benign_redirects(command: str) -> str:
 
 def has_separator(command: str) -> bool:
     return bool(_SEPARATOR_RE.search(command))
+
+
+# With one of these in the text a quoted argument can still run a command
+# or end where shlex does not think it ends: never "only quoted".
+_SUBSTITUTIONS = ("`", "$(", "<(", ">(", "<<", "$'", '$"', "\n", "\r")
+
+
+def separators_only_inside_quotes(command: str) -> bool:
+    """Every `;`, `&` and `|` of the command stands inside quotes (or behind
+    a backslash), and nothing in it substitutes a command. Then the command
+    is one command with separator characters in its arguments."""
+    if any(mark in command for mark in _SUBSTITUTIONS):
+        return False
+    state = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if state == "'":
+            if char == "'":
+                state = ""
+        elif state == '"':
+            if char == "\\":
+                index += 1
+            elif char == '"':
+                state = ""
+        elif char == "\\":
+            index += 1
+        elif char in "'\"":
+            state = char
+        elif char in ";&|":
+            return False
+        index += 1
+    return state == ""
 
 
 def lenient_segments(command: str) -> list[list[str]]:
@@ -290,9 +329,16 @@ def analyse(
             segments=tuple(tuple(segment) for segment in segments),
         )
 
+    quoted_separator = False
+
     def one(text: str, wrappers: tuple[tuple[str, str], ...], depth: int) -> Analysis:
-        if depth > _MAX_DEPTH or has_separator(text):
+        nonlocal quoted_separator
+        if depth > _MAX_DEPTH:
             return compound(text, wrappers)
+        if has_separator(text):
+            if not separators_only_inside_quotes(text):
+                return compound(text, wrappers)
+            quoted_separator = True
         try:
             words = shlex.split(text, posix=True)
         except ValueError:  # an unbalanced quote: not one command we can read
@@ -303,14 +349,16 @@ def analyse(
         if not ok:
             return compound(text, wrappers, everywhere=True)
         if not argv:
-            return Analysis(compound=False, commands=(), root_word=root_word)
+            return Analysis(compound=False, commands=(), root_word=root_word,
+                            quoted_separator=quoted_separator)
         if _NOT_A_PROGRAM_RE.match(argv[0]):
             return compound(text, wrappers, everywhere=True)
         return unwrap(argv, text, wrappers, depth, tuple(names))
 
     def single(argv, wrappers, names, root=None) -> Analysis:
         return Analysis(False, (Command(tuple(argv), wrappers, names),),
-                        root_word if root is None else root)
+                        root_word if root is None else root,
+                        quoted_separator=quoted_separator)
 
     def unwrap(argv: list[str], text: str, wrappers, depth: int, names) -> Analysis:
         name = program_name(argv[0])

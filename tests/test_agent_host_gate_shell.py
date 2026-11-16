@@ -173,11 +173,9 @@ NOT_THE_GATES_BUSINESS = [
     "cat notes.txt | grep -n todo | sort | uniq | head -5",
     "cd /srv/repo && ls -la",
     "grep -rn docker docs/ | head",
-    "echo $(date)",
     "ls -la 2>/dev/null | wc -l",
     "git log --oneline | head -20",
     "(cd sub && ls)",
-    "echo 'unfinished",
     # ... or, in a call without any quoting, a read of a default-gated program.
     "kubectl get pods -n web | grep web",
     "gh pr view 5 --json state | jq .state",
@@ -205,7 +203,6 @@ NOT_UNDERSTOOD = [
     "source .venv/bin/activate && pytest -q",
     "find . -name '*.py' | xargs wc -l",
     "git add -A && git commit -m 'fix: one; two'",
-    "git commit -m 'fix: one; two'",
     "make test && make lint",
     "cat <<'EOF' > notes.txt\nhello\nEOF",
     "ls | tee listing.txt",
@@ -215,6 +212,9 @@ NOT_UNDERSTOOD = [
     "ls; ./deploy.sh",
     "true && mystery-program",
     "FOO=1 ls | wc -l",
+    "echo $(date)",
+    "echo 'unfinished",
+    'echo "gh repo delete x" | cat',
     "/tmp/ls | wc -l",
     "git -C /elsewhere status | cat",
     "git commit -am x | cat",
@@ -260,6 +260,30 @@ NOT_UNDERSTOOD = [
 ]
 
 
+@pytest.mark.parametrize("text,only_quoted", [
+    ("grep -E 'a|b' f", True),
+    ('git commit -m "a; b & c"', True),
+    ("echo a\\;b", True),
+    ('echo "a \\" ; b"', True),
+    ("ls; pwd", False),
+    ("ls 'a' | wc", False),
+    ("echo 'a' ; echo 'b'", False),
+    ('echo "a" && echo b', False),
+    ("echo 'unfinished ; x", False),
+    ('echo "$(date); x"', False),
+    ("echo '`date`;'", False),
+    ("echo 'a\nb;'", False),
+    ("echo $'a;b'", False),
+    ("cat <<'EOF'", False),
+    ("echo 'a'\\''; evil'", True),
+    ("echo 'a' \\; evil", True),
+    ("echo 'a';evil", False),
+    ('echo "a\\\\";evil', False),
+])
+def test_separators_only_inside_quotes(text, only_quoted):
+    assert shell.separators_only_inside_quotes(text) is only_quoted
+
+
 @pytest.mark.parametrize("command", NOT_UNDERSTOOD)
 def test_a_command_the_gate_cannot_fully_understand_is_refused(ctx, command):
     verdict = bash(command, ctx)
@@ -278,6 +302,15 @@ def test_a_command_the_gate_cannot_fully_understand_is_refused(ctx, command):
     "command -v kubectl",
     "ls --color=auto gh",
     "ls > listing.txt",          # a redirection in one plain command is no second command
+    # One command with a separator character inside a quoted argument.
+    "git commit -m 'fix: one; two'",
+    "git commit -m 'a & b | c'",
+    "grep -E 'a|b' notes.txt",
+    "jq '.a | .b' data.json",
+    "grep 'a;b' notes.txt",
+    'git commit -m "it\'s a; b"',
+    "pytest -k 'one or two' -q",
+    "echo a\\;b",
 ])
 def test_one_plain_command_no_rule_gates_still_runs(ctx, command):
     assert not bash(command, ctx).gated, command
