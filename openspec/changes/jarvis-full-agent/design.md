@@ -513,6 +513,12 @@ deleting a volume claim, a namespace or a resource definition). **Decided (Mark:
 desk-only. The gate's rules then mark them, no read-back is offered, and Jarvis says "that
 one needs the desk". The outcome of the check is written into this section when phase 1
 is built.
+**Outcome (host check 11, 2026-11-16, Claude Code 2.1.322), git part:** not refused. A
+force push read back and confirmed by a yes was let through by the classifier. `reset --hard`,
+rebase and `branch -D` are not gated, and run when the driver names them (`branch -D` matches
+the user's allow rule `git branch`, so the classifier does not see it). So none of them is
+marked desk-only. The cluster deletions were not tried (outside the test sandbox) and are
+still open.
 
 *Why a grant in the process environment.* The agent has a shell as the same user as every
 file the wrapper writes, so a grant in a file could be written by the agent itself. The
@@ -551,6 +557,18 @@ real Claude Code, with the settings present at the start and appearing mid-turn.
 check fails**, phase 1 does not ship: `full` mode is not enabled anywhere until the design
 has an answer that passes. The mid-turn check is part of the update runbook: it is run again
 on every Claude Code version bump on the agent host, before Jarvis uses the new version.
+**Outcome (host check 6, 2026-11-16, Claude Code 2.1.322): failed; this section is
+reopened.** `disableAllHooks: false` from `--settings` held: the gate ran in every case,
+including when a project file said `true`, at the start and mid-turn. What fails is
+`env`. Claude Code applies a checkout's `env` to the hook processes, the gate included,
+and reloads it when the file appears mid-turn (a `git checkout` was enough). The gate
+takes `JARVIS_TURN_CHECKOUT`, `JARVIS_GRANT` and `JARVIS_GRANT_BASE` from that
+environment. A mid-turn file that set a grant computed in advance, and pointed
+`JARVIS_TURN_CHECKOUT` at a clean checkout, released a gated call that the agent made from
+a clean worktree: neither directory the gate re-reads held the file. Check 1 (before the
+turn) does not see a file that arrives later, and check 3 (after the turn) comes after the
+call has run. A worktree's own settings were not loaded by Claude Code at all; the per-call
+re-read denied every case where the call's own directory held the file.
 
 *Optional hardening, Mark's own to install.* The gate can also be loaded from Claude Code's
 managed settings on the agent host, which project settings cannot override or switch off.
@@ -563,7 +581,9 @@ short hook timeout; and in the coding session a missing or broken script lets th
 through (fail open), while in a Jarvis turn the copy from the turn settings stays the one
 that decides and is expected to fail closed. For a gate that crashes or denies, that is the
 hook's own answer; for a gate that runs into its timeout it is Claude Code's, and the gate
-timeout check of task 1.17 has to confirm it. The hardening adds nothing against `disableAllHooks`: if the
+timeout check of task 1.17 has to confirm it. **Outcome (host check 12, 2026-11-16,
+Claude Code 2.1.322): it does not.** A gate that ran past its hook `timeout` was dropped and
+the gated call ran: on a timeout the hook fails open. The hardening adds nothing against `disableAllHooks`: if the
 mid-turn check of task 1.17 fails, phase 1 does not ship, hardening or not.
 
 *Failing closed.* In a turn started by the wrapper, if the gate cannot read its rules or the
