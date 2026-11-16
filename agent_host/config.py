@@ -33,6 +33,10 @@ DEFAULT_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
 DEFAULT_CONFIRM_PROGRAM = Path("/usr/local/lib/jarvis-agent/confirm")
 DEFAULT_PR_STATUS_COMMAND = ("gh", "pr", "view")
 DEFAULT_RETENTION_DAYS = 90
+# After a confirmed `gh repo create` ran (jarvis-general-conversation D53).
+DEFAULT_CLONE_COMMAND = ("gh", "repo", "clone")
+DEFAULT_CLONE_TIMEOUT_S = 120
+MAX_CLONE_TIMEOUT_S = 600
 PENDING_SECONDS = 60
 # The classes a confirmation can be switched off for. `self` is not one of
 # them: it stays desk-only whatever the switch says.
@@ -86,6 +90,10 @@ class AgentHostConfig:
     pr_status_command: tuple[str, ...] = DEFAULT_PR_STATUS_COMMAND
     # How long records and action logs are kept (D38).
     retention_days: int = DEFAULT_RETENTION_DAYS
+    # Run by the wrapper after a confirmed `gh repo create <owner>/<name>`
+    # ran: it adds `<owner>/<name> <destination>` (D53).
+    clone_command: tuple[str, ...] = DEFAULT_CLONE_COMMAND
+    clone_timeout_s: int = DEFAULT_CLONE_TIMEOUT_S
 
     @property
     def lock_path(self) -> Path:
@@ -220,6 +228,14 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
     retention_days = data.get("retention_days", DEFAULT_RETENTION_DAYS)
     if not isinstance(retention_days, int) or isinstance(retention_days, bool) or retention_days < 1:
         raise ConfigError("retention_days must be a whole number of days, at least 1")
+    clone_command = _string_list(data, "clone_command", DEFAULT_CLONE_COMMAND)
+    if not clone_command:
+        raise ConfigError("clone_command must not be empty")
+    clone_timeout_s = data.get("clone_timeout_s", DEFAULT_CLONE_TIMEOUT_S)
+    if not isinstance(clone_timeout_s, int) or isinstance(clone_timeout_s, bool) \
+            or not 1 <= clone_timeout_s <= MAX_CLONE_TIMEOUT_S:
+        raise ConfigError(f"clone_timeout_s must be a whole number of seconds, 1 to "
+                          f"{MAX_CLONE_TIMEOUT_S}")
 
     return AgentHostConfig(
         enabled=bool(data.get("enabled", True)),
@@ -252,4 +268,6 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
         notify_command=_string_list(data, "notify_command"),
         pr_status_command=pr_status_command,
         retention_days=retention_days,
+        clone_command=clone_command,
+        clone_timeout_s=clone_timeout_s,
     )

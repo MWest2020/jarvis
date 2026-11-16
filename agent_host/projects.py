@@ -68,3 +68,41 @@ def resolve_project(config: AgentHostConfig, name: str) -> Path:
         raise ProjectError(f"project {name!r} has no work tree (bare repository refused)")
 
     return real_candidate
+
+
+# What one list answer names at most (jarvis-general-conversation D51). 500
+# names of at most 64 characters stay well inside the 64 KB a reply may be.
+MAX_LISTED = 500
+
+
+def project_name_ok(name: str) -> bool:
+    return bool(_PROJECT_NAME.fullmatch(name))
+
+
+def list_projects(config: AgentHostConfig) -> list[str]:
+    """Every name a turn would accept, sorted, at most MAX_LISTED (D51).
+
+    Each candidate goes through `resolve_project`, the turn's own resolver,
+    so a listed name is always a name a turn accepts, and nothing that a
+    turn refuses (excluded, bare, a symlink out, not a directory) is named.
+    Reads directory names only.
+    """
+    if config.projects:
+        candidates = list(config.projects)
+    else:
+        root = config.projects_root
+        assert root is not None  # config.config_from_dict enforces exactly one of the two
+        try:
+            candidates = [entry.name for entry in root.iterdir()]
+        except OSError:
+            return []
+    names: list[str] = []
+    for name in sorted(candidates):
+        try:
+            resolve_project(config, name)
+        except ProjectError:
+            continue
+        names.append(name)
+        if len(names) == MAX_LISTED:
+            break
+    return names

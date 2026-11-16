@@ -92,7 +92,14 @@ NOTICE_SENTENCES = {
     "new_session": "I started a new session for this project.",
     "target_changed": "The push target changed. That one needs the desk.",
     "out_of_budget": "The agent is out of budget for now.",
+    # After a confirmed `gh repo create` ran (jarvis-general-conversation D53).
+    "project_ready": "It's ready; you can switch to it.",
+    "project_not_ready": "The repository was created, but I could not set it up as a "
+                         "project. That needs the desk.",
 }
+# Said after the agent's own summary, not before it: the summary says what was
+# made, the notice what follows from it.
+TRAILING_NOTICES = frozenset({"project_ready", "project_not_ready"})
 
 # A read-back is fixed words plus shape-checked targets, built on the agent host.
 # It is spoken as given or not at all: never cleaned, never put through the summary
@@ -590,11 +597,14 @@ def _unlink(path: str) -> None:
 
 
 def _spoken(notice: str, marker_line: str) -> str:
-    """The notice's fixed sentence first, then the agent's summary when it gave one."""
+    """The notice's fixed sentence and the agent's summary when it gave one: the
+    sentence first, or after the summary for a trailing notice."""
     if not notice:
         return extract_summary(marker_line)
     sentence = NOTICE_SENTENCES[notice]
     if not marker_line.strip():
         return sentence
     summary = extract_summary(marker_line)
-    return sentence if summary == FALLBACK_SUMMARY else f"{sentence} {summary}"
+    if summary == FALLBACK_SUMMARY:
+        return sentence
+    return f"{summary} {sentence}" if notice in TRAILING_NOTICES else f"{sentence} {summary}"

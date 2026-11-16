@@ -70,3 +70,8 @@ notify_command = []
 pr_status_command = ["gh", "pr", "view"]
 # Days that records and action logs are kept.
 retention_days = 90
+# After a confirmed `gh repo create <owner>/<name>` ran, the wrapper clones it to <projects_root>/<name>
+# (only with projects_root, only for an owner in own_owners). It adds `<owner>/<name> <destination>`.
+clone_command = ["gh", "repo", "clone"]
+# Seconds the clone may take; then it is stopped and nothing of it is left.
+clone_timeout_s = 120

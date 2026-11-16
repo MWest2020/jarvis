@@ -64,7 +64,8 @@ class Named:
     covers: frozenset[str]
     # What the wrapper must fetch to complete the read-back, or None:
     # ("merge", number, "owner/name", full sha) or
-    # ("push", remote, ((source, destination), ...)).
+    # ("push", remote, ((source, destination), ...)) or
+    # ("create", "owner/name") for `gh repo create`.
     status: tuple | None = None
 
 
@@ -202,7 +203,10 @@ def _name_gh(subpath, args, rest, ctx, config) -> Named | Missing:
             raise NotNameable("more than one visibility")
         # When the call does not say, it is read back as public (D36).
         word = visibility.pop()[2:] if visibility else "public"
-        return Named(f"Create the {word} repository {repo.spoken}.", frozenset({"create"}))
+        # The repository rides along for what the wrapper does after the
+        # creation ran: clone it as a project (jarvis-general-conversation D53).
+        return Named(f"Create the {word} repository {repo.spoken}.", frozenset({"create"}),
+                     status=("create", repo.value))
 
     if subpath in (("repo", "delete"), ("repo", "archive")):
         _, _, positional = read_options(args, flags={"--yes", "-y"}, valued={})

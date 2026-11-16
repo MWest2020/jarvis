@@ -22,6 +22,13 @@ One request is one of three things:
   read-back.
 - **A `confirm` with `no`.** The pending call is cleared and no agent turn
   starts.
+- **A list** (`{"v":1,"list":true}`, jarvis-general-conversation D51). The
+  names of the projects a turn would accept, in a reply of its own shape
+  (`LIST_FIELDS`). No lock, no pending call touched, no agent, no record.
+
+After a confirming turn in which a confirmed `gh repo create <owner>/<name>`
+ran, the wrapper clones that repository into the project root, so that it
+is a project at the next turn (D53). The agent never writes there itself.
 
 Every request for a project clears its pending call first, whatever the
 request is: a pending call is single use and never survives the next
@@ -44,8 +51,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -66,6 +75,9 @@ from bridge.summary import last_marker_line
 V1_FIELDS: tuple[str, ...] = (
     "v", "status", "error", "turn", "spoken", "pending", "readback", "confirm", "notice",
 )
+# The answer to a list request (D51). A refusal of one comes in the shape
+# above: the kill switch answers before it has read which request it is.
+LIST_FIELDS: tuple[str, ...] = ("v", "status", "error", "projects")
 
 # The closed error list of D33.
 ERROR_CODES = frozenset({
@@ -78,6 +90,8 @@ ERROR_CODES = frozenset({
 NOTICE_CODES = frozenset({
     "needs_desk", "run_alone", "settings_changed", "target_changed",
     "out_of_budget", "new_session",
+    # After a confirmed `gh repo create` ran (D53): cloned as a project, or not.
+    "project_ready", "project_not_ready",
 })
 
 
@@ -87,7 +101,7 @@ NOTICE_CODES = frozenset({
 # this call, go to the desk", last what is only good to know.
 NOTICE_ORDER: tuple[str, ...] = (
     "settings_changed", "target_changed", "needs_desk", "run_alone", "out_of_budget",
-    "new_session",
+    "project_not_ready", "project_ready", "new_session",
 )
 assert set(NOTICE_ORDER) == NOTICE_CODES
 
@@ -141,6 +155,11 @@ def disabled_reply() -> dict:
     return _reply(status="error", error="disabled")
 
 
+def list_reply(names: list[str]) -> dict:
+    """The answer to a list request: exactly LIST_FIELDS (D51)."""
+    return {"v": 1, "status": "ok", "error": None, "projects": list(names)}
+
+
 def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
     if not config.enabled:
         return disabled_reply()
@@ -149,6 +168,9 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
         req = request_mod.parse_request(raw)
     except request_mod.RequestError:
         return _reply(status="error", error="bad_request")
+
+    if isinstance(req, request_mod.ListRequest):
+        return list_reply(projects.list_projects(config))
 
     try:
         working_dir = projects.resolve_project(config, req.project)
@@ -223,7 +245,8 @@ def _handle(req: request_mod.Request, working_dir: Path, config: AgentHostConfig
         if derived is None or not isinstance(derived.outcome, naming.Named) \
                 or derived.hash is None or derived.hash != req.confirm.sha256:
             return _reply(status="error", error="expired")
-        confirmed = _Confirmed(req.confirm.sha256, derived.base_hash, derived.outcome.sentence)
+        confirmed = _Confirmed(req.confirm.sha256, derived.base_hash, derived.outcome.sentence,
+                               _created_repository(derived))
         prompt = confirming_prompt(confirmed.sentence, stale.call)
         env["JARVIS_GRANT"] = confirmed.grant
         env["JARVIS_GRANT_BASE"] = confirmed.base_hash
@@ -252,6 +275,97 @@ class _Confirmed:
     grant: str        # the hash the bridge sent with the yes
     base_hash: str    # the same call without its push address
     sentence: str     # what was confirmed, as derived now
+    # "owner/name" when the confirmed call is a plain `gh repo create`, else None (D53).
+    creates: str | None = None
+
+
+def _created_repository(derived: naming.Derived) -> str | None:
+    """The repository a confirmed call creates, when it is exactly a
+    `gh repo create <owner>/<name>`: the class `create` and nothing else (no
+    `sudo`, no host in front of it), and the read-back's status names it."""
+    named = derived.outcome
+    if not isinstance(named, naming.Named) or set(derived.verdict.classes) != {"create"}:
+        return None
+    status = named.status
+    if not (isinstance(status, tuple) and len(status) == 2 and status[0] == "create"):
+        return None
+    return status[1] if isinstance(status[1], str) else None
+
+
+CLONE_DIR_PREFIX = ".jarvis-clone-"
+# Never handed to the clone: they belong to the agent turn that ended.
+_GRANT_VARIABLES = ("JARVIS_GRANT", "JARVIS_GRANT_BASE")
+
+
+def project_after_create(config: AgentHostConfig, repository: str,
+                         env: dict[str, str]) -> tuple[bool, str]:
+    """Make a repository that was just created a project (D53): clone it to
+    `<projects_root>/<name>`. Returns (ready, why).
+
+    Only with a project root, only for an own owner, only for a valid name
+    that is not excluded, and only where nothing is yet. The clone goes into
+    a fresh hidden directory under the root (hidden, so no list names it)
+    and is renamed into place only when it exited 0 and is a work tree;
+    whatever is left otherwise is removed. Run by the wrapper with the
+    turn's environment, never by the agent.
+    """
+    root = config.projects_root
+    if config.projects or root is None:
+        return False, "the agent host has an explicit project list"
+    owner, _, name = repository.partition("/")
+    if owner.lower() not in {o.lower() for o in config.own_owners}:
+        return False, "the owner is not one of own_owners"
+    if not projects.project_name_ok(name) or name in config.project_exclusions:
+        return False, "not a project name, or excluded"
+    target = root / name
+    if target.exists() or target.is_symlink():
+        try:
+            projects.resolve_project(config, name)
+        except projects.ProjectError:
+            return False, "something else is there already"
+        return True, "already a project"
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=CLONE_DIR_PREFIX, dir=root))
+    except OSError as exc:
+        return False, f"no directory for the clone: {exc.strerror or exc}"
+    try:
+        destination = staging / name
+        child_env = {key: value for key, value in env.items() if key not in _GRANT_VARIABLES}
+        try:
+            proc = subprocess.Popen(
+                [*config.clone_command, repository, str(destination)], cwd=root,
+                env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"the clone could not start: {exc}"
+        try:
+            proc.wait(timeout=config.clone_timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+            return False, f"the clone took longer than {config.clone_timeout_s}s"
+        if proc.returncode != 0:
+            return False, f"the clone exited {proc.returncode}"
+        if destination.is_symlink() or not destination.is_dir() \
+                or not (destination / ".git").is_dir():
+            return False, "the clone is not a work tree"
+        if target.exists() or target.is_symlink():
+            return False, "something else appeared there during the clone"
+        try:
+            os.rename(destination, target)
+        except OSError as exc:
+            return False, f"the clone could not be moved into place: {exc.strerror or exc}"
+        try:
+            projects.resolve_project(config, name)
+        except projects.ProjectError as exc:
+            return False, f"not a project after the clone: {exc}"
+        return True, "cloned"
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def confirming_prompt(sentence: str, call: dict) -> str:
@@ -431,11 +545,22 @@ def _after_turn(
         # that call's hash (written by the PostToolUse hook). Not from the
         # gate's state. "unknown" when the log cannot say.
         outcome = record_mod.ran(config.actions_dir, turn_id, confirmed.base_hash)
-        actions.append({
+        action = {
             "outcome": "confirmed", "ran": outcome, "readback": confirmed.sentence,
             "notify": _notify(config, f"{confirmed.sentence} Outcome: {outcome}.",
                               working_dir, env),
-        })
+        }
+        if confirmed.creates is not None and outcome == "ran":
+            # A new repository: the wrapper makes it a project (D53). Only on
+            # exactly "ran"; never on the agent's word.
+            try:
+                ready, why = project_after_create(config, confirmed.creates, env)
+            except Exception as exc:  # noqa: BLE001 - whatever it was, not ready
+                ready, why = False, f"failed: {type(exc).__name__}"
+            action["project"] = "ready" if ready else f"not ready: {why}"
+            notice = most_important_notice(
+                [notice, "project_ready" if ready else "project_not_ready"])
+        actions.append(action)
 
     call = state["pending"]
     if changed is not None:

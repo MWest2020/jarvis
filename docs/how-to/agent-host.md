@@ -192,10 +192,50 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
+| `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name>` and the destination. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
+| `clone_timeout_s` | no (default `120`, at most `600`) | How long that clone may take before it is stopped and removed. |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
-directly under the root, and it must be a git repository with a work tree. A project must
-also be on the bridge's own list to be reachable by voice.
+directly under the root, and it must be a git repository with a work tree. **This list is
+what can be asked by voice** (change `jarvis-general-conversation`, D52): the bridge asks
+the agent host for it (`GET /projects` on the phone) and no longer refuses a project
+because its pod has no copy. So every checkout under `projects_root` that is not in
+`project_exclusions` is reachable by voice, a fork or an organisation's repository cloned
+there by hand included. Keep the exclusions up to date; review them before an update that
+brings this change.
+
+### The list request
+
+Next to a turn, the wrapper answers one other request, `{"v":1,"list":true}` (exactly
+those two fields), with `{"v":1,"status":"ok","error":null,"projects":[...]}`: the names
+sorted, at most 500, each one a turn would accept (every candidate goes through the
+turn's own resolver). It takes no turn lock, touches no pending call, starts no agent and
+writes no record. With the kill switch set it is answered `disabled`, like a turn. An
+older wrapper answers it `bad_request`; the bridge then lists its own copies.
+
+### A new repository becomes a project
+
+After a confirming turn in which a confirmed `gh repo create <owner>/<name>` ran (the
+action log says `ran`), the wrapper (not the agent) clones the repository to
+`<projects_root>/<name>`, so it is a project at the next turn, and Jarvis says "It's
+ready; you can switch to it." after the agent's own summary. It does so only when:
+
+- the host uses `projects_root` (with a `[projects]` table nothing is cloned);
+- the owner is in `own_owners`;
+- the name is a project name and not in `project_exclusions`;
+- nothing is at `<projects_root>/<name>` yet. A directory that is already a project
+  there counts as ready and is not touched; anything else there is not touched either.
+
+The clone runs `clone_command` with the turn's environment (the grant variables removed),
+in the root, with stdin closed, into a fresh hidden directory `.jarvis-clone-<random>/`
+under the root. It is renamed into place only when it exited 0 and is a work tree, and
+whatever is left of it is removed, also after `clone_timeout_s`. In every other case
+Jarvis says "The repository was created, but I could not set it up as a project. That
+needs the desk." The turn record says which, in the confirmed action's `project` field
+(`ready`, or `not ready: <why>`). Nothing is cloned for a creation that ran without a
+read-back (confirmation off, or `create` in `confirm_skip`), through a connector tool,
+by `gh api`, or for a fork. The agent cannot clone into the home directory itself: that
+write is in the class `self`.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A
 turn starts from nothing but this file plus the turn variables: `JARVIS_TURN=1`,
@@ -310,6 +350,12 @@ every connection of the bridge's key by itself (`journalctl -u ssh`).
 
 **Jarvis itself.** Pull the repository, review, and run `install.sh` again. Compare
 `/etc/jarvis-agent/config.toml` with `config.toml.example` for new keys.
+
+**Update the bridge before the agent host** when both change the wire contract. For
+`jarvis-general-conversation` (D55): a new bridge with an old agent host works (the list
+falls back to the pod's copies, nothing is cloned); an old bridge with a new agent host
+cannot read the reply of a confirming turn that created a repository. Before installing
+that change here, review `project_exclusions` (see [Configuration](#configuration)).
 
 **Claude Code.** The gate depends on how Claude Code treats hooks and settings, and that
 can change with a version. On every version bump on the agent host, **before Jarvis uses
