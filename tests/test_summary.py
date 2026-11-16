@@ -41,8 +41,9 @@ def test_never_speaks_paths_or_code():
         assert extract_summary(f"Reply.\n{SUMMARY_MARKER} {bad}") == FALLBACK_SUMMARY, bad
 
 
-def test_never_speaks_a_very_long_summary():
-    assert extract_summary(f"{SUMMARY_MARKER} " + "word " * 200) == FALLBACK_SUMMARY
+def test_a_very_long_summary_is_shortened_not_dropped():
+    spoken = extract_summary(f"{SUMMARY_MARKER} " + "word " * 200)
+    assert spoken != FALLBACK_SUMMARY and len(spoken) <= 160
 
 
 # Review of run-bridge-in-cluster: nothing shaped like a credential is spoken.
@@ -65,3 +66,45 @@ def test_never_speaks_a_long_token_like_run():
 def test_still_speaks_ordinary_long_words():
     reply = f"{SUMMARY_MARKER} Internationalization and the counterrevolutionaries both pass."
     assert extract_summary(reply) == "Internationalization and the counterrevolutionaries both pass."
+
+
+def test_the_spoken_line_is_capped_at_160_characters():
+    from bridge.summary import MAX_SPOKEN_CHARS
+
+    assert MAX_SPOKEN_CHARS == 160
+    fits = ("word " * 32).strip()                # 159 characters
+    assert len(fits) <= MAX_SPOKEN_CHARS
+    assert extract_summary(f"{SUMMARY_MARKER} {fits}") == fits
+
+
+def test_a_long_summary_is_cut_at_the_last_sentence_end_within_the_cap():
+    first = "The build is green and the image was pushed."
+    second = "Two tests were added for the voice!"
+    third = "The rest of this reply goes on " + "and on " * 20 + "for far too long."
+    spoken = extract_summary(f"{SUMMARY_MARKER} {first} {second} {third}")
+    assert spoken == f"{first} {second}"
+    # A full stop inside a number is not a sentence end.
+    spoken = extract_summary(f"{SUMMARY_MARKER} Version 2.5 is out. " + "word " * 40)
+    assert spoken == "Version 2.5 is out."
+
+
+def test_a_long_summary_without_a_sentence_end_is_cut_at_a_word_with_an_ellipsis():
+    spoken = extract_summary(f"{SUMMARY_MARKER} " + "word " * 200)
+    assert spoken == ("word " * 32).strip() + "…"      # 159 characters and the ellipsis
+    assert len(spoken) <= 160
+    spoken = extract_summary(f"{SUMMARY_MARKER} " + "sevench, " * 30)
+    assert spoken.endswith("sevench…") and len(spoken) <= 160
+
+
+def test_a_long_summary_the_filters_reject_still_gets_the_fallback():
+    # The path and the token sit beyond the cap: the cut would drop them, the filter must not.
+    long_start = "All good. " + "word " * 40
+    assert extract_summary(f"{SUMMARY_MARKER} {long_start} see src/app/main.py") == FALLBACK_SUMMARY
+    assert extract_summary(f"{SUMMARY_MARKER} {long_start} " + "a3f9" * 8) == FALLBACK_SUMMARY
+
+
+def test_the_instruction_asks_for_one_short_sentence():
+    from bridge.summary import SYSTEM_PROMPT_ADDITION
+
+    assert "one sentence, two at most" in SYSTEM_PROMPT_ADDITION
+    assert "100 to 150 characters" in SYSTEM_PROMPT_ADDITION
