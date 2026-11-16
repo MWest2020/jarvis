@@ -666,7 +666,7 @@ def test_reading_a_repositorys_configuration_and_writing_elsewhere_in_git_is_not
 # --- worktrees for another repository (Mark, 2026-11-16) ---------------------------------
 # A voice turn's `git -C ~/bazibo worktree add ~/bazibo-piano …` was refused as `self`. That
 # stays so (a directory in ~ becomes a project, and only the wrapper sets projects up); the
-# prompt sends such worktrees to ~/.worktrees/<name>, which is not a protected place.
+# prompt sends such worktrees to ~/.worktrees/jv-<name>, which is not a protected place.
 
 @pytest.mark.parametrize("command", [
     "git -C ~/bazibo worktree add ~/.worktrees/jv-bazibo-piano -b feat/piano main",

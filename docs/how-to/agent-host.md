@@ -319,7 +319,9 @@ The bridge now says "I passed that on to the coding session." wherever it said t
 the coding session at the desk takes these turns over from their records
 (`records/<turn>.json`, with what he asked):
 
-- a gated call that was refused: an entry in `gated_actions` with `outcome: refused`;
+- a gated call refused for the desk: an entry in `gated_actions` with `outcome: refused` and
+  `code` one of `needs_desk`, `settings_changed`, `target_changed` (other refusals, such as
+  a split or a missing target the agent repairs, or `run_alone`, are part of a normal turn);
 - a new repository that could not be set up as a project: `outcome: confirmed` with a
   `project` field that starts with `not ready` (`name_taken`, `needs_desk`, a name no
   project can have).
@@ -328,7 +330,7 @@ It does the request under its own rules (a worktree, a pull request, a review; a
 Jarvis's own rules like any other change) and pings Mark the outcome in Ratatoskr. The gate
 itself does not change: by voice, those calls stay refused. A read-back that cannot be
 spoken is cancelled like a no (`outcome: cancelled`) and is not passed on; Jarvis says "I
-could not read that back, so I cancelled it."
+could not read that back, so I cancelled it. Ask me again."
 
 Where it runs: a recurring job of the coding session on agent-lxc (every 30 minutes,
 handled turns in `~/.local/state/jarvis-agent-desk-seen.txt`). It is a session job: it ends

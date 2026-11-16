@@ -103,7 +103,7 @@ NOT_STARTED_CODES = FALLBACK_CODES | TRY_AGAIN_CODES | {BAD_REQUEST, EXPIRED}
 NEEDS_THE_DESK = "I passed that on to the coding session."
 # The read-back could not be spoken, so the call was cancelled (recorded as `cancelled`,
 # like a no): nothing is passed on, and the driver can ask again.
-READBACK_UNSPEAKABLE = "I could not read that back, so I cancelled it. Ask me again in other words."
+READBACK_UNSPEAKABLE = "I could not read that back, so I cancelled it. Ask me again."
 OUT_OF_BUDGET = "out_of_budget"
 # The closed list of notices, each with the bridge's own fixed sentence.
 NOTICE_SENTENCES = {

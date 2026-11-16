@@ -242,7 +242,7 @@ than 500 characters, white space at either end, anything that splits into lines,
 control, format, private-use or unassigned character, or any separator other than the
 plain space (no line or paragraph separator, no no-break space). The bridge
 then cancels the call on the agent host (answer `no`), keeps nothing and says "I could
-not read that back, so I cancelled it." Detected speech is measured with the voice activity detector inside
+not read that back, so I cancelled it. Ask me again." Detected speech is measured with the voice activity detector inside
 faster-whisper (a file in the package, nothing is downloaded); if it cannot be measured,
 nothing counts as an utterance.
 
