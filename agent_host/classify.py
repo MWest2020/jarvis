@@ -641,17 +641,80 @@ _SED_REACHES_OUT_RE = re.compile(
     r"(?:^|[;{}\s]|\d|\$|/)\s*[erwRW](?:\s|$)|s(.).*\1.*\1[a-zA-Z0-9]*[ew]")
 
 
+# Per program: short options whose value is a script, short options whose
+# value is a file of code (or a library), the other short options that take a
+# value, and the same as long options.
+_SCRIPT_OPTIONS = {
+    "awk": ("e", "fiElE", "vF", ("--source",), ("--file", "--include", "--load", "--exec"),
+            ("--assign", "--field-separator")),
+    "sed": ("e", "f", "li", ("--expression",), ("--file",), ("--line-length", "--in-place")),
+}
+
+
+def _awk_sed_parts(program: str, args: list[str]) -> tuple[list[str], bool]:
+    """The script texts of an `awk` or `sed` call, also the ones given as an
+    option value (`-e'1e id'`, `--expression=…`, `-ne …`), and whether it
+    loads code from a file."""
+    key = "awk" if program in _AWK else "sed"
+    script_short, file_short, value_short, script_long, file_long, value_long = _SCRIPT_OPTIONS[key]
+    scripts: list[str] = []
+    loads = False
+    take: str | None = None  # what the next argument is: "script", "file" or "value"
+    for arg in args:
+        if take is not None:
+            if take == "script":
+                scripts.append(arg)
+            loads = loads or take == "file"
+            take = None
+            continue
+        if arg == "--" or not arg.startswith("-") or arg == "-":
+            if arg != "--":
+                scripts.append(arg)  # a script, a file or an assignment: all are looked at
+            continue
+        if arg.startswith("--"):
+            name, eq, value = arg.partition("=")
+            if any(long.startswith(name) and len(name) > 3 for long in script_long):
+                if eq:
+                    scripts.append(value)
+                else:
+                    take = "script"
+            elif any(long.startswith(name) and len(name) > 3 for long in file_long):
+                loads = True
+                take = None if eq else "file"
+            elif name in value_long and not eq and name != "--in-place":
+                take = "value"
+            continue
+        for index, letter in enumerate(arg[1:], start=1):
+            rest = arg[index + 1:]
+            if letter in script_short:
+                if rest:
+                    scripts.append(rest)
+                else:
+                    take = "script"
+                break
+            if letter in file_short:
+                loads = True
+                take = None if rest else "file"
+                break
+            if letter in value_short:
+                if key == "sed" and letter == "i":
+                    break  # -i[SUFFIX]: the suffix is attached or absent
+                take = None if rest else "value"
+                break
+    return scripts, loads
+
+
 def _script_reaches_out(program: str, args: list[str]) -> bool:
     """`awk` and `sed` are little interpreters: a script that runs a
     command or writes a file is inline code."""
-    scripts = [arg for arg in args if not arg.startswith("-")]
+    if program not in _AWK and program != "sed":
+        return False
+    scripts, loads = _awk_sed_parts(program, args)
+    if loads:
+        return True
     if program in _AWK:
-        return any(mark in script for script in scripts for mark in _AWK_REACHES_OUT) \
-            or any(arg in ("-f", "--file", "-i", "--include", "-l", "--load") for arg in args)
-    if program == "sed":
-        return any(_SED_REACHES_OUT_RE.search(script) for script in scripts) \
-            or any(arg in ("-f", "--file") or arg.startswith("--file=") for arg in args)
-    return False
+        return any(mark in script for script in scripts for mark in _AWK_REACHES_OUT)
+    return any(_SED_REACHES_OUT_RE.search(script) for script in scripts)
 
 
 def _is_interpreter(program: str, ctx: Context) -> bool:
@@ -1508,6 +1571,12 @@ def _shell_writes_protected(command: str, ctx: Context) -> bool:
                         continue
                     resolved = _resolve(part, ctx)
                     if ctx.protected.covers(resolved) or ctx.protected.is_protected_dir(resolved):
+                        mentioned = True
+                    elif ctx.protected.is_protected_dir(os.path.dirname(resolved)) \
+                            and not os.path.isdir(resolved):
+                        # A file whose directory is a protected place (`~/.gitconfig`,
+                        # `~/.claude/keybindings.json`): that is where it lands. An
+                        # existing directory there (a checkout in ~) is a place of its own.
                         mentioned = True
                     elif program in rules.self_tree_programs and ctx.protected.holds(resolved):
                         return True

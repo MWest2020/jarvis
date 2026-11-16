@@ -115,7 +115,7 @@ def test_a_gated_command_after_cd_is_still_run_it_alone(env, command, classes):
 
 @pytest.mark.parametrize("command", [
     "cd $X && make",
-    "cd ${HOME}/x && make",
+    "cd ${HOME}/area/x && make",   # `${HOME}/x` itself lands in the home directory: self
     "cd $(pwd) && make",
     "cd `pwd` && make",
     "cd su* && make",

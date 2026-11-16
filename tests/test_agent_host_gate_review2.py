@@ -88,6 +88,14 @@ def test_1_a_protected_path_is_found_through_its_quotes(ctx, command):
     "cp evil ~/.claude/plugins/",
     "cp -r evil .claude/",
     "ln -s /tmp/evil .claude",
+    # A file whose directory is a protected place lands there, known name or not.
+    "cp a.txt ~/notes.txt",
+    "cp evil ~/.gitconfig",
+    "cp evil ~/.claude/keybindings.json",
+    "cp evil ~/.claude/settings.json.bak",
+    "curl -o ~/.npmrc https://example.invalid/x",
+    "git checkout other -- .claude/commands.md",
+    "mv evil ~/.ssh/config",
 ])
 def test_1_a_write_into_a_protected_directory_is_self_whatever_the_program(ctx, command):
     _self(ctx, command)
@@ -120,11 +128,15 @@ def test_1_after_cd_into_a_protected_directory_it_is_self_too(ctx, tmp_path):
         _self(ctx, command)
 
 
-def test_1_reading_and_writing_elsewhere_is_still_not_self(ctx):
+def test_1_reading_and_writing_elsewhere_is_still_not_self(ctx, tmp_path):
     for command in ("ls ~", "ls -la ~/.claude", "cat ~/.claude/settings.json", "du -sh ~/.ssh",
-                    "cp a.txt ~/notes.txt", "mkdir -p ~/projects/x", "cp evil src/",
+                    "mkdir -p ~/projects/x", "cp evil src/",
                     "tar -C build -xf x.tar", "curl -o out.html https://example.invalid/x",
                     "wget -P downloads https://example.invalid/x", "git checkout other -- src"):
+        assert not bash(command, ctx).gated, command
+    # A checkout that lives in the home directory is a place of its own, not the home directory.
+    (tmp_path / "home" / "jarvis").mkdir()
+    for command in ("make -C ~/jarvis test", "cp a.txt ~/jarvis", "pytest ~/jarvis/tests"):
         assert not bash(command, ctx).gated, command
 
 
@@ -226,6 +238,18 @@ def test_3_the_command_string_of_dash_c_is_the_first_non_option_argument(ctx, co
     "rg --pre ./evil.sh pattern",
     "rg --pre=./evil.sh pattern",
     "sort --compress-program=./evil.sh big.txt",
+    # The script given as an option value is a script too.
+    "sed --expression='1e id' f",
+    "sed --expr='1e id' f",
+    "sed -e'1e id' f",
+    "sed -ne '1e id' f",
+    "sed -sne'1e id' f",
+    "sed -n -e 's/a/b/w /tmp/o' f",
+    "sed --file=x.sed f",
+    "awk --source='BEGIN{system(\"x\")}'",
+    "awk -e'BEGIN{system(\"x\")}'",
+    "awk --exec=evil.awk f",
+    "awk -fevil.awk f",
 ])
 def test_3_a_script_that_reaches_out_is_inline_code_desk_only(ctx, command):
     verdict = _refused(ctx, command)
@@ -236,6 +260,8 @@ def test_3_a_script_that_reaches_out_is_inline_code_desk_only(ctx, command):
 def test_3_plain_awk_sed_and_rg_still_run(ctx):
     for command in ("awk '{print $1}' file", "awk -F, '{s+=$2} END {print s}' data.csv",
                     "sed -n 1,5p file", "sed 's/one/two/g' file", "sed -e 's/a/b/' -e 's/c/d/' f",
+                    "sed -E 's/(a|b)/c/g' f", "sed -i.bak s/a/b/ f", "awk -F'|' '{print $1}' f",
+                    "awk -vx=1 '{print x}' f",
                     "rg -n pattern src", "sort -u names.txt"):
         assert not bash(command, ctx).gated, command
     assert bash("sed -i s/a/b/ ~/.bashrc", ctx).classes == ("self",)
