@@ -249,3 +249,39 @@ def test_join_spoken():
     assert targets.join_spoken(["a"]) == "a"
     assert targets.join_spoken(["a", "b"]) == "a and b"
     assert targets.join_spoken(["a", "b", "c"]) == "a, b and c"
+
+
+# --- the second review of #44: plain ASCII only -----------------------------------------------
+
+@pytest.mark.parametrize("fn,value", [
+    (lambda v: targets.repository(v, OWN), "me/jаrvis"),            # a Cyrillic а
+    (lambda v: targets.repository(v, OWN), "mе/jarvis"),            # a Cyrillic е in the owner
+    (targets.ref, "mаin"),
+    (targets.ref, "feature/\u202emain"),                             # a direction override
+    (targets.ref, "main\u200b"),                                     # a zero-width space
+    (targets.ref, "main\u00a0x"),                                    # a no-break space
+    (targets.mail_address, "a@exаmple.org"),
+    (targets.mail_address, "а@example.org"),
+    (targets.mail_address, "a@example.org\u200f"),
+    (targets.host, "exаmple.org"),
+    (targets.host, "ｗｅｂ.example.org"),                               # full-width letters
+    (targets.host, "web\u3002example\u3002org"),                     # an ideographic full stop
+    (targets.host, "fe80::1%eth0"),                                  # a zone id
+    (targets.host, "fe80::1%25eth0"),
+    (targets.host, "[fe80::1%evil]"),
+    (targets.label, "wеb"),
+    (targets.name, "homelаb"),
+    (targets.number, "２１"),                                         # full-width digits
+    (targets.number, "٢١"),
+    (targets.commit, "３f9c2ab"),
+])
+def test_a_target_outside_plain_ascii_is_not_nameable(fn, value):
+    _not(fn, value)
+
+
+def test_the_secret_pattern_is_ascii_too():
+    _not(targets.name, "SK-ANT-abc")
+    _not(targets.name, "sk-ant-abc")
+    _not(targets.ref, "feature/SK-ANT-x")
+    assert targets.host("WEB.Example.ORG").spoken == "WEB.Example.ORG"
+    assert targets.host("2001:db8::1") and targets.host("[2001:db8::1]") and targets.host("10.0.0.5")

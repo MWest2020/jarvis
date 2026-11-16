@@ -237,6 +237,10 @@ def protected_paths(
         config.user_settings_path,
         config.managed_settings_path,
         config.confirm_program,
+        # The gate's state, the pending calls, the records and the action
+        # log: what a grant was used for and what was read back. Out of
+        # reach of the agent's tools (D40 says what that is worth).
+        config.state_dir,
     }
     if config.second_prompt_path is not None:
         paths.add(config.second_prompt_path)
@@ -321,7 +325,8 @@ def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
         name = tool_name.lower()
         for word in rules.mcp_words:
             if word in name:
-                return Verdict(gated=True, rule=f"mcp:{word}")
+                cls = next((c for w, c in rules.mcp_classes if w in name), "tool")
+                return Verdict(gated=True, classes=(cls,), rule=f"mcp:{word}")
         return UNGATED
 
     if tool_name in rules.tools_ungated:
@@ -1338,6 +1343,23 @@ def _git_config_writes(args: list[str]) -> bool:
     return len(positional) != 1
 
 
+def default_branch_names(remote: str | None, ctx: Context, where: Path) -> set[str]:
+    """The branch names that count as a default branch for a push to
+    `remote`: the configured ones, and the remote's own HEAD when it can be
+    read. One function, for the gate's verdict and for the wrapper's
+    read-back."""
+    defaults = set(ctx.rules.default_branches)
+    if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
+        head = ctx.git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], where)
+        if head and head.startswith(remote + "/"):
+            defaults.add(head[len(remote) + 1:])
+    return defaults
+
+
+def is_default_destination(destination: str, defaults: set[str]) -> bool:
+    return _is_default_destination(destination, defaults)
+
+
 def _is_default_destination(destination: str, defaults: set[str]) -> bool:
     """A destination that is, or can resolve to, a default branch. git
     completes a short name itself: `main`, `heads/main` and
@@ -1426,11 +1448,7 @@ def _judge_git(args: list[str], ctx: Context) -> Verdict:
         if mapped or default in ("upstream", "tracking"):
             return Verdict(gated=True, classes=tuple(classes), rule="push:mapped")
 
-    defaults = set(ctx.rules.default_branches)
-    if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
-        head = ctx.git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], where)
-        if head and head.startswith(remote + "/"):
-            defaults.add(head[len(remote) + 1:])
+    defaults = default_branch_names(remote, ctx, where)
 
     for destination in destinations:
         if destination in ("HEAD", "@"):

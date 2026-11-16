@@ -7,10 +7,13 @@ releases another call.
 - `Bash`: SHA-256 over the tool name, a zero byte, the `cwd`, a zero byte
   and the command string, byte for byte;
 - any other tool: SHA-256 over the tool name, a zero byte, the `cwd`, a zero
-  byte and the canonical JSON of its input (sorted keys, no insignificant
-  whitespace) without the cosmetic field `description`;
-- a push: additionally a zero byte and the resolved push address of its
-  remote.
+  byte and the canonical JSON of its whole input (sorted keys, no
+  insignificant whitespace). D36 leaves out a field `description` as
+  cosmetic; that is true of `Bash`, where only the command is hashed
+  anyway. For another tool a field of that name can be what is sent (the
+  description of an issue, of an event), so it is part of the hash;
+- a push: additionally a zero byte and what the push resolves to: the push
+  address of its remote, and the source and destination of every ref.
 
 `cwd` is the real path of the directory the call runs in: the same bytes do
 different things in different directories, so a call with the right bytes
@@ -21,12 +24,8 @@ from __future__ import annotations
 import hashlib
 import json
 
-_COSMETIC_FIELDS = ("description",)
-
-
 def canonical_input(tool_input: dict) -> str:
-    cleaned = {key: value for key, value in tool_input.items() if key not in _COSMETIC_FIELDS}
-    return json.dumps(cleaned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(tool_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def call_text(tool_name: str, tool_input: dict) -> str:

@@ -32,8 +32,12 @@ tested without a process.
   worktree carries anything but the few harmless keys, every gated call is
   denied, **with or without a matching grant**.
 - `confirm = "off"`, or a call whose classes are all in `confirm_skip`:
-  the call is let through and noted as not confirmed. The class `self`
-  stays desk-only even then.
+  the call is let through and noted as not confirmed, when it is one call
+  the gate fully understood. The class `self`, a compound command, inline
+  code and a tool nobody listed are refused as always.
+- A grant releases exactly once: an atomic "used" marker per grant, and
+  the turn's state is read and written under a lock. Both live in the
+  gate's state directory, which is in the class `self`.
 - If anything here cannot be done (the rules or the state cannot be read,
   the call cannot be parsed, a crash), the caller denies: failing closed.
 
@@ -43,8 +47,11 @@ to the bridge when the turn ends with nothing pending.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
 import pwd
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,6 +126,9 @@ REASON_ERROR = (
 )
 
 
+_GRANT_RE = re.compile(r"[0-9a-f]{64}")
+
+
 @dataclass(frozen=True)
 class Decision:
     allow: bool
@@ -151,11 +161,57 @@ def build_context(config: AgentHostConfig, cwd: Path, *, home: Path | None = Non
 
 
 def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> bool:
-    if "self" in verdict.classes:
+    """Is confirmation switched off for this call?
+
+    Only for a single call the gate fully understood. Never for the class
+    `self`, never for a compound command or one the gate could not read,
+    never for inline code of an interpreter or a shell fed from stdin, never
+    for a tool nobody listed: "off" means "do not ask me", not "do not
+    look". With `confirm_skip`, every class of the call must be skipped,
+    and a call in no class is in no skipped class.
+    """
+    if "self" in verdict.classes or verdict.run_alone:
+        return False
+    if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
+        return False
+    if verdict.rule.startswith(("interpreter:", "shell:", "tool:")):
         return False
     if config.confirm == "off":
         return True
     return bool(verdict.classes) and set(verdict.classes) <= config.confirm_skip
+
+
+def _use_grant_once(config: AgentHostConfig, turn_id: str, grant: str) -> bool:
+    """Create the "used" marker of this grant. True exactly once.
+
+    An atomic create (O_EXCL): two calls with the granted hash cannot both
+    get through, whatever is in the state file. The marker lives in the
+    gate's state directory, which is in the class `self`.
+    """
+    if not _GRANT_RE.fullmatch(grant):
+        return False
+    config.gate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    marker = config.gate_dir / f"{turn_id}.{grant}.used"
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    os.close(fd)
+    return True
+
+
+@contextlib.contextmanager
+def _turn_state_lock(config: AgentHostConfig, turn_id: str):
+    """One gate at a time per turn: the state file is read, changed and
+    written under an exclusive lock, so two tool calls judged at the same
+    moment cannot both become "the one pending call"."""
+    config.gate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(config.gate_dir / f"{turn_id}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def decide(
@@ -184,75 +240,78 @@ def decide(
     if not verdict.gated:
         return ALLOW
 
-    state = pending.TurnState.load(config.gate_dir, turn_id)
+    if not pending.is_canonical_uuid(turn_id):
+        raise pending.StateError("the turn id is not one the wrapper issues")
+    with _turn_state_lock(config, turn_id):
+        state = pending.TurnState.load(config.gate_dir, turn_id)
 
-    def deny(reason: str, code: str | None, sentence: str | None = None) -> Decision:
-        state.note("pending" if reason == REASON_PENDING else "refused",
-                   code=code, verdict=verdict, sentence=sentence)
-        state.save()
-        return Decision(False, reason, verdict)
+        def deny(reason: str, code: str | None, sentence: str | None = None) -> Decision:
+            state.note("pending" if reason == REASON_PENDING else "refused",
+                       code=code, verdict=verdict, sentence=sentence)
+            state.save()
+            return Decision(False, reason, verdict)
 
-    if checkout_settings.problem(
-        turn_checkout, real_cwd, user_settings_path=config.user_settings_path,
-    ) is not None:
-        return deny(REASON_SETTINGS, "settings_changed")
-    if verdict.desk_only:
-        return deny(REASON_SELF, "needs_desk")
-    if confirmation_off_for(verdict, config):
-        state.note("not_confirmed", code=None, verdict=verdict)
-        state.save()
-        return Decision(True, "", verdict)
-    if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
-        return deny(REASON_NOT_UNDERSTOOD, None)
-    if verdict.run_alone:
-        return deny(REASON_RUN_ALONE, "run_alone")
-
-    derived = naming.derive(tool_name, tool_input, ctx, config)
-    outcome = derived.outcome
-    sentence = outcome.sentence if isinstance(outcome, naming.Named) else None
-
-    if grant:
-        if derived.hash is not None and derived.hash == grant:
-            if state.data["grant_used"]:
-                return deny(REASON_GRANT_USED, "needs_desk", sentence)
-            state.data["grant_used"] = True
-            state.note("released", code=None, verdict=verdict, sentence=sentence)
+        if checkout_settings.problem(
+            turn_checkout, real_cwd, user_settings_path=config.user_settings_path,
+        ) is not None:
+            return deny(REASON_SETTINGS, "settings_changed")
+        if verdict.desk_only:
+            return deny(REASON_SELF, "needs_desk")
+        if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
+            return deny(REASON_NOT_UNDERSTOOD, None)
+        if verdict.run_alone:
+            return deny(REASON_RUN_ALONE, "run_alone")
+        if confirmation_off_for(verdict, config):
+            state.note("not_confirmed", code=None, verdict=verdict)
             state.save()
             return Decision(True, "", verdict)
-        if grant_base and derived.base_hash == grant_base:
-            # The confirmed bytes in the confirmed directory, and yet another
-            # hash: the push address is no longer what was read back.
-            return deny(REASON_TARGET_CHANGED, "target_changed", sentence)
 
-    call = pending.make_call(tool_name, tool_input, str(real_cwd))
-    if state.data["pending"] is not None:
-        return deny(REASON_ONE_AT_A_TIME, None, sentence)
-    if state.data["desk"]:
-        return deny(REASON_DESK, "needs_desk")
+        derived = naming.derive(tool_name, tool_input, ctx, config)
+        outcome = derived.outcome
+        sentence = outcome.sentence if isinstance(outcome, naming.Named) else None
 
-    refused = state.data["refused"]
-    if refused is not None:
-        is_the_repair = (
-            not state.data["repair_used"]
-            and isinstance(outcome, naming.Named)
-            and tool_name == "Bash" and refused["call"]["tool"] == "Bash"
-            and refused["call"]["cwd"] == str(real_cwd)
-            and naming.is_repair(refused["call"]["input"].get("command", ""),
-                                 tool_input.get("command", ""),
-                                 refused["options"], refused["words"])
-        )
-        state.data["repair_used"] = True
-        if not is_the_repair:
-            state.data["desk"] = True
+        if grant:
+            if derived.hash is not None and derived.hash == grant:
+                if state.data["grant_used"] or not _use_grant_once(config, turn_id, grant):
+                    return deny(REASON_GRANT_USED, "needs_desk", sentence)
+                state.data["grant_used"] = True
+                state.note("released", code=None, verdict=verdict, sentence=sentence)
+                state.save()
+                return Decision(True, "", verdict)
+            if grant_base and derived.base_hash == grant_base:
+                # The confirmed bytes in the confirmed directory, and yet another
+                # hash: the push address is no longer what was read back.
+                return deny(REASON_TARGET_CHANGED, "target_changed", sentence)
+
+        call = pending.make_call(tool_name, tool_input, str(real_cwd))
+        if state.data["pending"] is not None:
+            return deny(REASON_ONE_AT_A_TIME, None, sentence)
+        if state.data["desk"]:
             return deny(REASON_DESK, "needs_desk")
-        state.data["pending"] = call
-        return deny(REASON_PENDING, None, sentence)
 
-    if isinstance(outcome, naming.Named):
-        state.data["pending"] = call
-        return deny(REASON_PENDING, None, sentence)
-    if isinstance(outcome, naming.Missing):
-        state.data["refused"] = {"call": call, "options": list(outcome.options),
-                                 "words": outcome.words}
-        return deny(reason_missing(outcome.parts), None)
-    return deny(REASON_DESK, "needs_desk")
+        refused = state.data["refused"]
+        if refused is not None:
+            is_the_repair = (
+                not state.data["repair_used"]
+                and isinstance(outcome, naming.Named)
+                and tool_name == "Bash" and refused["call"]["tool"] == "Bash"
+                and refused["call"]["cwd"] == str(real_cwd)
+                and naming.is_repair(refused["call"]["input"].get("command", ""),
+                                     tool_input.get("command", ""),
+                                     refused["options"], refused["words"])
+            )
+            state.data["repair_used"] = True
+            if not is_the_repair:
+                state.data["desk"] = True
+                return deny(REASON_DESK, "needs_desk")
+            state.data["pending"] = call
+            return deny(REASON_PENDING, None, sentence)
+
+        if isinstance(outcome, naming.Named):
+            state.data["pending"] = call
+            return deny(REASON_PENDING, None, sentence)
+        if isinstance(outcome, naming.Missing):
+            state.data["refused"] = {"call": call, "options": list(outcome.options),
+                                     "words": outcome.words}
+            return deny(reason_missing(outcome.parts), None)
+        return deny(REASON_DESK, "needs_desk")

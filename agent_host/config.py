@@ -34,7 +34,7 @@ PENDING_SECONDS = 60
 # them: it stays desk-only whatever the switch says.
 CONFIRM_CLASSES = frozenset({
     "merge", "deploy", "delete", "force", "api", "account", "message",
-    "create", "outward", "root",
+    "create", "outward", "root", "tool",
 })
 
 

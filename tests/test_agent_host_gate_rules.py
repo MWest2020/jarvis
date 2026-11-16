@@ -686,7 +686,7 @@ def test_a_word_that_only_looks_like_sudo_is_not_root(ctx, command):
 def test_a_connector_tool_whose_name_says_it_sends_is_gated(ctx, tool):
     verdict = classify.classify(tool, {"anything": 1}, ctx)
     assert verdict.gated
-    assert verdict.classes == ()
+    assert len(verdict.classes) == 1 and verdict.classes[0] in ("message", "delete", "tool")
 
 
 @pytest.mark.parametrize("tool", [

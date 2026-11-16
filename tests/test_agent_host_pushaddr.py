@@ -95,7 +95,11 @@ def test_a_push_names_its_repository_and_every_ref(repo):
     ("git push -u origin feature:main", "Push feature as main to the repository jarvis."),
     # A push of two refs names both.
     ("git push origin main release/1.2:main", "Push main and release slash 1.2 as main to the repository jarvis."),
-    ("git push origin HEAD:refs/heads/main", "Push HEAD as main to the repository jarvis."),
+    # HEAD is the current branch, read from the checkout: the name is spoken, not the word.
+    ("git push origin HEAD:refs/heads/main", "Push main to the repository jarvis."),
+    ("git push origin HEAD", "Push main to the repository jarvis."),
+    ("git push origin @:main", "Push main to the repository jarvis."),
+    ("git push origin feature:heads/main", "Push feature as main to the repository jarvis."),
     ("git push -f origin feature", "Force push feature to the repository jarvis."),
     ("git push --force-with-lease origin feature:feature", "Force push feature to the repository jarvis."),
     ("git push origin +feature:main", "Force push feature as main to the repository jarvis."),
@@ -270,14 +274,20 @@ def test_any_byte_of_the_command_the_cwd_or_the_tool_changes_the_hash():
     assert gatehash.call_hash("Bash", "/srv/repogh", {"command": " pr merge 21"}) != base
 
 
-def test_another_tool_is_hashed_over_its_canonical_input_without_description():
+def test_another_tool_is_hashed_over_its_whole_canonical_input():
     import hashlib
-    one = gatehash.call_hash("mcp__mail__send", "/srv", {"to": "a@example.org", "body": "é", "description": "x"})
-    two = gatehash.call_hash("mcp__mail__send", "/srv", {"description": "y", "body": "é", "to": "a@example.org"})
-    assert one == two
+    one = gatehash.call_hash("mcp__mail__send", "/srv", {"to": "a@example.org", "body": "é"})
+    two = gatehash.call_hash("mcp__mail__send", "/srv", {"body": "é", "to": "a@example.org"})
+    assert one == two                                          # key order is not part of it
     expected = hashlib.sha256(
         'mcp__mail__send\0/srv\0{"body":"é","to":"a@example.org"}'.encode()).hexdigest()
     assert one == expected
+    # For a tool that is not Bash a field named `description` can be what is
+    # sent (the description of an issue, of an event): it is hashed.
+    with_one = gatehash.call_hash("mcp__x__create_issue", "/srv", {"title": "t", "description": "a"})
+    with_other = gatehash.call_hash("mcp__x__create_issue", "/srv", {"title": "t", "description": "b"})
+    assert with_one != with_other
+    assert with_one != gatehash.call_hash("mcp__x__create_issue", "/srv", {"title": "t"})
     assert gatehash.call_hash("mcp__mail__send", "/srv", {"to": "b@example.org", "body": "é"}) != one
     with pytest.raises(ValueError):
         gatehash.call_hash("Bash", "/srv", {"cmd": "ls"})
@@ -289,7 +299,7 @@ def test_a_push_hash_also_covers_the_resolved_push_address(repo):
     derived = _outcome(repo, "git push origin main")
     expected = hashlib.sha256(
         b"Bash\0" + str(work.resolve()).encode() + b"\0git push origin main\0"
-        + b"git@github.com:me/jarvis.git").hexdigest()
+        + b"git@github.com:me/jarvis.git" + b"\0main:main").hexdigest()
     assert derived.hash == expected
     assert derived.base_hash == gatehash.call_hash("Bash", str(work.resolve()), {"command": "git push origin main"})
     assert derived.hash != derived.base_hash
@@ -340,3 +350,57 @@ def test_the_hash_is_computed_in_exactly_one_module():
     assert "gatehash" in (REPO_ROOT / "agent_host" / "naming.py").read_text()
     for module in ("decision.py", "wrapper.py"):
         assert "naming.derive" in (REPO_ROOT / "agent_host" / module).read_text()
+
+
+# --- the second review of #44: what a push really pushes --------------------------------------
+
+def test_a_push_of_head_names_and_hashes_the_branch_it_is_now(repo):
+    work, _, _ = repo
+    on_main = _outcome(repo, "git push origin HEAD:main")
+    assert on_main.outcome.sentence == "Push main to the repository jarvis."
+    assert on_main.outcome.status == ("push", "origin", (("main", "main"),))
+    # `git checkout` is not a gated call: the branch behind HEAD can change
+    # between the read-back and the release. The sentence and the hash follow.
+    run_git(work, "checkout", "-q", "-b", "other")
+    on_other = _outcome(repo, "git push origin HEAD:main")
+    assert on_other.outcome.sentence == "Push other as main to the repository jarvis."
+    assert on_other.hash != on_main.hash
+    assert on_other.base_hash == on_main.base_hash           # the same bytes, the same directory
+    run_git(work, "checkout", "-q", "main")
+    assert _outcome(repo, "git push origin HEAD:main").hash == on_main.hash
+
+
+def test_a_detached_head_cannot_be_named(repo):
+    work, _, _ = repo
+    run_git(work, "checkout", "-q", "--detach")
+    derived = _outcome(repo, "git push origin HEAD:main")
+    assert derived.verdict.gated and derived.outcome is None and derived.hash is None
+
+
+def test_a_refspec_without_a_colon_under_a_push_mapping_is_not_nameable(repo):
+    work, _, _ = repo
+    assert isinstance(_outcome(repo, "git push origin main").outcome, Named)
+    run_git(work, "config", "remote.origin.push", "refs/heads/main:refs/heads/production")
+    derived = _outcome(repo, "git push origin main")
+    assert derived.verdict.gated and derived.outcome is None   # it would land elsewhere
+    run_git(work, "config", "--unset", "remote.origin.push")
+    run_git(work, "config", "push.default", "upstream")
+    assert _outcome(repo, "git push origin main").outcome is None
+    # An explicit src:dst says where it lands itself.
+    assert _outcome(repo, "git push origin main:main").outcome.sentence \
+        == "Push main to the repository jarvis."
+
+
+@pytest.mark.parametrize("command", [
+    "ssh jumpy git push origin main",
+    "sudo git push origin main",
+    "sudo -u bob git push origin main",
+    "bash -c 'git push origin main'",
+    "env -C /srv/other git push origin main",
+    "git -C /srv/other push origin main",
+    "GIT_DIR=/srv/other/.git git push origin main",
+])
+def test_a_push_behind_a_wrapper_is_not_nameable(repo, command):
+    derived = _outcome(repo, command)
+    assert derived.verdict.gated, command
+    assert derived.outcome is None, command

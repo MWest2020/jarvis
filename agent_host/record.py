@@ -27,12 +27,27 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-_ANTHROPIC_KEY = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
+from agent_host import gatehash
+
 REDACTED = "[REDACTED]"
+# Values shaped like the credentials a turn on this host can meet: an
+# Anthropic key, GitHub tokens, Slack tokens, AWS access key ids, and
+# whatever follows "Bearer" or stands as the password of a URL.
+_SECRETS = re.compile(
+    r"sk-ant-[A-Za-z0-9_-]+"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|xox[abeoprs]-[A-Za-z0-9-]{8,}"
+    r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+)
+_BEARER = re.compile(r"(?i)\b(bearer|token)(\s+)[A-Za-z0-9._~+/=-]{8,}")
+_URL_PASSWORD = re.compile(r"(://[^/\s:@]+:)[^@\s/]+@")
 
 
 def redact(text: str) -> str:
-    return _ANTHROPIC_KEY.sub(REDACTED, text)
+    text = _SECRETS.sub(REDACTED, text)
+    text = _BEARER.sub(lambda m: m.group(1) + m.group(2) + REDACTED, text)
+    return _URL_PASSWORD.sub(lambda m: m.group(1) + REDACTED + "@", text)
 
 
 @dataclass(frozen=True)
@@ -105,7 +120,8 @@ def action_line(payload: dict, now: str) -> dict | None:
     response = payload.get("tool_response")
     status: object = "ok"
     if isinstance(response, dict):
-        for key in ("exit_code", "exitCode", "returncode"):
+        # The exit code of a Bash call where Claude Code gives one.
+        for key in ("exit_code", "exitCode", "returncode", "returnCode", "code"):
             if isinstance(response.get(key), int):
                 status = response[key]
                 break
@@ -114,13 +130,40 @@ def action_line(payload: dict, now: str) -> dict | None:
                 status = "interrupted"
             elif response.get("is_error") is True or response.get("error"):
                 status = "error"
+    cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
+    # The hash of the call as the gate computes it (without a push's
+    # resolved address): the wrapper finds a confirmed call in this log by it.
+    call_hash = None
+    if cwd is not None and os.path.isabs(cwd):
+        try:
+            call_hash = gatehash.call_hash(tool, os.path.realpath(cwd), tool_input)
+        except (ValueError, TypeError):
+            call_hash = None
     return {
         "time": now,
         "tool": tool,
         "what": redact(what)[:_MAX_LOGGED_CHARS],
-        "cwd": payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
+        "cwd": cwd,
         "status": status,
+        "hash": call_hash,
     }
+
+
+def ran(actions_dir: Path, turn_id: str, base_hash: str) -> str:
+    """Did the call with this hash run in this turn, by the action log:
+    "ran", "not run", or "unknown" when the log cannot say (it is not
+    there, or cannot be read)."""
+    try:
+        text = (actions_dir / f"{turn_id}.jsonl").read_text()
+    except OSError:
+        return "unknown"
+    for line in text.splitlines():
+        try:
+            if json.loads(line).get("hash") == base_hash:
+                return "ran"
+        except (ValueError, AttributeError):
+            return "unknown"
+    return "not run"
 
 
 def append_action(actions_dir: Path, turn_id: str, line: dict) -> Path:

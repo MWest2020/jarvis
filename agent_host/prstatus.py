@@ -104,16 +104,22 @@ def merge_status(number: str, repo: str, pin: str, *, command: tuple[str, ...], 
     return f"{checks}, {review}."
 
 
-def push_status(remote: str, pairs: tuple, default_branches, *, cwd: Path,
+def push_status(remote: str, pairs: tuple, is_default, *, cwd: Path,
                 env: dict[str, str], run=_run) -> str:
     """For a push that lands on a default branch: the number of commits the
-    remote does not have yet, and that nobody reviewed them."""
+    remote does not have yet, and that nobody reviewed them. `is_default`
+    is the classifier's own test of a destination (agent_host.classify), so
+    the read-back and the verdict cannot disagree about what a default
+    branch is."""
     count = None
     for source, destination in pairs:
-        branch = destination[len("refs/heads/"):] if destination.startswith("refs/heads/") \
-            else destination
-        if branch not in default_branches:
+        if not is_default(destination):
             continue
+        branch = destination
+        for prefix in ("refs/heads/", "heads/"):
+            if branch.startswith(prefix):
+                branch = branch[len(prefix):]
+                break
         out = run(["git", "rev-list", "--count", f"refs/remotes/{remote}/{branch}..{source}", "--"],
                   cwd, env)
         try:

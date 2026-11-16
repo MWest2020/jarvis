@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """`confirm on|off [class]`: switch voice confirmation (1.7f, D36).
 
 Installed root-owned at /usr/local/lib/jarvis-agent/confirm (1.15) and run
@@ -7,6 +7,10 @@ two confirm settings in /etc/jarvis-agent/config.toml and nothing else
 (agent_host.switch). It takes no other argument, no option, no path and
 nothing from the environment: the file it writes is a constant of the
 installation, not something a caller chooses.
+
+The shebang is isolated mode (`-I`) in the repository already, not only
+after the installer's rewrite: this program runs as root, and neither
+`PYTHONPATH` nor the directory it is called from may add code to it.
 
 By voice this is the one write to Jarvis's own rules that can be confirmed:
 the gate reads the fixed command back from a template and a yes releases

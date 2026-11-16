@@ -24,6 +24,8 @@ BASE_RULES_PATH = Path(__file__).resolve().parent / "gate_rules.toml"
 ACTION_CLASSES = frozenset({
     "merge", "deploy", "delete", "force", "api", "account", "message",
     "create", "outward", "root",
+    # A connector tool that changes something and is none of the above.
+    "tool",
 })
 
 
@@ -136,6 +138,8 @@ class Rules:
     self_read_programs: frozenset[str]
     self_tree_programs: frozenset[str]
     tool_actions: tuple[ToolAction, ...] = ()
+    # The class a gated connector tool is in, by the word in its name.
+    mcp_classes: tuple[tuple[str, str], ...] = ()
 
     @property
     def action_programs(self) -> frozenset[str]:
@@ -379,7 +383,10 @@ def rules_from_dict(data: dict) -> Rules:
     rm = _table(data, "rm", "")
     _known_keys(rm, {"temp_roots"}, "rm")
     mcp = _table(data, "mcp", "")
-    _known_keys(mcp, {"words"}, "mcp")
+    _known_keys(mcp, {"words", "message", "delete", "merge", "create"}, "mcp")
+    mcp_classes = tuple(
+        (word.lower(), cls) for cls in ("delete", "merge", "create", "message")
+        for word in _strings(mcp, cls, "mcp."))
     self_ = _table(data, "self", "")
     _known_keys(self_, {"home_paths", "claude_dir_paths", "read_programs",
                         "tree_programs", "home_dirs"}, "self")
@@ -425,6 +432,7 @@ def rules_from_dict(data: dict) -> Rules:
         tools_write=frozenset(_strings(tools, "write", "tools.")),
         temp_roots=_strings(rm, "temp_roots", "rm."),
         mcp_words=tuple(word.lower() for word in mcp_words),
+        mcp_classes=mcp_classes,
         self_home_paths=_strings(self_, "home_paths", "self."),
         self_claude_dir_paths=_strings(self_, "claude_dir_paths", "self."),
         self_home_dirs=tuple(home_dirs),

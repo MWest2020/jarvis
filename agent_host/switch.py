@@ -15,7 +15,8 @@ It changes exactly two keys of the configuration file and nothing else:
 - `confirm on` / `confirm off`: `confirm = "on"` / `"off"`. Switching it
   on for everything also empties `confirm_skip`;
 - `confirm off <class>` / `confirm on <class>`: adds the class to, or
-  removes it from, `confirm_skip`.
+  removes it from, `confirm_skip`. When confirmation is off altogether,
+  `confirm on <class>` switches it on with every other class skipped.
 
 The file is TOML and the standard library cannot write TOML, so the two
 keys are rewritten as lines: every existing top-level `confirm =` and
@@ -59,6 +60,11 @@ def new_values(data: dict, state: str, cls: str | None) -> tuple[str, list[str]]
     skip = [item for item in skip if item in CONFIRM_CLASSES]
     if cls is None:
         return state, [] if state == "on" else skip
+    if state == "on" and confirm == "off":
+        # Confirmation is off for everything, and it is asked back for one
+        # class: on, with every other class skipped. (Leaving it "off" and
+        # touching the list would change nothing anybody could hear.)
+        return "on", sorted(CONFIRM_CLASSES - {cls})
     if state == "off" and cls not in skip:
         skip.append(cls)
     if state == "on":
@@ -111,10 +117,16 @@ def switch(argv: list[str], config_path: Path = DEFAULT_CONFIG_PATH) -> str:
     result = rewrite(text, state, cls)
     tmp = config_path.with_name(config_path.name + ".confirm-tmp")
     try:
-        mode = config_path.stat().st_mode & 0o777
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        # The new file has the owner, the group and the mode of the old one:
+        # run with sudo this must not turn a file of somebody's into root's,
+        # nor a private one into a readable one.
+        before = config_path.stat()
+        mode = before.st_mode & 0o777
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as fh:
             fh.write(result)
+        if (before.st_uid, before.st_gid) != (os.geteuid(), os.getegid()):
+            os.chown(tmp, before.st_uid, before.st_gid)
         os.chmod(tmp, mode)
         os.replace(tmp, config_path)
     except OSError as exc:

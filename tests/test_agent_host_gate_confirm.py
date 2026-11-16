@@ -365,11 +365,34 @@ def test_a_push_to_an_address_on_another_host_at_release_is_target_changed(tmp_p
 
 def test_confirm_off_lets_gated_calls_through_and_marks_them_not_confirmed(tmp_path):
     turn = Turn(tmp_path, make_config(tmp_path, confirm="off"))
-    for command in (MERGE, "terraform apply", "gh pr merge 21", MERGE + " && echo done"):
+    for command in (MERGE, "terraform apply", "gh pr merge 21", "sudo systemctl restart web"):
         assert turn.call(command).allow, command
     state = turn.state()
     assert [e["outcome"] for e in state["events"]] == ["not_confirmed"] * 4
     assert state["pending"] is None and state["grant_used"] is False
+
+
+def test_confirm_off_never_applies_to_what_the_gate_did_not_fully_understand(tmp_path):
+    """"Off" means "do not ask me", not "do not look": only a single call
+    the gate fully understood is let through."""
+    turn = Turn(tmp_path, make_config(tmp_path, confirm="off"))
+    for command, reason in (
+        (MERGE + " && echo done", decision.REASON_RUN_ALONE),             # compound
+        ("bash -c 'gh pr merge 1; gh repo delete x'", decision.REASON_RUN_ALONE),
+        (MERGE + " --subject 'a; b'", decision.REASON_RUN_ALONE),         # run it alone
+        ("cd /srv/x && make", decision.REASON_NOT_UNDERSTOOD),            # not understood
+        ("xargs kubectl delete pod", decision.REASON_RUN_ALONE),
+        ("mystery gh repo delete x", decision.REASON_NOT_UNDERSTOOD),
+        ("python3 -c 'print(1)'", decision.REASON_DESK),                  # inline code
+        ("bash", decision.REASON_DESK),
+        ("awk 'BEGIN{system(1)}'", decision.REASON_DESK),
+        ("echo x >> ~/.bashrc", decision.REASON_SELF),                    # self
+    ):
+        result = turn.call(command)
+        assert not result.allow and result.reason == reason, command
+    result = turn.call(tool="SendMessage", tool_input={"to": "x"})
+    assert result.reason == decision.REASON_DESK
+    assert all(e["outcome"] != "not_confirmed" for e in turn.state()["events"])
 
 
 def test_the_class_self_stays_desk_only_with_confirmation_off(tmp_path):
@@ -468,10 +491,10 @@ def test_a_grant_never_releases_a_call_the_gate_cannot_read(tmp_path):
     assert turn.state()["grant_used"] is False
 
 
-def test_confirm_off_lets_it_through_like_everything_but_self(tmp_path):
+def test_confirm_off_does_not_let_a_call_the_gate_cannot_read_through(tmp_path):
     turn = Turn(tmp_path, make_config(tmp_path, confirm="off"))
-    assert turn.call("cd /srv/repo && pytest -q").allow
-    assert turn.call("python3 -c 'print(1)'").allow
+    assert not turn.call("cd /srv/repo && pytest -q").allow
+    assert not turn.call("python3 -c 'print(1)'").allow
     assert not turn.call("cd /tmp && echo x >> ~/.bashrc").allow
     turn = Turn(tmp_path, make_config(tmp_path, confirm_skip=["merge"]))
     assert not turn.call("cd /srv/repo && pytest -q").allow
@@ -514,3 +537,75 @@ def test_a_gated_call_with_a_separator_in_a_quoted_argument_is_run_it_alone(tmp_
     assert result.reason == decision.REASON_RUN_ALONE
     assert turn.state()["pending"] is None
     assert turn.call("git commit -m 'one; two'").allow
+
+
+# --- the second review of #44: the grant ------------------------------------------------------
+
+def test_only_a_well_formed_grant_can_be_used(tmp_path):
+    asking = Turn(tmp_path)
+    good = asking.derive(MERGE).hash
+    for bad in (good.upper(), good[:-1], good + "0", "../" + good, good[:32] + "/" + good[33:]):
+        turn = Turn(tmp_path, asking.config, grant=bad)
+        assert not turn.call(MERGE).allow
+        assert not list(asking.config.gate_dir.glob("*.used"))
+
+
+def test_two_gates_at_the_same_moment_release_a_grant_once(tmp_path):
+    import threading
+    turn = _granted(tmp_path)
+    results = []
+    barrier = threading.Barrier(8)
+
+    def call():
+        barrier.wait()
+        results.append(turn.call(MERGE).allow)
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == [False] * 7 + [True]
+    state = turn.state()
+    assert state["grant_used"] is True
+    assert len(state["events"]) == 8                      # no event was lost under the lock
+
+
+def test_two_gates_at_the_same_moment_make_one_call_pending(tmp_path):
+    import threading
+    turn = Turn(tmp_path)
+    reasons = []
+    barrier = threading.Barrier(6)
+
+    def call(number):
+        barrier.wait()
+        reasons.append(turn.call(MERGE.replace("21", str(number))).reason)
+
+    threads = [threading.Thread(target=call, args=(n,)) for n in range(30, 36)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert reasons.count(decision.REASON_PENDING) == 1
+    assert reasons.count(decision.REASON_ONE_AT_A_TIME) == 5
+
+
+def test_confirm_skip_works_for_a_connector_tool_by_its_class(tmp_path):
+    turn = Turn(tmp_path, make_config(tmp_path, confirm_skip=["tool"]))
+    assert turn.call(tool="mcp__github__push_files", tool_input={"x": 1}).allow
+    assert not turn.call(tool="mcp__x__send_thing", tool_input={"x": 1}).allow     # message
+    assert not turn.call(tool="SendMessage", tool_input={"x": 1}).allow            # nobody listed it
+    turn = Turn(tmp_path, make_config(tmp_path, confirm_skip=["message"]))
+    assert turn.call(tool="mcp__x__send_thing", tool_input={"x": 1}).allow
+
+
+def test_the_switch_read_back_says_what_on_for_a_class_means_when_everything_is_off(tmp_path):
+    turn = Turn(tmp_path, make_config(tmp_path, confirm="off"))
+    program = turn.config.confirm_program
+    assert turn.derive(f"sudo {program} on merge").outcome.sentence == (
+        "Switch voice confirmation on for merge actions only. Everything else stays unconfirmed.")
+    assert turn.derive(f"sudo {program} on").outcome.sentence \
+        == "Switch voice confirmation on for everything."
+    turn = Turn(tmp_path)
+    assert turn.derive(f"sudo {program} on merge").outcome.sentence \
+        == "Switch voice confirmation on for merge actions."

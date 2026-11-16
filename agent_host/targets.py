@@ -37,18 +37,19 @@ MAX_TARGET_CHARS = 100
 _TOKEN_RUN = 32
 
 # The bridge's secret-shaped pattern (bridge/summary.py, `_SECRET_LIKE`).
-_SECRET_RE = re.compile(r"sk-ant-|[A-Za-z0-9_-]{%d,}" % _TOKEN_RUN, re.IGNORECASE)
+_SECRET_RE = re.compile(r"[sS][kK]-[aA][nN][tT]-|[A-Za-z0-9_-]{%d,}" % _TOKEN_RUN, re.ASCII)
 _REF_PART_SPLIT_RE = re.compile(r"[-/_]")
 
-_NUMBER_RE = re.compile(r"[0-9]+")
+_NUMBER_RE = re.compile(r"[0-9]+", re.ASCII)
 _REPO_PART = r"[A-Za-z0-9._-]+"
-_REPO_RE = re.compile(rf"({_REPO_PART})/({_REPO_PART})")
+_REPO_RE = re.compile(rf"({_REPO_PART})/({_REPO_PART})", re.ASCII)
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 _FULL_COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-_LABEL_RE = re.compile(_LABEL)
-_DNS_NAME_RE = re.compile(rf"(?=.{{1,253}}\Z){_LABEL}(?:\.{_LABEL})*", re.IGNORECASE)
-_MAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9._%+-]+")
+_LABEL_RE = re.compile(_LABEL, re.ASCII)
+_UPPER_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_DNS_NAME_RE = re.compile(rf"(?=.{{1,253}}\Z){_UPPER_LABEL}(?:\.{_UPPER_LABEL})*", re.ASCII)
+_MAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9._%+-]+", re.ASCII)
 # A cluster context or a similar configured name: not in D36's table by
 # kind, so the narrowest shape that real names fit (`admin@homelab`).
 _NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?")
@@ -66,7 +67,16 @@ class Target:
     spoken: str  # as it is said in the read-back
 
 
+def _plain_ascii(value: object) -> bool:
+    """Visible ASCII only: no other script (a Cyrillic `а` in a repository
+    name reads like the Latin one), no whitespace, no control or
+    direction-changing character."""
+    return isinstance(value, str) and value.isascii() and all(33 <= ord(ch) <= 126 for ch in value)
+
+
 def _guard(value: str, spoken: str, kind: str) -> None:
+    if not _plain_ascii(value):
+        raise NotNameable(f"a {kind} with characters outside plain ASCII")
     if not value or len(value) > MAX_TARGET_CHARS or len(spoken) > MAX_TARGET_CHARS * 2:
         raise NotNameable(f"a {kind} that is empty or over {MAX_TARGET_CHARS} characters")
     if _SECRET_RE.search(spoken):
@@ -74,7 +84,7 @@ def _guard(value: str, spoken: str, kind: str) -> None:
 
 
 def number(value: str) -> Target:
-    if not isinstance(value, str) or not _NUMBER_RE.fullmatch(value):
+    if not _plain_ascii(value) or not _NUMBER_RE.fullmatch(value):
         raise NotNameable("a number that is not digits only")
     _guard(value, value, "number")
     return Target("number", value, value)
@@ -110,8 +120,8 @@ def is_valid_ref(value: str) -> bool:
 
 def ref(value: str) -> Target:
     """A `/` is spoken as "slash" (`release/1.2`: "release slash 1.2")."""
-    if not isinstance(value, str) or not is_valid_ref(value):
-        raise NotNameable("a ref that is not a valid ref name")
+    if not _plain_ascii(value) or not is_valid_ref(value):
+        raise NotNameable("a ref that is not a valid ref name in plain ASCII")
     if len(value) > MAX_TARGET_CHARS:
         raise NotNameable(f"a ref over {MAX_TARGET_CHARS} characters")
     for part in _REF_PART_SPLIT_RE.split(value):
@@ -124,14 +134,14 @@ def commit(value: str, *, full: bool = False) -> Target:
     """Spoken as its first seven hex digits; the hash and a merge pin keep
     the full value."""
     pattern = _FULL_COMMIT_RE if full else _COMMIT_RE
-    if not isinstance(value, str) or not pattern.fullmatch(value):
+    if not _plain_ascii(value) or not pattern.fullmatch(value):
         raise NotNameable("a commit that is not hex digits of the right length")
     return Target("commit", value, value[:7].lower())
 
 
 def mail_address(value: str) -> Target:
-    if not isinstance(value, str) or value.count("@") != 1:
-        raise NotNameable("a mail address that is not local@domain")
+    if not _plain_ascii(value) or value.count("@") != 1:
+        raise NotNameable("a mail address that is not local@domain in plain ASCII")
     local, domain = value.split("@")
     if not _MAIL_LOCAL_RE.fullmatch(local) or "." not in domain or not _DNS_NAME_RE.fullmatch(domain):
         raise NotNameable("a mail address that is not local@domain")
@@ -154,7 +164,8 @@ def name(value: str) -> Target:
 
 
 def host(value: str) -> Target:
-    if not isinstance(value, str):
+    if not _plain_ascii(value) or "%" in value:
+        # No zone id (`fe80::1%eth0`): what stands behind the % is free text.
         raise NotNameable("a host that is not a DNS name or an address")
     bare = value[1:-1] if value.startswith("[") and value.endswith("]") else value
     try:

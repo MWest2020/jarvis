@@ -285,6 +285,13 @@ words = [
     "merge", "push", "create", "update", "write", "fork", "transfer",
     "approve", "dismiss", "close", "reopen", "assign",
 ]
+# The class of such a tool, by the first of these words in its name; a
+# gated connector tool with none of them is class `tool`. A class is what
+# `confirm_skip` and the `class` of a confirmation go by.
+delete = ["delete", "trash", "dismiss", "close"]
+merge = ["merge"]
+create = ["create", "fork"]
+message = ["send", "reply", "forward", "post", "message", "comment", "invite"]
 
 # --- built-in tools --------------------------------------------------------------
 # A tool that is neither `Bash`, a connector tool (`mcp__*`, above), nor on

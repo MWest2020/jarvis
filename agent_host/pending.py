@@ -21,11 +21,19 @@ the stored call was altered, the read-back describes the altered call and
 the hash releases the altered call: what is heard and what a yes releases
 are always the same call.
 
-**This store is not a trust boundary.** The state directory is writable by
-the agent, the pending call and its time stamp included (D40). The
-guarantees hold for an agent that works through its tools; the grant itself
-travels in the environment of the `claude` process, which its tools cannot
-change.
+**This store is not a trust boundary.** The state directory belongs to
+the agent's own user (D40). It is in the class `self`, so a write to it
+through `Edit`, `Write` or a shell command in a shape the rules know is
+refused; that keeps a mistake out, not an agent that attacks its own host.
+The grant itself travels in the environment of the `claude` process, which
+its tools cannot change, and the wrapper decides whether a confirmed call
+ran from its own grant and the action log, not from this state.
+
+Next to the call the project's pending file keeps the two hashes that were
+read back (`sha256`, `base_hash`). They release nothing: the grant is the
+hash the bridge sends, checked against the call as derived at that moment.
+They only tell an answer that came too late for a changed push address
+(`target_changed`) from one that does not belong to this call (`expired`).
 """
 from __future__ import annotations
 
@@ -37,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_host.config import PENDING_SECONDS
-from agent_host.sessions import is_canonical_uuid
+from agent_host.sessions import is_canonical_uuid  # noqa: F401 - also used by the gate
 
 _PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
@@ -132,6 +140,8 @@ class PendingCall:
     id: str
     call: dict
     issued_at: float
+    sha256: str = ""
+    base_hash: str = ""
 
     def expired(self, now: float | None = None) -> bool:
         age = (time.time() if now is None else now) - self.issued_at
@@ -145,13 +155,14 @@ def _pending_path(pending_dir: Path, project: str) -> Path:
 
 
 def store_pending(pending_dir: Path, project: str, pending_id: str, call: dict,
-                  now: float | None = None) -> PendingCall:
+                  now: float | None = None, *, sha256: str = "", base_hash: str = "") -> PendingCall:
     """Called by the wrapper when the read-back goes out: the expiry clock
     starts here, on the agent host."""
     issued = time.time() if now is None else now
     _write_private(_pending_path(pending_dir, project),
-                   {"id": pending_id, "call": call, "issued_at": issued})
-    return PendingCall(pending_id, call, issued)
+                   {"id": pending_id, "call": call, "issued_at": issued,
+                    "sha256": sha256, "base_hash": base_hash})
+    return PendingCall(pending_id, call, issued, sha256, base_hash)
 
 
 def take_pending(pending_dir: Path, project: str) -> PendingCall | None:
@@ -175,6 +186,9 @@ def take_pending(pending_dir: Path, project: str) -> PendingCall | None:
         if not isinstance(data["id"], str) or not valid_call(data["call"]) \
                 or type(issued) not in (int, float):
             return None
-        return PendingCall(data["id"], data["call"], float(issued))
+        sha256, base_hash = data.get("sha256", ""), data.get("base_hash", "")
+        if not isinstance(sha256, str) or not isinstance(base_hash, str):
+            return None
+        return PendingCall(data["id"], data["call"], float(issued), sha256, base_hash)
     except (ValueError, KeyError, TypeError):
         return None

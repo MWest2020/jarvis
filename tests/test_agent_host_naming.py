@@ -110,7 +110,11 @@ def test_a_merge_with_a_misshapen_target_or_an_unknown_option_is_not_nameable(en
     (f"gh pr comment 5 --repo {F} --body 'thanks; looks fine'".replace(";", ","),
      "Post a comment on pull request 5 on demo of them."),
     (f"gh issue comment 5 --repo {F} --body hi", "Post a comment on issue 5 on demo of them."),
-    (f"gh pr review 5 --repo {F} --approve", "Post a review on pull request 5 on demo of them."),
+    (f"gh pr review 5 --repo {F} --comment --body 'looks fine'", "Post a review on pull request 5 on demo of them."),
+    (f"gh pr review 5 --repo {F} --approve", "Approve pull request 5 on demo of them."),
+    (f"gh pr review 5 --repo {F} --approve --body ok", "Approve pull request 5 on demo of them."),
+    (f"gh pr review 5 --repo {F} --request-changes -b 'see comments'", "Request changes on pull request 5 on demo of them."),
+    (f"gh pr comment 5 --repo {F} --body-file notes.md", "Post a comment on pull request 5 on demo of them."),
     (f"gh pr create --repo {F} --title x --body y", "Open a pull request on demo of them."),
     (f"gh issue create --repo {F} --title x", "Open an issue on demo of them."),
 ])
@@ -130,6 +134,18 @@ def test_other_gh_actions_have_their_sentence(env, command, sentence):
     f"gh release delete v1 --repo {M} --cleanup-tag",
     f"gh pr comment --repo {F} --body hi",          # no number
     f"gh pr comment five --repo {F}",
+    # A message form takes only the options that carry its text.
+    f"gh pr comment 5 --repo {F} --body hi --edit-last",
+    f"gh pr comment 5 --repo {F} --body hi --web",
+    f"gh pr create --repo {F} --title x --body y --head other:branch",
+    f"gh pr create --repo {F} --title x --body y --base main",
+    f"gh pr create --repo {F} --fill",
+    f"gh pr create --repo {F} --title x --body y --assignee someone",
+    f"gh issue create --repo {F} --title x --label bug",
+    f"gh issue comment 5 6 --repo {F} --body hi",
+    f"gh pr review 5 --repo {F}",                                # which kind of review?
+    f"gh pr review 5 --repo {F} --approve --request-changes",
+    f"gh pr review --repo {F} --approve",
     "gh gist create notes.txt",
     "gh repo fork them/demo",
     f"gh workflow run build.yml --repo {M}",
@@ -144,7 +160,7 @@ def test_gh_actions_without_a_template_or_with_a_bad_target_are_not_nameable(env
 
 def test_gh_actions_without_repo_name_exactly_that_part(env):
     for command in ("gh issue delete 5", "gh release delete v1", "gh pr comment 5 --body hi",
-                    "gh pr create --fill", "gh issue create --title x"):
+                    "gh pr create --title x --body y", "gh issue create --title x"):
         missing = _missing(env, command)
         assert missing.parts == ("add --repo owner/name",)
         assert set(missing.options) == {"--repo", "-R"}
@@ -366,6 +382,72 @@ def test_all_matched_classes_are_named(env):
 ])
 def test_root_is_nameable_only_when_the_inner_command_is(env, command):
     _not_nameable(env, command)
+
+
+# --- the second review of #44 ------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    # Another user, another directory, another road to the host: not in the sentence, so no sentence.
+    "sudo -u bob kubectl delete pod web -n shop --context homelab",
+    "sudo -g staff kubectl delete pod web -n shop --context homelab",
+    "sudo -i kubectl delete pod web -n shop --context homelab",
+    "sudo -D /srv kubectl delete pod web -n shop --context homelab",
+    "sudo --user=bob kubectl delete pod web -n shop --context homelab",
+    "su -c 'kubectl delete pod web -n shop --context homelab' bob",
+    "ssh -o ProxyCommand='nc evil 22' jumpy kubectl delete pod web -n shop --context homelab",
+    "ssh -F /tmp/config jumpy kubectl delete pod web -n shop --context homelab",
+    "ssh -J jump.example jumpy kubectl delete pod web -n shop --context homelab",
+    "ssh -p 2222 jumpy kubectl delete pod web -n shop --context homelab",
+    "ssh jumpy -o Hostname=evil.example kubectl delete pod web -n shop --context homelab",
+    "env -C /srv gh repo delete me/demo",
+    "env --chdir=/srv kubectl delete pod web -n shop --context homelab",
+    # A copy with an option that changes how the host is reached.
+    "scp -o ProxyCommand='nc evil 22' notes.txt web.example.org:/srv/",
+    "scp -oProxyJump=evil notes.txt web.example.org:/srv/",
+    "scp -F /tmp/config notes.txt web.example.org:/srv/",
+    "scp -J jump.example notes.txt web.example.org:/srv/",
+    "rsync -av -e 'ssh -p 2222' dir/ web:/srv/dir/",
+    "rsync -av --rsh='ssh -o X=y' dir/ web:/srv/dir/",
+    "rsync -av --rsync-path=/tmp/evil dir/ web:/srv/dir/",
+    "sftp -o ProxyCommand=evil web.example.org",
+    # A kind that is not known to live in a namespace.
+    "kubectl delete namespace shop -n shop --context homelab",
+    "kubectl delete node worker-1 -n shop --context homelab",
+    "kubectl delete pv data -n shop --context homelab",
+    "kubectl delete crd things -n shop --context homelab",
+    "kubectl delete clusterrole admin -n shop --context homelab",
+    "kubectl delete widget web -n shop --context homelab",       # a custom kind nobody knows
+    "kubectl delete Pod web -n shop --context homelab",
+    "kubectl rollout restart node/worker-1 -n shop --context homelab",
+])
+def test_what_the_sentence_would_leave_out_makes_the_call_not_nameable(env, command):
+    _not_nameable(env, command)
+
+
+def test_plain_wrappers_are_still_named(env):
+    assert _sentence(env, "sudo kubectl delete pod web -n shop --context homelab") \
+        == "As root: Delete pod web in namespace shop on cluster homelab."
+    assert _sentence(env, "ssh -t jumpy kubectl delete pod web -n shop --context homelab") \
+        == "Delete pod web in namespace shop on cluster homelab, through host jumpy."
+    for kind in ("pod", "deployment", "sts", "svc", "configmap", "secret", "pvc", "job"):
+        assert _sentence(env, f"kubectl delete {kind} web -n shop --context homelab") \
+            == f"Delete {kind} web in namespace shop on cluster homelab."
+
+
+@pytest.mark.parametrize("tool,cls", [
+    ("mcp__x__send_thing", "message"), ("mcp__x__post_comment", "message"),
+    ("mcp__mail__reply", "message"), ("mcp__org__invite", "message"),
+    ("mcp__mail__delete_draft", "delete"), ("mcp__mail__trash_thread", "delete"),
+    ("mcp__x__close_issue", "delete"), ("mcp__github__merge_pull_request", "merge"),
+    ("mcp__github__create_pull_request", "create"), ("mcp__github__fork_repository", "create"),
+    ("mcp__github__push_files", "tool"), ("mcp__docs__publish", "tool"),
+    ("mcp__files__upload", "tool"), ("mcp__x__update_issue", "tool"),
+])
+def test_a_gated_connector_tool_has_a_class(env, tool, cls):
+    """So that `confirm.class` is never empty and `confirm_skip` can name it."""
+    from agent_host import classify
+    ctx, _ = env
+    assert classify.classify(tool, {"x": 1}, ctx).classes == (cls,)
 
 
 def test_what_is_never_nameable(env):

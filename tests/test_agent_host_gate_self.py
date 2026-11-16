@@ -83,6 +83,12 @@ def _protected(tmp_path, config):
         home / "hooks" / "block-employer.sh",
         home / "hooks" / "audit.py",
         home / "hooks" / "on-stop.sh",
+        # The gate's state, the pending calls, the records and the action log.
+        tmp_path / "state" / "gate" / "x.json",
+        tmp_path / "state" / "pending" / "demo.json",
+        tmp_path / "state" / "actions" / "x.jsonl",
+        tmp_path / "state" / "records" / "x.json",
+        tmp_path / "state" / "sessions" / "sessions.json",
         # The checkout's own settings, and any other checkout's.
         checkout / ".claude" / "settings.json",
         checkout / ".claude" / "settings.local.json",
@@ -115,7 +121,6 @@ def test_a_write_next_to_them_is_not(env):
         home / ".bashrc.bak",
         home / "notes" / ".profile.md",
         home / "hooks" / "unrelated.sh",  # exists, but no hook runs it
-        tmp_path / "state" / "sessions" / "sessions.json",
         tmp_path / "etc" / "other.conf",
     ):
         assert not _write(ctx, path).gated, path

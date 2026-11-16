@@ -27,8 +27,10 @@ def test_a_bash_call_is_logged_with_its_command_and_exit_status():
         "tool_name": "Bash", "tool_input": {"command": "git commit -m x", "description": "commit"},
         "cwd": "/srv/repo", "tool_response": {"stdout": "a lot of output", "exit_code": 0},
     }, NOW)
+    from agent_host import gatehash
     assert line == {"time": NOW, "tool": "Bash", "what": "git commit -m x", "cwd": "/srv/repo",
-                    "status": 0}
+                    "status": 0,
+                    "hash": gatehash.call_hash("Bash", "/srv/repo", {"command": "git commit -m x"})}
     failed = record.action_line({"tool_name": "Bash", "tool_input": {"command": "false"},
                                  "tool_response": {"exit_code": 1}}, NOW)
     assert failed["status"] == 1 and failed["cwd"] is None
@@ -168,7 +170,10 @@ def test_each_entry_point_runs_isolated_behind_a_symlink(tmp_path):
     bin_dir.mkdir()
     for script in (GATE, ACTION_LOG, CONFIRM):
         (bin_dir / script.name).symlink_to(script)
-        assert script.read_text().splitlines()[0] == "#!/usr/bin/env python3"
+        # The hooks get their isolated shebang from the installer; the root
+        # program has it in the repository already.
+        assert script.read_text().splitlines()[0] == (
+            "#!/usr/bin/python3 -I" if script == CONFIRM else "#!/usr/bin/env python3")
         assert os.access(script, os.X_OK)
     turn = str(uuid.uuid4())
     env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": turn, "JARVIS_AGENT_CONFIG": str(config_path),
@@ -386,3 +391,89 @@ def test_the_program_takes_its_file_from_nowhere_but_the_installation():
                           capture_output=True, timeout=30,
                           env={"PATH": os.environ.get("PATH", ""), "JARVIS_AGENT_CONFIG": "/tmp/x"})
     assert proc.returncode == 2 and proc.stdout == b""
+
+
+# --- the second review of #44 ------------------------------------------------------------------
+
+@pytest.mark.parametrize("secret", [
+    "sk-ant-api03-abcDEF_123-xyz",
+    "ghp_" + "a1B2c3D4e5" * 4,
+    "github_pat_" + "11ABCDEFG0" * 4,
+    "gho_" + "a1B2c3D4e5" * 4,
+    "ghs_" + "a1B2c3D4e5" * 4,
+    "xoxb-123456789012-abcdefABCDEF",
+    "xoxp-1234-5678-abcd",
+    "AKIAIOSFODNN7EXAMPLE",
+    "ASIAIOSFODNN7EXAMPLE",
+])
+def test_tokens_of_the_usual_kinds_are_redacted(secret):
+    line = record.action_line({"tool_name": "Bash", "tool_input": {
+        "command": f"curl -H 'x-token: {secret}' https://example.invalid"}}, NOW)
+    assert secret not in line["what"] and record.REDACTED in line["what"]
+    assert secret not in record.redact(f"export TOKEN={secret}")
+
+
+def test_bearer_tokens_and_url_passwords_are_redacted_and_ordinary_text_is_not():
+    assert record.redact("curl -H 'Authorization: Bearer abc.DEF-123_xyz~+/=' x") \
+        == "curl -H 'Authorization: Bearer [REDACTED]' x"
+    assert record.redact("Authorization: token 0123456789abcdef") == "Authorization: token [REDACTED]"
+    assert record.redact("git clone https://user:hunter2secret@example.invalid/x.git") \
+        == "git clone https://user:[REDACTED]@example.invalid/x.git"
+    for plain in ("git push origin main", "the bearer of news", "AKIA is a prefix",
+                  "ghp_short", "https://example.invalid:8443/path@x"):
+        assert record.redact(plain) == plain
+
+
+def test_ran_reads_the_action_log_for_the_hash_of_one_call(tmp_path):
+    from agent_host import gatehash
+    directory = tmp_path / "actions"
+    turn = str(uuid.uuid4())
+    wanted = gatehash.call_hash("Bash", "/srv/repo", {"command": "gh pr merge 21"})
+    assert record.ran(directory, turn, wanted) == "unknown"            # no log at all
+    record.append_action(directory, turn, record.action_line(
+        {"tool_name": "Bash", "tool_input": {"command": "git status -s"}, "cwd": "/srv/repo"}, NOW))
+    assert record.ran(directory, turn, wanted) == "not run"
+    record.append_action(directory, turn, record.action_line(
+        {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 21"}, "cwd": "/srv/other"}, NOW))
+    assert record.ran(directory, turn, wanted) == "not run"           # the same bytes, another directory
+    record.append_action(directory, turn, record.action_line(
+        {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 21", "description": "x"},
+         "cwd": "/srv/repo", "tool_response": {"exit_code": 1}}, NOW))
+    assert record.ran(directory, turn, wanted) == "ran"
+    (directory / f"{turn}.jsonl").write_text("not json\n")
+    assert record.ran(directory, turn, wanted) == "unknown"
+
+
+def test_on_for_one_class_while_everything_is_off_switches_on_with_the_rest_skipped(tmp_path):
+    from agent_host.config import CONFIRM_CLASSES
+    path = tmp_path / "config.toml"
+    path.write_text('state_dir = "/x"\nconfirm = "off"\nconfirm_skip = ["message"]\n')
+    switch.switch(["on", "merge"], path)
+    after = tomllib.loads(path.read_text())
+    assert after["confirm"] == "on"
+    assert set(after["confirm_skip"]) == CONFIRM_CLASSES - {"merge"}
+    # From there the ordinary per-class switches apply.
+    switch.switch(["on", "deploy"], path)
+    assert set(tomllib.loads(path.read_text())["confirm_skip"]) == CONFIRM_CLASSES - {"merge", "deploy"}
+    switch.switch(["on"], path)
+    assert tomllib.loads(path.read_text())["confirm_skip"] == []
+    assert "tool" in CONFIRM_CLASSES and "self" not in CONFIRM_CLASSES
+
+
+def test_the_switch_keeps_the_owner_and_the_mode_of_the_file(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text('state_dir = "/x"\n')
+    path.chmod(0o640)
+    chowned = []
+    monkeypatch.setattr(switch.os, "chown", lambda p, uid, gid: chowned.append((uid, gid)))
+    # As root under sudo: the file belongs to somebody else than the caller.
+    monkeypatch.setattr(switch.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(switch.os, "getegid", lambda: 0)
+    before = path.stat()
+    switch.switch(["off"], path)
+    assert chowned == [(before.st_uid, before.st_gid)]
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_the_root_program_is_isolated_in_the_repository_already():
+    assert CONFIRM.read_text().splitlines()[0] == "#!/usr/bin/python3 -I"

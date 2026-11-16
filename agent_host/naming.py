@@ -235,21 +235,40 @@ def _name_gh(subpath, args, rest, ctx, config) -> Named | Missing:
         ("issue", "create"): "Open an issue on {repo}.",
     }
     if subpath in message_forms:
-        # The text of a comment is not a target and is not spoken; the
-        # options that carry it are not restricted.
+        # The text is not a target and is not spoken, but only the options
+        # that carry text are allowed: anything else (`--head`, `--base`,
+        # `--assignee`, `--web`, `--edit-last` ...) changes what the call
+        # does in a way the sentence would not say.
+        text_options = {"--body": "body", "-b": "body", "--body-file": "body", "-F": "body"}
+        if subpath[1] == "create":
+            text_options.update({"--title": "title", "-t": "title"})
+        review_flags = {"--comment": "comment", "-c": "comment", "--approve": "approve",
+                        "-a": "approve", "--request-changes": "changes", "-r": "changes"}
+        values, flags, positional = read_options(
+            args, flags=review_flags if subpath == ("pr", "review") else set(),
+            valued={**_REPO_OPTIONS, **text_options})
+        words = _after(positional, subpath)
         number = None
         if subpath[1] != "create":
-            if not rest:
-                raise NotNameable("no number")
-            number = targets.number(rest[0])
-        if len(classify.explicit_repos(args, ctx.rules.gh.repo_options)) > 1:
-            raise NotNameable("--repo given more than once")
-        value = classify.explicit_repo(args, ctx.rules.gh.repo_options)
-        if value is None:
+            if len(words) != 1:
+                raise NotNameable("exactly one number")
+            number = targets.number(words[0])
+        elif words:
+            raise NotNameable("an argument the sentence cannot say")
+        sentence = message_forms[subpath]
+        if subpath == ("pr", "review"):
+            if len(flags) != 1:
+                raise NotNameable("a review says exactly one of comment, approve, request changes")
+            sentence = {
+                "comment": sentence,
+                "approve": "Approve pull request {n} on {repo}.",
+                "changes": "Request changes on pull request {n} on {repo}.",
+            }[next(iter(flags))]
+        if "repo" not in values:
             return Missing((PART_REPO,), ("--repo", "-R"))
-        repo = _checked_repo(value, ctx, config)
+        repo = _checked_repo(values["repo"], ctx, config)
         return Named(
-            message_forms[subpath].format(n=number.spoken if number else "", repo=repo.spoken),
+            sentence.format(n=number.spoken if number else "", repo=repo.spoken),
             frozenset({"message"}),
         )
 
@@ -258,13 +277,19 @@ def _name_gh(subpath, args, rest, ctx, config) -> Named | Missing:
 
 # --- the cluster ----------------------------------------------------------------------------
 
-# Deleting one of these is not an action a sentence about a namespace fits,
-# and the classifier refuses most of them to the coding session anyway.
-_CLUSTER_SCOPED = frozenset({
-    "namespace", "namespaces", "ns", "node", "nodes", "no", "pv", "persistentvolume",
-    "persistentvolumes", "crd", "crds", "customresourcedefinition",
-    "customresourcedefinitions", "clusterrole", "clusterroles", "clusterrolebinding",
-    "clusterrolebindings", "storageclass", "storageclasses", "sc",
+# The kinds the "in namespace X" sentence is true for. An allow-list: a
+# kind that is not on it may be cluster-wide (a namespace, a node, a volume,
+# a resource definition, a custom kind nobody knows), and a sentence that
+# says "in namespace" about it would be wrong. Such a call needs the desk.
+_NAMESPACED = frozenset({
+    "pod", "pods", "po", "deployment", "deployments", "deploy", "statefulset",
+    "statefulsets", "sts", "daemonset", "daemonsets", "ds", "replicaset", "replicasets",
+    "rs", "job", "jobs", "cronjob", "cronjobs", "cj", "service", "services", "svc",
+    "configmap", "configmaps", "cm", "secret", "secrets", "ingress", "ingresses", "ing",
+    "persistentvolumeclaim", "persistentvolumeclaims", "pvc", "serviceaccount",
+    "serviceaccounts", "sa", "horizontalpodautoscaler", "hpa", "networkpolicy",
+    "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings",
+    "endpoints", "ep",
 })
 
 
@@ -285,8 +310,8 @@ def _resources(words: list[str]) -> str:
         raise NotNameable("more resources than one sentence holds")
     spoken = []
     for kind, resource in pairs:
-        if kind.lower() in _CLUSTER_SCOPED:
-            raise NotNameable("a cluster-wide resource")
+        if kind not in _NAMESPACED:
+            raise NotNameable("a kind that is not known to live in a namespace")
         spoken.append(f"{targets.label(kind).spoken} {targets.label(resource).spoken}")
     return join_spoken(spoken)
 
@@ -380,9 +405,49 @@ def push_remote(argv: tuple[str, ...]) -> str | None:
     return classify.parse_push(list(argv[2:])).remote
 
 
+def resolve_push_refs(argv: tuple[str, ...], ctx) -> tuple[tuple[str, str], ...] | None:
+    """What git will really push, per refspec, as (source, destination).
+
+    `HEAD` and `@` are the current branch, read from the checkout: the name
+    that is spoken and hashed is the branch, not the word. A refspec without
+    a colon lands on the same name (the gate has already refused the call
+    when the configuration maps it elsewhere). An empty source is a delete.
+    None when something cannot be resolved; such a push is not nameable.
+
+    Both the gate and the wrapper resolve through here, and the result is
+    part of the push's hash: if the current branch changes between the
+    read-back and the release, the hash no longer matches.
+    """
+    if len(argv) < 2 or argv[1] != "push":
+        return None
+    push = classify.parse_push(list(argv[2:]))
+    current: str | None = None
+    pairs: list[tuple[str, str]] = []
+    for refspec in push.refspecs:
+        refspec = refspec.lstrip("+")
+        if refspec == "tag":
+            return None
+        source, colon, destination = refspec.partition(":")
+        if not colon:
+            destination = source
+        if source in ("HEAD", "@") or destination in ("HEAD", "@"):
+            if current is None:
+                current = ctx.git(["symbolic-ref", "--short", "HEAD"], ctx.cwd)
+                if not current:
+                    return None
+            source = current if source in ("HEAD", "@") else source
+            destination = current if destination in ("HEAD", "@") else destination
+        if not destination:
+            return None
+        pairs.append((source, destination))
+    return tuple(pairs)
+
+
 def _spoken_destination(destination: str) -> str:
     if destination.startswith("refs/heads/"):
         destination = destination[len("refs/heads/"):]
+    elif destination.startswith("heads/"):
+        destination = destination[len("heads/"):]
     elif destination.startswith("refs/tags/"):
         return "tag " + targets.ref(destination[len("refs/tags/"):]).spoken
     elif destination.startswith("refs/"):
@@ -390,11 +455,16 @@ def _spoken_destination(destination: str) -> str:
     return targets.ref(destination).spoken
 
 
-def _name_push(argv, ctx, config) -> Named | Missing:
+def _name_push(command, ctx, config) -> Named | Missing:
+    argv = command.argv
     # `git push` with nothing between the two words: an option of git itself
     # (-C, -c, --git-dir) changes which repository and configuration apply.
     if len(argv) < 2 or argv[1] != "push":
         raise NotNameable("options of git itself before push")
+    # Behind ssh, sudo or `bash -c` the push runs as somebody else or
+    # somewhere else: the address resolved here would not be the address used.
+    if command.wrappers:
+        raise NotNameable("a push behind a wrapper")
     _, flags, positional = read_options(list(argv[2:]), flags=_PUSH_FLAGS, valued={})
     if len(positional) < 2:
         return Missing((PART_REMOTE,), (), words=True)
@@ -405,33 +475,30 @@ def _name_push(argv, ctx, config) -> Named | Missing:
     if address is None:
         raise NotNameable("the push address is not one repository on the forge host")
     repo = targets.repository(address.repository, config.own_owners)
+    resolved = resolve_push_refs(argv, ctx)
+    if resolved is None or len(resolved) != len(refspecs):
+        raise NotNameable("a ref that cannot be resolved")
 
     force = "force" in flags
     deletes: list[str] = []
     pushes: list[str] = []
     pairs: list[tuple[str, str]] = []
-    for refspec in refspecs:
+    for refspec, (source, destination) in zip(refspecs, resolved):
         if refspec.startswith("+"):
             force = True
-            refspec = refspec[1:]
-        if refspec == "tag":
-            raise NotNameable("the tag form of a refspec")
         if "delete" in flags:
             if ":" in refspec:
                 raise NotNameable("a refspec with a colon under --delete")
-            deletes.append(_spoken_destination(refspec))
-        elif refspec.startswith(":"):
-            deletes.append(_spoken_destination(refspec[1:]))
-        elif ":" in refspec:
-            source, destination = refspec.split(":", 1)
-            said_source = targets.ref(source).spoken
+            deletes.append(_spoken_destination(destination))
+        elif not source:
+            deletes.append(_spoken_destination(destination))
+        else:
+            said_source = _spoken_destination(source) if not source.startswith("refs/tags/") \
+                else targets.ref(source).spoken
             said_destination = _spoken_destination(destination)
             pushes.append(said_source if said_source == said_destination
                           else f"{said_source} as {said_destination}")
             pairs.append((source, destination))
-        else:
-            pushes.append(_spoken_destination(refspec))
-            pairs.append((refspec, refspec))
     if deletes and pushes:
         raise NotNameable("a push that both sends and deletes")
     if deletes:
@@ -450,6 +517,14 @@ def _name_push(argv, ctx, config) -> Named | Missing:
 # --- copies, mail, host commands -----------------------------------------------------------
 
 def _name_transfer(program, args, ctx, config) -> Named:
+    # An option that changes which host is reached, through what, or what
+    # runs there: the host in the sentence would not be the whole truth.
+    for arg in args:
+        name = arg.split("=", 1)[0]
+        if name in ("-o", "-e", "-F", "-J", "-S", "--rsh", "--rsync-path") \
+                or arg.startswith(("-o", "-e", "-F", "-J")) and not arg.startswith("--") \
+                or "proxycommand" in arg.lower():
+            raise NotNameable("an option that changes how the host is reached")
     hosts = classify.remote_hosts(program, args, ctx)
     if not hosts or len(hosts) > MAX_ITEMS:
         raise NotNameable("no host, or more hosts than one sentence holds")
@@ -537,7 +612,7 @@ def _name_host_action(program, args, ctx, config) -> Named:
 
 # --- the confirmation switch ------------------------------------------------------------------
 
-def switch_sentence(argv: tuple[str, ...]) -> str:
+def switch_sentence(argv: tuple[str, ...], confirm: str = "on") -> str:
     """The one templated read-back of the class `self` (D36): the fixed
     `confirm on|off [class]` command. `argv` has already been matched
     exactly by agent_host.classify."""
@@ -547,18 +622,25 @@ def switch_sentence(argv: tuple[str, ...]) -> str:
     if len(argv) == 4:
         if argv[3] not in CONFIRM_CLASSES:
             raise NotNameable("not a class")
+        if state == "on" and confirm == "off":
+            # Confirmation is off altogether: `on <class>` switches it on
+            # with every other class skipped (agent_host.switch), and the
+            # sentence says what that leaves.
+            return (f"Switch voice confirmation on for {argv[3]} actions only."
+                    " Everything else stays unconfirmed.")
         return f"Switch voice confirmation {state} for {argv[3]} actions."
     return f"Switch voice confirmation {state} for everything."
 
 
 # --- one call ---------------------------------------------------------------------------------
 
-def _name_inner(argv: tuple[str, ...], ctx, config) -> Named | Missing:
+def _name_inner(command, ctx, config) -> Named | Missing:
+    argv = command.argv
     program = classify.shell.program_name(argv[0])
     args = list(argv[1:])
     rules = ctx.rules
     if program == "git":
-        return _name_push(argv, ctx, config)
+        return _name_push(command, ctx, config)
     if program in rules.transfer_programs:
         return _name_transfer(program, args, ctx, config)
     if program in ("mail", "mailx", "s-nail"):
@@ -578,10 +660,13 @@ def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | N
     command = verdict.command
     if command is None or not command.argv:
         return None
-    if command.env:
+    if command.env or command.odd_wrapper:
         # A variable set in front of the command (`GH_HOST=...`,
-        # `KUBECONFIG=...`, `GIT_SSH_COMMAND=...`) can change what every
-        # target in the sentence means. Such a call is not read back.
+        # `KUBECONFIG=...`, `GIT_SSH_COMMAND=...`), a directory changed by a
+        # wrapper (`env -C`), another user (`sudo -u`, `-g`, `-i`, `-D`), or
+        # an ssh option that changes which host is reached and how (`-o`,
+        # `-F`, `-J`, `-p`): each can change what every target in the
+        # sentence means. Such a call is not read back.
         return None
     roots = [name for kind, name in command.wrappers if kind == "root"]
     hosts = [name for kind, name in command.wrappers if kind == "ssh"]
@@ -592,7 +677,7 @@ def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | N
         return None
     inner_classes = classes - {"root"}
     try:
-        outcome = _name_inner(command.argv, ctx, config)
+        outcome = _name_inner(command, ctx, config)
         if isinstance(outcome, Missing):
             # Also for a call that is gated without a class yet (a bare
             # `git push` nobody can place): say what to write out.
@@ -610,7 +695,7 @@ def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | N
         return None
 
 
-def _name_tool(tool_name: str, tool_input: dict, ctx, config) -> Named | None:
+def _name_tool(tool_name: str, tool_input: dict, ctx, config, verdict_classes=()) -> Named | None:
     """A connector tool with a host-local naming rule (`[[tool_actions]]`)."""
     for rule in ctx.rules.tool_actions:
         if not fnmatch.fnmatchcase(tool_name, rule.tool):
@@ -628,7 +713,7 @@ def _name_tool(tool_name: str, tool_input: dict, ctx, config) -> Named | None:
                 groups.append([])
             if len(groups) > 3:
                 raise NotNameable("more recipient fields than the sentence has")
-            return Named(_mail_sentence(*groups), frozenset({rule.cls}))
+            return Named(_mail_sentence(*groups), frozenset({rule.cls}) | set(verdict_classes))
         except NotNameable:
             return None
     return None
@@ -639,14 +724,15 @@ def name_call(tool_name: str, tool_input: dict, verdict: classify.Verdict, ctx, 
         return None
     if verdict.rule == classify.RULE_CONFIRM_SWITCH:
         try:
-            return Named(switch_sentence(verdict.command.argv), frozenset({"self"}))
+            return Named(switch_sentence(verdict.command.argv, config.confirm),
+                         frozenset({"self"}))
         except NotNameable:
             return None
     if verdict.desk_only:
         return None
     if tool_name == "Bash":
         return _name_command(verdict, ctx, config)
-    return _name_tool(tool_name, tool_input, ctx, config)
+    return _name_tool(tool_name, tool_input, ctx, config, verdict.classes)
 
 
 def derive(tool_name: str, tool_input: dict, ctx: classify.Context,
@@ -659,9 +745,12 @@ def derive(tool_name: str, tool_input: dict, ctx: classify.Context,
     if verdict.gated and verdict.rule.startswith("push:") and verdict.command is not None:
         remote = push_remote(verdict.command.argv)
         address = pushaddr.raw_push_address(remote, ctx.cwd, ctx.git) if remote else None
-        full_hash = (
-            gatehash.call_hash(tool_name, cwd, tool_input, address) if address is not None else None
-        )
+        refs = resolve_push_refs(verdict.command.argv, ctx)
+        full_hash = None
+        if address is not None and refs is not None:
+            # The address and every (source, destination) as resolved now.
+            resolved = address + "".join(f"\0{source}:{destination}" for source, destination in refs)
+            full_hash = gatehash.call_hash(tool_name, cwd, tool_input, resolved)
     outcome = name_call(tool_name, tool_input, verdict, ctx, config)
     if isinstance(outcome, Named) and full_hash is None:
         outcome = None

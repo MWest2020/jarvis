@@ -207,13 +207,13 @@ def _handle(req: request_mod.Request, working_dir: Path, config: AgentHostConfig
         derived, _ = _derive(stale.call, config, env)
         # The grant is the hash the bridge sent, and only when it equals the
         # hash of the pending call as it is derived now.
-        if derived is not None and derived.verdict.rule.startswith("push:") \
-                and derived.hash != req.confirm.sha256 \
-                and derived.base_hash == gatehash.call_hash(
-                    stale.call["tool"], stale.call["cwd"], stale.call["input"]):
-            # The pending call is a push and its hash is no longer the one
-            # that was read back: the address it resolves to has changed
-            # (or cannot be resolved any more). Nothing runs (D36).
+        if derived is not None and stale.sha256 == req.confirm.sha256 \
+                and stale.base_hash and derived.base_hash == stale.base_hash \
+                and derived.hash != stale.sha256:
+            # The answer is for the call that was read back, the call is
+            # still the same bytes in the same directory, and yet its hash
+            # is another one now: what a push resolves to has changed (its
+            # address, or the branch behind HEAD). Nothing runs (D36).
             _write_record(
                 config, turn_id=turn_id, project=req.project, session_id=None, prompt="",
                 reply_text="", duration_s=0.0, outcome="target_changed",
@@ -301,8 +301,10 @@ def build_readback(derived: naming.Derived, ctx, call: dict, config: AgentHostCo
     elif named.status is not None and named.status[0] == "push" \
             and "merge" in derived.verdict.classes:
         _, remote, pairs = named.status
+        defaults = classify.default_branch_names(remote, ctx, cwd)
         parts.append(prstatus.push_status(
-            remote, pairs, ctx.rules.default_branches, cwd=cwd, env=env))
+            remote, pairs, lambda destination: classify.is_default_destination(destination, defaults),
+            cwd=cwd, env=env))
     parts.append(naming.SAY_YES)
     text = " ".join(parts)
     if len(text) > MAX_READBACK_CHARS or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
@@ -327,9 +329,10 @@ def _record_cancelled(config: AgentHostConfig, project: str, stale, env: dict[st
 
 
 def _notify(config: AgentHostConfig, sentence: str, cwd: Path, env: dict[str, str]) -> str:
-    """Run the configured notify command with the read-back (D36, step 7):
-    a confirmation Mark did not give is then visible outside the voice
-    channel. Run by the wrapper, never by the agent."""
+    """Run the configured notify command with the read-back and what became
+    of it (D36, step 7): a confirmation Mark did not give is then visible
+    outside the voice channel. Run by the wrapper, never by the agent, after
+    every confirming turn, whatever the agent did with the grant."""
     if not config.notify_command:
         return "not configured"
     try:
@@ -423,13 +426,16 @@ def _after_turn(
         event.get("code") for event in actions if event.get("code") in NOTICE_CODES)
 
     if confirmed is not None:
-        if state["grant_used"] is True:
-            actions.append({
-                "outcome": "confirmed", "readback": confirmed.sentence,
-                "notify": _notify(config, confirmed.sentence, working_dir, env),
-            })
-        else:
-            actions.append({"outcome": "confirmed, not run", "readback": confirmed.sentence})
+        # Whether the confirmed call ran is decided from what the wrapper
+        # itself knows: the grant it issued, and the action log line with
+        # that call's hash (written by the PostToolUse hook). Not from the
+        # gate's state. "unknown" when the log cannot say.
+        outcome = record_mod.ran(config.actions_dir, turn_id, confirmed.base_hash)
+        actions.append({
+            "outcome": "confirmed", "ran": outcome, "readback": confirmed.sentence,
+            "notify": _notify(config, f"{confirmed.sentence} Outcome: {outcome}.",
+                              working_dir, env),
+        })
 
     call = state["pending"]
     if changed is not None:
@@ -449,7 +455,8 @@ def _after_turn(
                         "why": "the read-back could not be built"})
         return actions, None, "needs_desk"
     pending_id = str(uuid.uuid4())
-    pending.store_pending(config.pending_dir, project, pending_id, call)
+    pending.store_pending(config.pending_dir, project, pending_id, call,
+                          sha256=derived.hash, base_hash=derived.base_hash)
     actions.append({"outcome": "read back", "readback": readback})
     fields = {
         "readback": readback,
@@ -536,7 +543,9 @@ def _run_turn(
         return _reply(status="error", error=outcome, turn=turn_id, notice=notice)
     if pending_fields is not None:
         # While a confirmation is pending, the agent's own line is not sent.
-        return _reply(status="ok", turn=turn_id, spoken="", pending=True, **pending_fields)
+        # A notice still is: that a new session started must not be lost.
+        return _reply(status="ok", turn=turn_id, spoken="", pending=True,
+                      notice="new_session" if discarded else None, **pending_fields)
     spoken = last_marker_line(reply_text)
     notice = most_important_notice([notice, "new_session" if discarded else None])
     return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice)
