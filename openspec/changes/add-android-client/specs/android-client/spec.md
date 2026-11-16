@@ -116,15 +116,19 @@ The app SHALL contact no host other than the configured bridge and SHALL contain
 - **THEN** the build fails
 
 ### Requirement: Sideloaded distribution
-The app SHALL be built in CI as an APK for sideloading and SHALL NOT be published to an app store. A release-signed APK SHALL only be built from a signing key that the repository owner created and stored as a secret.
+The app SHALL be built in CI as an APK for sideloading and SHALL NOT be published to an app store. An APK built on main SHALL be signed with one stable key, stored as repository secrets, that the repository owner asked for (a key made by an agent at the owner's request counts); an APK from a pull request SHALL NOT be signed with it.
 
 #### Scenario: A build on main
 - **WHEN** a change to the app is merged
 - **THEN** CI offers the APK as a download to people with access to the private repository
 
-#### Scenario: No signing key yet
-- **WHEN** the signing secrets do not exist
-- **THEN** CI builds a debug-signed APK and no release-signed one
+#### Scenario: A push to main without the signing secrets
+- **WHEN** a signing secret is missing or empty on a push to main
+- **THEN** the CI run fails and offers no APK
+
+#### Scenario: A pull request build
+- **WHEN** CI builds the app for a pull request
+- **THEN** the APK gets a per-run key and is never signed with the stable key
 
 ### Requirement: Parked use
 The app SHALL be usable on one screen with large controls and type, and its documentation SHALL state that it is for use while parked, not while driving.

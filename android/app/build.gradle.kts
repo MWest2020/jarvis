@@ -20,10 +20,32 @@ android {
         versionName = "0.1.0"
     }
 
+    // One key that stays the same (jarvis#13), so an update installs over the old app.
+    // CI writes it from the repository secrets on a push to main; without
+    // JARVIS_KEYSTORE_FILE (pull requests, forks, local builds) the build keeps the usual
+    // per-machine debug key. A partial setup fails here, naming what is missing.
+    fun signingEnv(name: String): String {
+        val value = providers.environmentVariable(name).orNull
+        if (value.isNullOrEmpty()) throw GradleException("JARVIS_KEYSTORE_FILE is set but $name is empty")
+        return value
+    }
+    val keystore = providers.environmentVariable("JARVIS_KEYSTORE_FILE").orNull?.takeIf { it.isNotEmpty() }
+    val stable = if (keystore != null) {
+        if (!file(keystore).exists()) throw GradleException("JARVIS_KEYSTORE_FILE $keystore does not exist")
+        signingConfigs.create("stable") {
+            storeFile = file(keystore)
+            storePassword = signingEnv("JARVIS_KEYSTORE_PASSWORD")
+            keyAlias = signingEnv("JARVIS_KEY_ALIAS")
+            keyPassword = signingEnv("JARVIS_KEY_PASSWORD")
+        }
+    } else null
+
     buildTypes {
+        debug {
+            if (stable != null) signingConfig = stable
+        }
         release {
-            // No release signing yet: it waits for a key only Mark can create
-            // (openspec/changes/add-android-client, open question 1).
+            if (stable != null) signingConfig = stable
             isMinifyEnabled = false
         }
     }

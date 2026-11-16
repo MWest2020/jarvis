@@ -1,8 +1,8 @@
 # The Android app (android/): unit tests, lint, the dependency check of design D9, and a
-# debug APK as an artifact. Nothing is signed with a release key here: that waits for a
-# secret only Mark can create (openspec/changes/add-android-client, open question 1).
-# A debug APK is signed with a key made on the runner, so every run's APK has another
-# signature (docs/how-to/android-app.md, "Updating").
+# debug APK as an artifact. A push to main signs it with the stable key from the repository
+# secrets (jarvis#13), so an update installs over the old app; a pull request APK gets a
+# per-run key and is for trying only
+# (docs/how-to/android-app.md, "Updating").
 name: android
 on:
   push:
@@ -41,8 +41,43 @@ jobs:
       - name: Core tests (no Android SDK)
         run: env -u ANDROID_HOME -u ANDROID_SDK_ROOT ./gradlew --no-daemon :core:test
 
+      # The stable signing key (jarvis#13), only for a push to main: those APKs are the
+      # ones that are installed. Pull request APKs keep a per-run key. On main, a missing
+      # secret fails the run instead of quietly shipping an APK that will not update.
+      - name: Signing key
+        if: github.event_name == 'push'
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for v in KEYSTORE_B64 KS_PASS KEY_ALIAS KEY_PASS; do
+            [ -n "${!v}" ] || { echo "::error::signing secret for $v is empty (docs/how-to/android-app.md, The signing key)"; exit 1; }
+          done
+          printf %s "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/jarvis.jks"
+          echo "JARVIS_KEYSTORE_FILE=$RUNNER_TEMP/jarvis.jks" >> "$GITHUB_ENV"
+
       - name: Lint, dependency check (D9), debug APK
+        env:
+          JARVIS_KEYSTORE_PASSWORD: ${{ github.event_name == 'push' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          JARVIS_KEY_ALIAS: ${{ github.event_name == 'push' && secrets.ANDROID_KEY_ALIAS || '' }}
+          JARVIS_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: ./gradlew --no-daemon check :app:assembleDebug
+
+      # Which key signed the APK: on main it must be the stable one (jarvis#13).
+      - name: Signing certificate
+        run: |
+          set -eu
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          cert=$("$apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | grep -m1 'SHA-256 digest' | awk '{print $NF}')
+          [ -n "$cert" ] || { echo "::error::no signing certificate found in the APK"; exit 1; }
+          echo "Signing certificate SHA-256: \`$cert\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$cert" != "$STABLE_CERT" ]; then
+            echo "::error::main APK not signed with the stable key ($cert)"; exit 1
+          fi
+        env:
+          STABLE_CERT: 49bca0d16a2a84fd3bbdf825147f924c8097414bf862e18cdc17ce9875b76d95
 
       # What the merged manifest really asks for and exposes, libraries included. Fails on
       # any Android permission beyond the three of design A9, and on any exported component
@@ -76,7 +111,7 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/$name"
           sum=$(sha256sum "$RUNNER_TEMP/$name" | cut -d' ' -f1)
           echo "path=$RUNNER_TEMP/$name" >> "$GITHUB_OUTPUT"
-          echo "\`$name\` (debug-signed) sha256 \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$name\` (debug build) sha256 \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
 
       # On main the APK is kept for 90 days; on a pull request for a week, so a reviewer
       # can try the build under review.
