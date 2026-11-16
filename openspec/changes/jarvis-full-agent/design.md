@@ -118,7 +118,9 @@ the turn falls back to read-only (D30, "could not connect").
 `from=` therefore pins the key to the node, not to the pod: every pod on that node, and
 the node itself, connects from the same address. The NetworkPolicy of the other pods and
 the Secret that holds the key are what separate them from the bridge. That is accepted
-under D40.
+under D40, and put to Mark in https://github.com/MWest2020/jarvis/issues/42 (default:
+accepted). `from=` is always one address (an IPv4 or IPv6 address, at most with its
+full-length prefix): the installer refuses a network, a host name, a pattern and a list.
 Alternative considered: *a tailnet egress Service of the Tailscale operator* (an
 `ExternalName` Service that names the agent host on the tailnet, `from=` set to the egress
 proxy's tailnet address). It pins the key to one proxy instead of one node, at the price of
@@ -559,7 +561,9 @@ over it), and the entry behaves like this: its first step is to look for the wra
 marker in the environment and exit 0 without reading anything when it is absent; it has a
 short hook timeout; and in the coding session a missing or broken script lets the call
 through (fail open), while in a Jarvis turn the copy from the turn settings stays the one
-that decides and fails closed. The hardening adds nothing against `disableAllHooks`: if the
+that decides and is expected to fail closed. For a gate that crashes or denies, that is the
+hook's own answer; for a gate that runs into its timeout it is Claude Code's, and the gate
+timeout check of task 1.17 has to confirm it. The hardening adds nothing against `disableAllHooks`: if the
 mid-turn check of task 1.17 fails, phase 1 does not ship, hardening or not.
 
 *Failing closed.* In a turn started by the wrapper, if the gate cannot read its rules or the

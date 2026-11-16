@@ -59,16 +59,20 @@ is an ordinary next turn); any change to the phone's token or to how the bridge 
 
 Said plainly, because "everything you can do" has a price (design D40):
 
-- Whoever holds the phone's token, or the bridge's key at the bridge's address, can put any
-  prompt to a full agent: that is Mark at the agent host's keyboard, limited only by the
+- Whoever holds the phone's token, or the bridge's key at the address the key is bound to
+  (in a cluster: the bridge's node, so any pod on that node, and the node itself), can put
+  any prompt to a full agent: that is Mark at the agent host's keyboard, limited only by the
   agent's judgement, the permission rules and the gate. The forced command limits the form
   of what can be asked, not the power of what answers.
 - The cluster gets a road to the agent host that did not exist. Anyone who can read the
-  Secret with the bridge's key, or run code in the bridge's pod, inherits the line above.
+  Secret with the bridge's key, or run code in the bridge's pod, in any pod on the bridge's
+  node, or on the node itself, inherits the line above.
   **Accepted by default; Mark is asked explicitly** in
   https://github.com/MWest2020/jarvis/issues/25 (if he says no, the cluster side stays
-  read-only and changes stay desk-only). Kept narrow by `from=` on the key (in a cluster it names the pod's node, design D32), the NetworkPolicy, a
-  kill switch on the agent host and a ping to Mark's phone on every confirmed action.
+  read-only and changes stay desk-only). Kept narrow by `from=` on the key (one address; in a cluster it names the pod's node, design
+  D32), the NetworkPolicy, a kill switch on the agent host and a ping to Mark's phone on
+  every confirmed action. That the key is bound to a node and not to the pod is put to Mark
+  on its own: https://github.com/MWest2020/jarvis/issues/42 (default: accepted).
 - The gate and its records live on a host where the agent has a shell as their owner, and
   passwordless `sudo`. The guarantees of the gate hold for an agent that works through its
   tools, including one misled into trying a gated action **in a shape the rules know**. A
@@ -180,4 +184,5 @@ by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 None in the design. Mark decided the direction. One consequence is put to him explicitly,
 with a default: the trust edge from the cluster to the agent host
 (https://github.com/MWest2020/jarvis/issues/25; default: accepted, built with the stated
-limits). What needs his hands is listed at the end of `tasks.md`.
+limits), and with it that the bridge's key is bound to the bridge's node, not to its pod
+(https://github.com/MWest2020/jarvis/issues/42; default: accepted). What needs his hands is listed at the end of `tasks.md`.

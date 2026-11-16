@@ -220,8 +220,6 @@ This build carries the change's guarantees and is reviewed on its own.
   - a gate that times out (the hook `timeout` in the turn settings, 10 s) denies the call;
     it does not let it through. **If Claude Code lets the call through on a hook timeout,
     phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened;
-  - `--append-system-prompt-file` and `--system-prompt-snapshot off` are accepted, and a
-    changed prompt reaches a resumed session;
   - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
     refused without a grant and runs once with one;
   - a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;

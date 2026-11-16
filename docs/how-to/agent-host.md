@@ -65,7 +65,7 @@ Read this before installing. It is design D40 in plain words.
 | `/usr/local/lib/jarvis-agent/gate_rules.toml` | The gate's rules from the repository. |
 | `/usr/local/lib/jarvis-agent/prompt.md` | The appended prompt (D35). |
 | `/usr/local/lib/jarvis-agent/turn-settings.json` | The static settings every turn gets with `--settings`: the two hooks (the gate with a hook `timeout` of 10 seconds), `disableAllHooks: false`, and `autoMemoryDirectory`. Written by the installer only. |
-| `/usr/local/lib/jarvis-agent/src/` | The code itself (`agent_host/` and the one module of `bridge/` it imports). The six paths above the settings are symbolic links into it. |
+| `/usr/local/lib/jarvis-agent/src/` | The code itself (`agent_host/` and the one module of `bridge/` it imports). The six paths above the settings are symbolic links into it. The Python entry points get the shebang `#!/usr/bin/python3 -I` at install: a fixed interpreter in isolated mode, so no `PATH` or `PYTHONPATH` of a turn can swap the interpreter or shadow a module. |
 | `/usr/local/lib/jarvis-agent/VERSION` | The commit that was installed. |
 | `/etc/jarvis-agent/config.toml` | The configuration. Written from the template only when it does not exist. |
 | `/etc/jarvis-agent/config.toml.example` | The template of the installed version, refreshed on every run. |
@@ -83,8 +83,10 @@ in `state_dir`.
 
 ## Install
 
-Needs Python 3.11 or newer as `python3`. From a clean checkout of this repository at a
-commit you have reviewed (the installer copies what is in the checkout, as root):
+Needs Python 3.11 or newer as `/usr/bin/python3`, and `git`. From a clean clone of this
+repository at a commit you have reviewed. The installer copies only files that git tracks,
+refuses a checkout with uncommitted changes under `agent_host/`, and writes the commit
+into `VERSION`, so that file names exactly what runs:
 
 ```sh
 agent_host/install.sh --dry-run --memory-dir /home/you/.claude/projects/-home-you/memory
@@ -130,8 +132,10 @@ agent_host/install.sh --print-authorized-keys --pubkey bridge.pub --from 192.0.2
   source-translated to it. The pod stays on that node because its state volume is
   node-local; if the volume ever moves to another node, this line needs the new address.
   The key is then pinned to the node, not to the pod: every pod on that node connects
-  from the same address (design D32). The key is useless from anywhere else. The installer accepts one address, host name or network, and refuses
-  wildcards and lists.
+  from the same address (design D32). The key is useless from anywhere else. The
+  installer accepts exactly one IPv4 or IPv6 address (a `/32` or `/128` suffix is accepted
+  and dropped) and prints it in canonical form. It refuses every network, every host
+  name, wildcards and lists.
 - `command=` replaces whatever the client asks to run. The wrapper ignores
   `SSH_ORIGINAL_COMMAND` and takes no arguments.
 
@@ -318,5 +322,6 @@ How the entry behaves:
   call or starting the gate. A missing or broken gate script therefore cannot block the
   coding session: there it fails open.
 - The timeout is short (10 seconds), so it cannot hold up a call either.
-- In a Jarvis turn the copy from the turn settings stays the one that decides, and that
-  one fails closed.
+- In a Jarvis turn the copy from the turn settings stays the one that decides. It is
+  expected to fail closed; for a gate that runs into its timeout, host check 12 has to
+  confirm that.

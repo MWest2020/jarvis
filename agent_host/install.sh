@@ -19,6 +19,10 @@
 set -euo pipefail
 
 LIB_DIR=/usr/local/lib/jarvis-agent
+# The one interpreter, for this script and for what it installs: a fixed path, so that a
+# PATH from anywhere cannot choose another. Installed entry points get the shebang
+# "#!$PYTHON -I" (isolated: no PYTHONPATH, no PYTHONSTARTUP, no user site directory).
+PYTHON=/usr/bin/python3
 ETC_DIR=/etc/jarvis-agent
 FORCED_COMMAND="$LIB_DIR/turn"
 
@@ -51,6 +55,12 @@ EOF
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 
+is_in() {
+    local needle=$1 x; shift
+    for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
+    return 1
+}
+
 dry_run=0
 print_only=0
 destdir=${DESTDIR:-}
@@ -72,6 +82,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+[ -x "$PYTHON" ] || die "$PYTHON not found"
+"$PYTHON" -I -c 'import sys, tomllib; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null \
+    || die "$PYTHON must be Python 3.11 or newer (the wrapper reads its configuration with tomllib)"
+
 # --- the authorized_keys line (D32) -------------------------------------------------
 
 # Prints: restrict,from="<address>",command="<LIB_DIR>/turn" <type> <key> <comment>
@@ -88,11 +102,35 @@ authorized_keys_line() {
     [[ $blob =~ ^[A-Za-z0-9+/]{32,}={0,3}$ ]] || die "$file: the key is not base64"
     # The comment is free text in the key file; only a plain label survives.
     [[ ${comment:-} =~ ^[A-Za-z0-9@._-]{1,64}$ ]] || comment=jarvis-bridge
-    # One address or one network, never a pattern list: `from=` is what makes the key
-    # useless from anywhere else.
-    [[ $addr =~ ^[A-Za-z0-9]([A-Za-z0-9.:-]{0,253})(/[0-9]{1,3})?$ ]] \
-        || die "--from must be one address, host name or network (no wildcards, no list): $addr"
+    # Exactly one IPv4 or IPv6 address (a /32 or /128 suffix is accepted and dropped).
+    # No network, no host name, no pattern, no list: `from=` is what makes the key
+    # useless from anywhere else, and a name would hand that to whoever answers DNS.
+    addr=$(one_address "$addr") \
+        || die "--from must be exactly one IPv4 or IPv6 address (no network, host name, wildcard or list)"
     printf 'restrict,from="%s",command="%s" %s %s %s\n' "$addr" "$FORCED_COMMAND" "$type" "$blob" "$comment"
+}
+
+# Prints the address in canonical form, or fails. Strict by construction: the standard
+# library parses it, and only the full-length prefix of its family is accepted.
+one_address() {
+    "$PYTHON" -I - "$1" <<'PY'
+import ipaddress
+import sys
+
+text = sys.argv[1]
+address, slash, prefix = text.partition("/")
+try:
+    parsed = ipaddress.ip_address(address)
+except ValueError:
+    sys.exit(1)
+if "%" in address or address != address.strip():
+    sys.exit(1)
+if slash and prefix != str(parsed.max_prefixlen):
+    sys.exit(1)
+if parsed.is_unspecified:
+    sys.exit(1)
+print(parsed.compressed)
+PY
 }
 
 if [ -n "$pubkey_file" ] || [ -n "$from_addr" ]; then
@@ -113,20 +151,40 @@ fi
 src_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(dirname "$src_dir")
 
+# Only what git tracks is installed, at the state of HEAD: no untracked file, no
+# uncommitted edit. So VERSION names exactly what runs. The checkout may belong to another
+# user than the one running this (root), hence safe.directory; nothing in the checkout's
+# own git configuration may run a program for these read-only commands.
+command -v git >/dev/null || die "git not found"
+repo_git() {
+    git -c safe.directory="$repo_dir" -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+        -C "$repo_dir" "$@"
+}
+bridge_paths=()
+for f in "${BRIDGE_FILES[@]}"; do bridge_paths+=("bridge/$f"); done
+version=$(repo_git rev-parse --verify HEAD 2>/dev/null) \
+    || die "$repo_dir is not a git checkout with a commit; install from a clone of the repository"
+if [ -n "$(repo_git status --porcelain --untracked-files=no -- agent_host "${bridge_paths[@]}")" ]; then
+    die "uncommitted changes under agent_host/ or in bridge/: install from a clean checkout of a reviewed commit"
+fi
+tracked=()
+while IFS= read -r -d '' rel; do
+    tracked+=("$rel")
+    if [ -L "$repo_dir/$rel" ] || [ ! -f "$repo_dir/$rel" ]; then
+        die "$rel is not a regular file; refusing to install it"
+    fi
+done < <(repo_git ls-files -z -- agent_host "${bridge_paths[@]}")
+
 missing=()
 for f in "${ENTRY_POINTS[@]}" "${DATA_FILES[@]}" turn-settings.json config.example.toml __init__.py; do
-    [ -f "$src_dir/$f" ] || missing+=("agent_host/$f")
+    is_in "agent_host/$f" "${tracked[@]}" || missing+=("agent_host/$f")
 done
-for f in "${BRIDGE_FILES[@]}"; do
-    [ -f "$repo_dir/bridge/$f" ] || missing+=("bridge/$f")
+for f in "${bridge_paths[@]}"; do
+    is_in "$f" "${tracked[@]}" || missing+=("$f")
 done
 if [ ${#missing[@]} -gt 0 ]; then
     die "not installing, this checkout lacks: ${missing[*]} (the gate and its parts are phase 1b of jarvis-full-agent; without them a turn would run ungated)"
 fi
-
-command -v python3 >/dev/null || die "python3 not found"
-python3 -c 'import sys, tomllib; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null \
-    || die "python3 must be 3.11 or newer (the wrapper reads its configuration with tomllib)"
 
 if [ -n "$memory_dir" ]; then
     [[ $memory_dir == /* ]] || die "--memory-dir must be an absolute path"
@@ -153,12 +211,6 @@ run() {
     if [ "$dry_run" = 1 ]; then say "would run: $*"; else "$@"; fi
 }
 
-is_in() {
-    local needle=$1 x; shift
-    for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
-    return 1
-}
-
 if [ "$dry_run" = 1 ]; then echo "Dry run: nothing is written."; fi
 echo "Installing the Jarvis agent host side from $repo_dir"
 
@@ -174,20 +226,24 @@ stage=$lib/src.new
 run rm -rf "$stage" "$lib/src.old"
 run install -d -m 0755 "${own[@]}" "$stage" "$stage/agent_host" "$stage/bridge"
 
-while IFS= read -r -d '' path; do
-    rel=${path#"$src_dir"/}
+for tracked_path in "${tracked[@]}"; do
+    case $tracked_path in
+        agent_host/*) rel=${tracked_path#agent_host/} ;;
+        *) run install -m 0644 "${own[@]}" "$repo_dir/$tracked_path" "$stage/$tracked_path"; continue ;;
+    esac
     is_in "$rel" "${NOT_INSTALLED[@]}" && continue
-    case $rel in */__pycache__/*|__pycache__/*|*.pyc) continue ;; esac
+    path=$src_dir/$rel
     mode=0644
     if [ -x "$path" ] || is_in "$rel" "${ENTRY_POINTS[@]}"; then mode=0755; fi
     if [ "$(dirname "$rel")" != . ]; then
         run install -d -m 0755 "${own[@]}" "$stage/agent_host/$(dirname "$rel")"
     fi
     run install -m "$mode" "${own[@]}" "$path" "$stage/agent_host/$rel"
-done < <(find "$src_dir" -type f -print0 | sort -z)
-
-for f in "${BRIDGE_FILES[@]}"; do
-    run install -m 0644 "${own[@]}" "$repo_dir/bridge/$f" "$stage/bridge/$f"
+    # A Python entry point runs under the fixed interpreter in isolated mode, whatever
+    # its shebang says in the repository (there it is `env python3`, for the tests).
+    if is_in "$rel" "${ENTRY_POINTS[@]}" && head -n 1 "$path" | grep -q '^#!.*python'; then
+        run sed -i "1s|.*|#!$PYTHON -I|" "$stage/agent_host/$rel"
+    fi
 done
 
 if [ -d "$lib/src" ]; then run mv -T "$lib/src" "$lib/src.old"; fi
@@ -202,7 +258,7 @@ done
 # The turn settings: the static file of the repository, plus the one value that differs
 # per host (the coding session's memory directory, D34). Written here and nowhere else.
 installed_settings=$lib/turn-settings.json
-settings_json=$(python3 - "$src_dir/turn-settings.json" "$installed_settings" "$memory_dir" <<'PY'
+settings_json=$("$PYTHON" -I - "$src_dir/turn-settings.json" "$installed_settings" "$memory_dir" <<'PY'
 import json
 import sys
 
@@ -232,7 +288,6 @@ else
     mv -f "$tmp" "$installed_settings"
 fi
 
-version=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo unknown)
 if [ "$dry_run" = 1 ]; then
     say "would write $lib/VERSION ($version)"
 else

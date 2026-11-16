@@ -11,7 +11,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -28,7 +27,7 @@ KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJarvisBridgeTestKeyNotARealOne000000
 
 @pytest.fixture
 def source(tmp_path):
-    """A copy of what the installer reads: agent_host/ and bridge/."""
+    """A git checkout holding what the installer reads: agent_host/ and bridge/."""
     src = tmp_path / "checkout"
     shutil.copytree(REPO_ROOT / "agent_host", src / "agent_host",
                     ignore=shutil.ignore_patterns("__pycache__"))
@@ -41,7 +40,22 @@ def source(tmp_path):
             path.write_text("#!/bin/sh\nexit 2\n" if "." not in name else "# stand-in\n")
             if "." not in name:
                 path.chmod(0o755)
+    git(src, "init", "-q")
+    commit(src)
     return src
+
+
+def git(src, *args):
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid", *args],
+        cwd=src, check=True, capture_output=True,
+    )
+
+
+def commit(src):
+    """The installer takes only what is committed (tracked files, a clean tree)."""
+    git(src, "add", "-A")
+    git(src, "commit", "-q", "--allow-empty", "-m", "state under test")
 
 
 @pytest.fixture
@@ -150,11 +164,13 @@ def test_a_second_run_changes_nothing_and_keeps_what_was_filled_in(source, destd
 
 def test_an_update_replaces_the_code_and_drops_files_that_are_gone(source, destdir):
     (source / "agent_host" / "old_module.py").write_text("x = 1\n")
+    commit(source)
     assert install(source, destdir).returncode == 0
     assert (destdir / LIB / "src/agent_host/old_module.py").exists()
 
     (source / "agent_host" / "old_module.py").unlink()
     (source / "agent_host" / "prompt.md").write_text("a new prompt\n")
+    commit(source)
     assert install(source, destdir).returncode == 0
     assert not (destdir / LIB / "src/agent_host/old_module.py").exists()
     assert (destdir / LIB / "prompt.md").read_text() == "a new prompt\n"
@@ -170,6 +186,7 @@ def test_dry_run_writes_nothing(source, destdir):
     assert install(source, destdir).returncode == 0
     before = snapshot(destdir)
     (source / "agent_host" / "prompt.md").write_text("changed\n")
+    commit(source)
     assert install(source, destdir, "--dry-run").returncode == 0
     assert snapshot(destdir) == before
 
@@ -208,9 +225,40 @@ def test_authorized_keys_and_claude_settings_are_never_touched(source, destdir, 
 
 def test_the_installer_refuses_a_checkout_without_the_gate(source, destdir):
     (source / "agent_host" / "gate").unlink()
+    commit(source)
     proc = install(source, destdir)
     assert proc.returncode != 0
     assert "agent_host/gate" in proc.stderr
+    assert snapshot(destdir) == {}
+
+
+def test_only_committed_files_are_installed(source, destdir):
+    # An untracked file (left by anything that can write the checkout) is not installed,
+    # not even when it has the name of a module the wrapper would import.
+    (source / "agent_host" / "sitecustomize.py").write_text("raise SystemExit('planted')\n")
+    (source / "bridge" / "planted.py").write_text("x = 1\n")
+    assert install(source, destdir).returncode == 0
+    assert not (destdir / LIB / "src/agent_host/sitecustomize.py").exists()
+    assert sorted(p.name for p in (destdir / LIB / "src/bridge").iterdir()) == ["__init__.py", "summary.py"]
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, capture_output=True, text=True)
+    assert (destdir / LIB / "VERSION").read_text() == head.stdout
+
+
+def test_an_uncommitted_edit_is_refused_so_version_names_what_runs(source, destdir):
+    (source / "agent_host" / "wrapper.py").write_text("raise SystemExit('edited')\n")
+    proc = install(source, destdir)
+    assert proc.returncode != 0
+    assert "uncommitted" in proc.stderr
+    assert snapshot(destdir) == {}
+
+
+def test_a_tracked_symlink_is_refused(source, destdir, tmp_path):
+    outside = tmp_path / "outside.py"
+    outside.write_text("x = 1\n")
+    (source / "agent_host" / "linked.py").symlink_to(outside)
+    commit(source)
+    proc = install(source, destdir)
+    assert proc.returncode != 0 and "linked.py" in proc.stderr
     assert snapshot(destdir) == {}
 
 
@@ -255,10 +303,35 @@ def test_a_key_file_that_is_not_one_bare_public_key_is_refused(source, destdir, 
     assert proc.returncode != 0 and proc.stdout == ""
 
 
-@pytest.mark.parametrize("from_addr", [
-    "*", "192.0.2.*", "192.0.2.7,198.51.100.1", '192.0.2.7",command="/bin/sh', "!10.0.0.1", "a b", "",
+@pytest.mark.parametrize("from_addr, printed", [
+    ("192.0.2.7", "192.0.2.7"),
+    ("192.0.2.7/32", "192.0.2.7"),
+    ("2001:db8::7", "2001:db8::7"),
+    ("2001:0db8:0000::0007/128", "2001:db8::7"),
 ])
-def test_a_source_address_that_is_a_pattern_or_a_list_is_refused(source, destdir, tmp_path, from_addr):
+def test_one_address_is_accepted_and_printed_in_canonical_form(source, destdir, tmp_path, from_addr, printed):
+    proc = print_line(source, destdir, KEY + "\n", from_addr, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith(f'restrict,from="{printed}",command=')
+
+
+@pytest.mark.parametrize("from_addr", [
+    # networks, however small or large
+    "0.0.0.0/0", "0::/0", "::/0", "10.0.0.0/8", "192.0.2.0/24", "192.0.2.7/31", "2001:db8::/64",
+    "2001:db8::7/127", "192.0.2.7/128", "2001:db8::7/32",
+    # not a prefix at all
+    "1.2.3.4/999", "192.0.2.7/", "192.0.2.7/032", "192.0.2.7/32/32", "192.0.2.7/-1",
+    # the unspecified address
+    "0.0.0.0", "::",
+    # host names
+    "bridge.example", "localhost", "node-03", "bridge",
+    # not an address
+    "192.0.2", "192.0.2.256", "192.0.2.07", "1.2.3.4.5", "fe80::1%eth0", " 192.0.2.7", "192.0.2.7 ",
+    # patterns, lists, quotes
+    "*", "192.0.2.*", "192.0.2.?", "192.0.2.7,198.51.100.1", '192.0.2.7",command="/bin/sh',
+    "!10.0.0.1", "a b", "",
+])
+def test_anything_but_one_address_is_refused_as_source(source, destdir, tmp_path, from_addr):
     proc = print_line(source, destdir, KEY + "\n", from_addr, tmp_path)
     assert proc.returncode != 0 and proc.stdout == ""
 
@@ -274,7 +347,7 @@ def test_the_installed_template_is_a_valid_configuration_with_the_kill_switch_se
     # The installed wrapper, started the way sshd starts it (by its fixed path, with
     # nothing useful in the environment), finds its own code and answers `disabled`.
     proc = subprocess.run(
-        [sys.executable, str(destdir / LIB / "turn")], input=b"", capture_output=True,
+        [str(destdir / LIB / "turn")], input=b"", capture_output=True,
         env={"JARVIS_AGENT_CONFIG": str(destdir / ETC / "config.toml")}, cwd="/", timeout=30,
     )
     assert proc.returncode == 0, proc.stderr.decode()
@@ -289,10 +362,46 @@ def test_a_turn_runs_through_the_installed_wrapper(source, destdir, tmp_path):
     request = json.dumps({"v": 1, "project": "proj", "prompt": "hello", "confirm": None}).encode()
 
     proc = subprocess.run(
-        [sys.executable, str(destdir / LIB / "turn")], input=request, capture_output=True,
+        [str(destdir / LIB / "turn")], input=request, capture_output=True,
         env={"JARVIS_AGENT_CONFIG": str(config_toml)}, cwd="/", timeout=30,
     )
 
     assert proc.returncode == 0, proc.stderr.decode()
     assert json.loads(proc.stdout)["spoken"] == "SPOKEN SUMMARY: all set."
     assert json.loads(record_path.read_text())["stdin"] == "hello"
+
+
+def test_installed_entry_points_run_under_the_fixed_interpreter_in_isolated_mode(source, destdir, tmp_path):
+    assert install(source, destdir).returncode == 0
+    turn = destdir / LIB / "turn"
+    assert turn.read_text().splitlines()[0] == "#!/usr/bin/python3 -I"
+    # In the repository the script keeps its portable shebang; only the installed copy is pinned.
+    assert (source / "agent_host" / "turn").read_text().splitlines()[0] == "#!/usr/bin/env python3"
+
+    # A PATH with another `python3` in front, and a PYTHONPATH that shadows both the
+    # wrapper's own package and a standard library module: neither is used.
+    marker = tmp_path / "hijacked"
+    evil_bin = tmp_path / "evil-bin"
+    evil_bin.mkdir()
+    fake_python = evil_bin / "python3"
+    fake_python.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n")
+    fake_python.chmod(0o755)
+    evil_lib = tmp_path / "evil-lib"
+    (evil_lib / "agent_host").mkdir(parents=True)
+    for shadow in (evil_lib / "agent_host" / "__init__.py", evil_lib / "tomllib.py", evil_lib / "json.py"):
+        shadow.write_text(f"open({str(marker)!r}, 'w').close()\nraise SystemExit(3)\n")
+
+    proc = subprocess.run(
+        [str(turn)], input=b"", capture_output=True, cwd=str(evil_lib), timeout=30,
+        env={
+            "PATH": f"{evil_bin}:/usr/bin:/bin",
+            "PYTHONPATH": str(evil_lib),
+            "PYTHONSTARTUP": str(evil_lib / "json.py"),
+            "PYTHONHOME": str(evil_lib),
+            "JARVIS_AGENT_CONFIG": str(destdir / ETC / "config.toml"),
+        },
+    )
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert json.loads(proc.stdout)["error"] == "disabled"
+    assert not marker.exists()
