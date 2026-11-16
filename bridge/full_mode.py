@@ -25,7 +25,15 @@ from bridge.agent import (
 )
 from bridge.config import ProjectConfig, normalise_utterance
 from bridge.logging_setup import FILE_ONLY
-from bridge.remote_adapter import NOTICE_SENTENCES, OUT_OF_BUDGET
+from bridge.remote_adapter import (
+    BAD_REQUEST,
+    BUSY,
+    EXPIRED,
+    LOW_MEMORY,
+    NOTICE_SENTENCES,
+    OUT_OF_BUDGET,
+    TRY_AGAIN_CODES,
+)
 
 logger = logging.getLogger("bridge.full")
 
@@ -42,6 +50,8 @@ NOTHING_CONFIRMED = "Nothing was confirmed."
 TOOK_TOO_LONG = "That took too long. Ask again."
 # The bridge stopped waiting so that the phone gets an answer; the turn goes on.
 STILL_RUNNING = "It's still running at the desk. Ask me for the result in a bit."
+# A yes met a busy agent host: nothing ran, and the read-back is still good.
+SAY_YES_AGAIN = "The agent host is busy. Say yes again in a moment."
 # D36, step 6: put in front of an ordinary request that came instead of a yes.
 NOT_CONFIRMED_LINE = ("The driver did not confirm the action that was read back. "
                       "It was not run and is no longer pending.")
@@ -60,9 +70,9 @@ FALLBACK_SENTENCES = {
 
 # No turn was started on the agent host: these can simply be said.
 NOT_STARTED_LINES = {
-    "busy": "The agent host is busy. Try again in a moment.",
-    "low_memory": "The agent host is busy: it is short of memory. Try again later.",
-    "bad_request": "The agent host refused the request.",
+    BUSY: "The agent host is busy. Try again in a moment.",
+    LOW_MEMORY: "The agent host is busy: it is short of memory. Try again later.",
+    BAD_REQUEST: "The agent host refused the request.",
     AgentTurnFailed.HOST_KEY:
         "The agent host's key is not the pinned one. Nothing was sent.",
     AgentUnavailable.UNREACHABLE: "The agent host could not be reached.",
@@ -84,11 +94,17 @@ STARTED_LINES = {
 
 @dataclass(frozen=True)
 class Outcome:
-    """What the server speaks and puts in the headers."""
+    """What the server speaks and puts in the headers.
+
+    `to_keep` is a read-back that is not pending yet: it becomes pending when the
+    server has spoken it (FullMode.delivered), and is cancelled on the agent host
+    when it could not (FullMode.undelivered).
+    """
 
     spoken: str
     ref: str = ""
     needs_confirmation: bool = False
+    to_keep: tuple[PendingConfirmation, float] | None = None   # with its deadline
 
 
 class PendingStore:
@@ -105,23 +121,32 @@ class PendingStore:
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[PendingConfirmation, float]] = {}
 
+    def deadline(self, expires_s: float | None = None) -> float:
+        """From now: 60 seconds, or less when the agent host keeps the call for less."""
+        return self._clock() + (self._ttl_s if expires_s is None
+                                else min(self._ttl_s, expires_s))
+
     def put(self, project: str, confirmation: PendingConfirmation,
             expires_s: float | None = None) -> None:
-        """Kept for 60 seconds, or less when the agent host keeps the call for less."""
-        ttl_s = self._ttl_s if expires_s is None else min(self._ttl_s, expires_s)
-        with self._lock:
-            self._pending[project] = (confirmation, self._clock() + ttl_s)
+        self.put_until(project, confirmation, self.deadline(expires_s))
 
-    def take(self, project: str) -> PendingConfirmation | None:
+    def put_until(self, project: str, confirmation: PendingConfirmation,
+                  deadline: float) -> None:
+        """Keep it until a deadline that was fixed earlier: never a fresh 60 seconds."""
+        with self._lock:
+            self._pending[project] = (confirmation, deadline)
+
+    def take_entry(self, project: str) -> tuple[PendingConfirmation, float] | None:
         """Remove the project's pending confirmation; None when none, or too late."""
         with self._lock:
             entry = self._pending.pop(project, None)
-            if entry is None:
+            if entry is None or self._clock() >= entry[1]:
                 return None
-            confirmation, deadline = entry
-            if self._clock() >= deadline:
-                return None
-            return confirmation
+            return entry
+
+    def take(self, project: str) -> PendingConfirmation | None:
+        entry = self.take_entry(project)
+        return None if entry is None else entry[0]
 
 
 class FullMode:
@@ -162,17 +187,19 @@ class FullMode:
             return Outcome(NOT_HEARD)
 
         # Taken, not read: whatever this utterance is, the read-back is used up.
-        pending = self._pending.take(project.name)
-        if pending is None:
+        entry = self._pending.take_entry(project.name)
+        if entry is None:
             # Nothing waiting, or 60 seconds gone: a "yes" is an ordinary utterance.
             return self._turn(project, transcript)
 
+        pending, deadline = entry
         if said in self._no:
             self._cancel(project, pending)
             return Outcome(CANCELLED)
         if said in self._yes:
             return self._turn(project, transcript,
-                              ConfirmAnswer(pending.id, pending.sha256, ANSWER_YES))
+                              ConfirmAnswer(pending.id, pending.sha256, ANSWER_YES),
+                              answered=entry)
         # Anything else is an ordinary request. It clears the pending call on the
         # agent host like every request, and the agent is told what happened.
         return self._turn(project, f"{NOT_CONFIRMED_LINE}\n\n{transcript}", said=transcript)
@@ -187,12 +214,29 @@ class FullMode:
             # This side has already dropped it, so no yes can be sent any more;
             # on the agent host it expires by itself.
             logger.warning("project=%s agent=full: the cancel did not reach the agent host "
-                           "(%s)", project.name, _code(exc))
+                           "(%s)", project.name, exc.code)
             logger.warning("project=%s cancel failed: %s", project.name, exc, extra=FILE_ONLY)
 
+    def delivered(self, project: ProjectConfig, outcome: Outcome) -> None:
+        """The reply was synthesised and written to the phone. Only now does a
+        read-back count as heard, and only now can a yes release it. The time is
+        counted from when it arrived, not from now."""
+        if outcome.to_keep is not None:
+            self._pending.put_until(project.name, *outcome.to_keep)
+
+    def undelivered(self, project: ProjectConfig, outcome: Outcome) -> None:
+        """The reply could not be spoken or sent. A read-back nobody heard is not
+        kept here and is cancelled on the agent host."""
+        if outcome.to_keep is not None:
+            logger.warning("project=%s agent=full: the read-back did not reach the phone; "
+                           "the pending call is cancelled", project.name)
+            self._cancel(project, outcome.to_keep[0])
+
     def _turn(self, project: ProjectConfig, prompt: str,
-              confirm: ConfirmAnswer | None = None, *, said: str | None = None) -> Outcome:
-        """`said` is what the driver said, when `prompt` has a line in front of it."""
+              confirm: ConfirmAnswer | None = None, *, said: str | None = None,
+              answered: tuple[PendingConfirmation, float] | None = None) -> Outcome:
+        """`said` is what the driver said, when `prompt` has a line in front of it.
+        `answered` is the read-back a yes was given to, with its deadline."""
         try:
             turn = self._remote.run_turn(project=project, prompt=prompt, confirm=confirm)
         except AgentUnavailable as exc:
@@ -208,15 +252,22 @@ class FullMode:
                          exc.turn_id or "-", exc.code)
             logger.error("project=%s agent turn failed: %s", project.name, exc,
                          extra=FILE_ONLY)
+            if answered is not None and exc.code in TRY_AGAIN_CODES:
+                # Nothing ran and nothing was refused for good. The read-back is put
+                # back as it was, same id, same deadline: the yes is not lost.
+                self._pending.put_until(project.name, *answered)
+                return Outcome(SAY_YES_AGAIN, needs_confirmation=True)
             return Outcome(_failure_line(exc, confirmed=confirm is not None), exc.turn_id)
         return self._outcome(project, turn)
 
     def _outcome(self, project: ProjectConfig, turn: AgentTurn) -> Outcome:
+        to_keep = None
         if turn.confirmation is not None:
-            self._pending.put(project.name, turn.confirmation, turn.expires_s)
+            # Not pending yet: first it has to be spoken (delivered()).
+            to_keep = (turn.confirmation, self._pending.deadline(turn.expires_s))
         logger.info("project=%s agent=full turn=%s outcome=%s", project.name, turn.ref or "-",
                     "needs_confirmation" if turn.confirmation is not None else "ok")
-        return Outcome(turn.spoken, turn.ref, turn.confirmation is not None)
+        return Outcome(turn.spoken, turn.ref, turn.confirmation is not None, to_keep)
 
     def _fallback(self, project: ProjectConfig, prompt: str, reason: str) -> Outcome:
         """The one turn answered read-only instead, saying so first (D30)."""
@@ -224,18 +275,16 @@ class FullMode:
         return Outcome(f"{FALLBACK_SENTENCES[reason]} {turn.spoken}", turn.ref)
 
 
-def _code(exc: AgentUnavailable | AgentTurnFailed) -> str:
-    return exc.reason if isinstance(exc, AgentUnavailable) else exc.code
-
-
 def _failure_line(exc: AgentTurnFailed, *, confirmed: bool) -> str:
-    if exc.code == "expired":
+    if exc.code == EXPIRED:
         return TOOK_TOO_LONG
     if exc.code == AgentTurnFailed.STILL_RUNNING:
         return STILL_RUNNING
     if exc.code == "agent_failed" and exc.notice == OUT_OF_BUDGET:
-        # The usage limit is shared with the coding session (design, Risks).
-        return NOTICE_SENTENCES[OUT_OF_BUDGET]
+        # The usage limit is shared with the coding session (design, Risks). It can
+        # be reached in the middle of a turn, so after a yes the call may have run.
+        line = NOTICE_SENTENCES[OUT_OF_BUDGET]
+        return f"{line} {UNKNOWN_IF_RAN}" if confirmed else line
     if exc.code in NOT_STARTED_LINES:
         line = NOT_STARTED_LINES[exc.code]
         return f"{line} {NOTHING_CONFIRMED}" if confirmed else line

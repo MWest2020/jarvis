@@ -150,6 +150,53 @@ def test_a_yes_whose_connection_breaks_is_not_called_unconfirmed(bridge):
     assert "Nothing was confirmed" not in said and bridge.readonly_prompts == []
 
 
+def test_a_read_back_whose_speech_fails_is_cancelled_and_never_pending(bridge, monkeypatch):
+    bridge.host.scenario(mode="wrapper", gate=True)
+
+    def broken(text, voice):
+        raise RuntimeError("no voice today")
+    monkeypatch.setattr(tts, "synthesize", broken)
+    response, _ = bridge.say("merge it")
+    assert response.status == 500
+    assert bridge.kinds() == ["agent", "cancel"]           # the agent host was told no
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: b"WAV:" + text.encode())
+    bridge.host.scenario(mode="wrapper")
+    bridge.say("yes")
+    assert bridge.host.requests()[-1]["confirm"] is None   # an ordinary utterance
+
+
+def test_a_read_back_that_cannot_be_written_to_the_phone_is_cancelled(bridge, monkeypatch):
+    bridge.host.scenario(mode="wrapper", gate=True)
+    real = server.Handler._respond_audio
+
+    def gone(self, *args, **kwargs):
+        raise BrokenPipeError("the phone hung up")
+    monkeypatch.setattr(server.Handler, "_respond_audio", gone)
+    try:
+        bridge.say("merge it")
+    except Exception:  # noqa: BLE001 - the client side of a broken reply
+        pass
+    monkeypatch.setattr(server.Handler, "_respond_audio", real)
+    assert bridge.kinds() == ["agent", "cancel"]
+    bridge.host.scenario(mode="wrapper")
+    bridge.say("yes")
+    assert "confirmed" not in bridge.kinds()
+
+
+def test_a_yes_to_a_busy_agent_host_can_be_said_again(bridge):
+    bridge.host.scenario(mode="wrapper", gate=True)
+    bridge.say("merge it")
+    bridge.host.scenario(mode="wrapper", error="busy")
+    response, said = bridge.say("yes")
+    assert said == "WAV:The agent host is busy. Say yes again in a moment."
+    assert response.getheader("X-Jarvis-Needs-Confirmation") == "1"
+    bridge.host.scenario(mode="wrapper")
+    # (The fake clears a pending call only when it handles a request; a busy one
+    # is answered before that, as the real wrapper's lock is taken first.)
+    _, said = bridge.say("yes")
+    assert said == "WAV:Merged." and bridge.kinds() == ["agent", "confirmed"]
+
+
 def test_a_yes_for_another_project_confirms_nothing(bridge):
     bridge.host.scenario(mode="wrapper", gate=True)
     bridge.say("merge it", project="demo")

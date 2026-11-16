@@ -34,6 +34,7 @@ class Rig:
         self.readonly = ScriptedAdapter("readonly", *readonly_answers)
         self.measured = 0
         self.speech = 0.6
+        self.deliver = True
         self.full = self._new(min_speech_s)
 
     def _new(self, min_speech_s=0.3):
@@ -49,7 +50,10 @@ class Rig:
         def measure():
             self.measured += 1
             return self.speech
-        return self.full.handle(project, text, measure)
+        out = self.full.handle(project, text, measure)
+        if self.deliver:
+            self.full.delivered(project, out)     # what the server does once it was spoken
+        return out
 
     @property
     def confirms(self):
@@ -261,7 +265,7 @@ def test_when_the_bridge_stops_waiting_it_says_the_turn_is_still_running(after_a
     assert rig.readonly.asked == []                  # and it is not run again
 
 
-@pytest.mark.parametrize("code", ["busy", "low_memory", "bad_request", "host_key"])
+@pytest.mark.parametrize("code", ["bad_request", "host_key"])
 def test_after_a_yes_a_refusal_before_any_turn_says_nothing_was_confirmed(code):
     rig = Rig(_read_back(), AgentTurnFailed(code))
     rig.say("merge it")
@@ -291,6 +295,108 @@ def test_a_second_gated_action_gets_its_own_read_back():
     assert rig.say("yes").needs_confirmation
     rig.say("yes")
     assert rig.confirms[2] == ConfirmAnswer("c2", "ef" * 32, "yes")
+
+
+# A read-back is pending only once it was spoken.
+
+def test_a_read_back_is_not_pending_until_it_was_delivered():
+    rig = Rig(_read_back(), AgentTurn("Yes to what?", "turn-2"))
+    rig.deliver = False
+    out = rig.say("merge it")
+    assert out.needs_confirmation and out.to_keep[0] == PENDING
+    rig.say("yes")                                   # nobody heard it: an ordinary utterance
+    assert rig.remote.asked[1] == ("demo", "yes", None)
+
+
+def test_a_read_back_that_could_not_be_spoken_is_cancelled_on_the_agent_host():
+    rig = Rig(_read_back(), AgentTurn("", ""), AgentTurn("Yes to what?", "turn-3"))
+    rig.deliver = False
+    out = rig.say("merge it")
+    rig.full.undelivered(DEMO, out)                  # text-to-speech or the write failed
+    assert rig.remote.asked[1] == ("demo", "", ConfirmAnswer("c1", SHA, "no"))
+    rig.deliver = True
+    rig.say("yes")
+    assert rig.confirms[2] is None
+
+
+def test_an_ordinary_reply_that_was_not_delivered_sends_nothing():
+    rig = Rig(AgentTurn("Two are open.", "turn-1"))
+    rig.deliver = False
+    rig.full.undelivered(DEMO, rig.say("what is open?"))
+    assert len(rig.remote.asked) == 1
+
+
+def test_the_60_seconds_count_from_the_arrival_not_from_the_delivery():
+    rig = Rig(_read_back(), AgentTurn("Yes to what?", "turn-2"))
+    rig.deliver = False
+    out = rig.say("merge it")                        # arrives at 0
+    rig.now = 50.0                                   # a very slow text-to-speech
+    rig.full.delivered(DEMO, out)
+    rig.deliver = True
+    rig.now = 60.0
+    rig.say("yes")
+    assert rig.confirms[1] is None
+
+
+# A yes that meets a busy agent host is not lost.
+
+@pytest.mark.parametrize("code", ["busy", "low_memory"])
+def test_a_yes_to_a_busy_agent_host_keeps_the_read_back(code):
+    rig = Rig(_read_back(), AgentTurnFailed(code), AgentTurn("Merged.", "turn-3"))
+    rig.say("merge it")
+    rig.now = 10.0
+    out = rig.say("yes")
+    assert out.spoken == "The agent host is busy. Say yes again in a moment."
+    assert out.needs_confirmation
+    rig.now = 20.0
+    assert rig.say("yes").spoken == "Merged."
+    assert rig.confirms[1] == rig.confirms[2] == ConfirmAnswer("c1", SHA, "yes")   # the same id
+
+
+def test_the_read_back_put_back_keeps_its_old_deadline():
+    rig = Rig(_read_back(), AgentTurnFailed("busy"), AgentTurn("Yes to what?", "turn-3"))
+    rig.say("merge it")                              # arrives at 0
+    rig.now = 55.0
+    rig.say("yes")                                   # busy: put back, not renewed
+    rig.now = 60.0
+    rig.say("yes")
+    assert rig.confirms[2] is None
+
+
+def test_a_busy_agent_host_without_a_yes_is_just_busy():
+    rig = Rig(AgentTurnFailed("busy"))
+    out = rig.say("do something")
+    assert out.spoken == "The agent host is busy. Try again in a moment."
+    assert not out.needs_confirmation
+
+
+@pytest.mark.parametrize("code", ["bad_request", "host_key"])
+def test_other_refusals_after_a_yes_do_not_keep_the_read_back(code):
+    rig = Rig(_read_back(), AgentTurnFailed(code), AgentTurn("Yes to what?", "turn-3"))
+    rig.say("merge it")
+    rig.say("yes")
+    rig.say("yes")
+    assert rig.confirms[2] is None
+
+
+def test_out_of_budget_after_a_yes_says_so_and_that_it_may_have_run():
+    rig = Rig(_read_back(), AgentTurnFailed("agent_failed", notice="out_of_budget"))
+    rig.say("merge it")
+    out = rig.say("yes")
+    assert out.spoken == ("The agent is out of budget for now. "
+                          "I do not know whether it ran. Check at the desk.")
+    assert "Nothing was confirmed" not in out.spoken
+
+
+def test_the_codes_and_their_sentences_come_from_one_place():
+    from bridge.agent import AgentUnavailable
+    assert remote_adapter.FALLBACK_CODES == set(full_mode.FALLBACK_SENTENCES) - {"unreachable"}
+    assert AgentUnavailable.REASONS == set(full_mode.FALLBACK_SENTENCES)
+    # Every code that means "no turn started" has its sentence, expired its own.
+    assert (remote_adapter.NOT_STARTED_CODES - {remote_adapter.EXPIRED}
+            <= set(full_mode.NOT_STARTED_LINES))
+    assert remote_adapter.TRY_AGAIN_CODES <= remote_adapter.NOT_STARTED_CODES
+    assert not hasattr(full_mode, "_code")
 
 
 # D30: read-only for one turn, and it says so first.
@@ -369,7 +475,7 @@ def test_a_yes_that_cannot_be_delivered_confirms_nothing_and_is_not_asked_read_o
 def test_every_spoken_line_of_the_bridge_passes_the_spoken_filter():
     from bridge.summary import _SECRET_LIKE, _UNSPEAKABLE
     lines = [full_mode.CANCELLED, full_mode.UNKNOWN_IF_RAN, full_mode.TOOK_TOO_LONG,
-             full_mode.STILL_RUNNING,
+             full_mode.STILL_RUNNING, full_mode.SAY_YES_AGAIN,
              full_mode.NOTHING_CONFIRMED, *remote_adapter.NOTICE_SENTENCES.values(),
              *full_mode.FALLBACK_SENTENCES.values(), *full_mode.NOT_STARTED_LINES.values(),
              *full_mode.STARTED_LINES.values()]

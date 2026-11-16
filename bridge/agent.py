@@ -76,6 +76,11 @@ class AgentUnavailable(Exception):
         self.reason = reason
         self.detail = detail
 
+    @property
+    def code(self) -> str:
+        """The same name AgentTurnFailed has for it, so a caller can log either."""
+        return self.reason
+
 
 class AgentTurnFailed(Exception):
     """A `full` turn failed, or may have started. Never answered by a second run.

@@ -310,9 +310,16 @@ class Handler(BaseHTTPRequestHandler):
             outcome = self.full.handle(project, transcript,
                                        lambda: stt.speech_seconds(audio_bytes))
             logger.info("project=%s summary=%r", project_name, outcome.spoken)
-            audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
-            self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
-                                needs_confirmation=outcome.needs_confirmation)
+            try:
+                audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
+                self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
+                                    needs_confirmation=outcome.needs_confirmation)
+            except BaseException:
+                # A read-back that was not spoken, or did not reach the phone, was
+                # not heard: nothing stays pending, here or on the agent host.
+                self.full.undelivered(project, outcome)
+                raise
+            self.full.delivered(project, outcome)
             return
 
         turn = self.readonly.run_turn(project=project, prompt=transcript)

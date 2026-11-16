@@ -68,10 +68,19 @@ ERROR_CODES = frozenset({
     "bad_request", "no_checkout", "busy", "low_memory", "timeout", "agent_failed",
     "disabled", "unsafe_settings", EXPIRED,
 })
-# D30: the agent host answers these before any turn has started there.
-FALLBACK_CODES = frozenset({"no_checkout", "disabled", "unsafe_settings"})
+# The one place that says which codes mean what; bridge.full_mode imports these.
+# D30: the agent host answers these before any turn has started there, and only
+# these let a turn be answered read-only instead.
+FALLBACK_CODES = frozenset({AgentUnavailable.NO_CHECKOUT, AgentUnavailable.DISABLED,
+                            AgentUnavailable.UNSAFE_SETTINGS})
+BUSY = "busy"
+LOW_MEMORY = "low_memory"
+BAD_REQUEST = "bad_request"
+# No turn can run right now, and nothing was touched: the same request, a yes
+# included, can simply be sent again in a moment.
+TRY_AGAIN_CODES = frozenset({BUSY, LOW_MEMORY})
 # Answered before a turn exists, so `turn` is null with them (D33).
-NOT_STARTED_CODES = FALLBACK_CODES | {"bad_request", "busy", "low_memory", EXPIRED}
+NOT_STARTED_CODES = FALLBACK_CODES | TRY_AGAIN_CODES | {BAD_REQUEST, EXPIRED}
 
 NEEDS_THE_DESK = "That one needs the desk."
 OUT_OF_BUDGET = "out_of_budget"
@@ -377,7 +386,7 @@ class RemoteAdapter:
         except (AgentUnavailable, AgentTurnFailed) as exc:
             # It then expires there by itself; this side keeps nothing to confirm.
             logger.warning("project=%s: the cancel did not reach the agent host (%s)",
-                           project.name, getattr(exc, "code", None) or exc.reason)
+                           project.name, exc.code)
         return AgentTurn(spoken=NEEDS_THE_DESK, ref=turn_id)
 
     def _check_files(self) -> None:
