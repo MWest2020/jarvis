@@ -552,7 +552,9 @@ once because the turn marker is absent, and cannot block a call even when it is 
 *Switching it off.* `confirm = "off"` in `/etc/jarvis-agent/config.toml`, or
 `confirm_skip = ["message", …]` for single classes. Then the gate lets the call through and
 the record says "not confirmed: confirmation is off". The class `self` stays desk-only even
-then. By voice the setting is changed only through the fixed `confirm on|off` command above,
+then, and "off" never covers a call the gate did not fully understand: a compound command,
+inline code, a call reached by unwrapping a shell, a write to git's configuration, or a push
+whose destination the configuration or the environment decides (D40). By voice the setting is changed only through the fixed `confirm on|off` command above,
 with its templated read-back and a yes; any other edit of that file is a desk job.
 
 Alternatives considered:

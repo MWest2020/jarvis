@@ -657,6 +657,10 @@ def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | N
     command = verdict.command
     if command is None or not command.argv:
         return None
+    if verdict.rule in classify.PUSH_NOT_NAMEABLE:
+        # The configuration maps the push elsewhere, or it runs for another
+        # repository: the branch in the call is not where it lands.
+        return None
     if command.env or command.odd_wrapper:
         # A variable set in front of the command (`GH_HOST=...`,
         # `KUBECONFIG=...`, `GIT_SSH_COMMAND=...`), a directory changed by a

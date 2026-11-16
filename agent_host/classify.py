@@ -335,6 +335,16 @@ def context_for(
 # --- the entry point ------------------------------------------------------------
 
 RULE_NOT_UNDERSTOOD = "compound:not-understood"
+# A push whose destination the configuration or the environment decides
+# (`remote.<name>.push`, `push.default = upstream`, `env -C`, `GIT_DIR`):
+# where it lands is not what the call says, so it has no sentence.
+PUSH_NOT_NAMEABLE = frozenset({"push:mapped", "push:redirected"})
+# Pushes whose destination the gate did not resolve at all. Confirmation
+# off never covers them: "off" means "do not ask me", not "do not look".
+PUSH_UNRESOLVED = PUSH_NOT_NAMEABLE | frozenset({
+    "push:bare-unresolved", "push:head-unresolved", "push:refspec-unreadable",
+    "push:option-before-subcommand", "push:wide", "push:plumbing", "push:subtree",
+})
 
 
 def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:

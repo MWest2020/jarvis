@@ -611,3 +611,99 @@ def test_the_switch_read_back_says_what_on_for_a_class_means_when_everything_is_
     turn = Turn(tmp_path)
     assert turn.derive(f"sudo {program} on merge").outcome.sentence \
         == "Switch voice confirmation on for merge actions."
+
+
+# --- the verification of the last round (heads 1df3db0 / d7d22d6) ----------------------------------
+
+def _mapped(tmp_path, how):
+    """A checkout on feature-x whose configuration sends feature-x to main."""
+    work = tmp_path / "area" / "work"
+    git_init(work, branch="feature-x")
+    run_git(work, "remote", "add", "origin", "git@github.com:me/demo.git")
+    if how == "mapping":
+        run_git(work, "config", "remote.origin.push", "refs/heads/feature-x:refs/heads/main")
+    else:
+        run_git(work, "update-ref", "refs/remotes/origin/main", "HEAD")
+        run_git(work, "config", "branch.feature-x.remote", "origin")
+        run_git(work, "config", "branch.feature-x.merge", "refs/heads/main")
+        run_git(work, "config", "push.default", "upstream")
+    return work
+
+
+MAPPED_FORCE = ("git push --force origin feature-x", "git push --force-with-lease origin feature-x",
+                "git push origin +feature-x", "git push -f origin HEAD")
+
+
+@pytest.mark.parametrize("how", ["mapping", "upstream"])
+@pytest.mark.parametrize("command", MAPPED_FORCE + ("git push origin feature-x",))
+def test_b1_a_push_the_configuration_maps_to_main_is_never_read_back(tmp_path, how, command):
+    """It used to be pending as "Force push feature-x to the repository demo."
+    while git pushes feature-x to main."""
+    work = _mapped(tmp_path, how)
+    turn = Turn(tmp_path, cwd=work, git=classify.run_git)
+    derived = turn.derive(command)
+    assert derived.verdict.rule == "push:mapped" and derived.outcome is None, (command, derived)
+    result = turn.call(command)
+    assert not result.allow and result.reason == decision.REASON_DESK, command
+    assert turn.state()["pending"] is None
+
+
+@pytest.mark.parametrize("how", ["mapping", "upstream"])
+def test_b1_confirmation_off_or_skipped_does_not_cover_a_mapped_push(tmp_path, how):
+    work = _mapped(tmp_path, how)
+    for config in (make_config(tmp_path, confirm_skip=["force"]),
+                   make_config(tmp_path, confirm_skip=["force", "merge", "delete"]),
+                   make_config(tmp_path, confirm="off")):
+        turn = Turn(tmp_path, config, cwd=work, git=classify.run_git)
+        for command in MAPPED_FORCE + ("git push origin feature-x",):
+            assert not turn.call(command).allow, (config.confirm, config.confirm_skip, command)
+        assert all(e["outcome"] != "not_confirmed" for e in turn.state()["events"])
+
+
+def test_b1_confirmation_off_does_not_cover_a_push_the_gate_could_not_place(tmp_path):
+    work = _mapped(tmp_path, "mapping")
+    turn = Turn(tmp_path, make_config(tmp_path, confirm_skip=["force"]), cwd=work, git=classify.run_git)
+    for command in ("git push -f", "git push --force --all origin", "git push -f origin"):
+        assert not turn.call(command).allow, command
+
+
+def _other(tmp_path):
+    work = tmp_path / "area" / "work"
+    git_init(work, branch="feature-x")
+    run_git(work, "remote", "add", "origin", "git@github.com:me/demo.git")
+    other = tmp_path / "area" / "other"
+    git_init(other, branch="develop")
+    run_git(other, "remote", "add", "origin", "git@github.com:me/other.git")
+    run_git(other, "update-ref", "refs/remotes/origin/develop", "HEAD")
+    run_git(other, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+    run_git(other, "config", "remote.origin.push", "refs/heads/feature-x:refs/heads/main")
+    return work
+
+
+@pytest.mark.parametrize("command", [
+    "env -C ../other git push origin develop",
+    "env -C ../other git push origin feature-x",
+    "env --chdir=../other git push origin feature-x:feature-x",
+    "GIT_DIR=../other/.git git push origin develop",
+    "GIT_WORK_TREE=../other git push origin develop",
+    "sudo -D ../other git push origin develop",
+])
+def test_b2_a_push_for_another_repository_is_gated_and_not_nameable(tmp_path, command):
+    work = _other(tmp_path)
+    turn = Turn(tmp_path, cwd=work, git=classify.run_git)
+    derived = turn.derive(command)
+    assert derived.verdict.gated and derived.verdict.rule == "push:redirected", (command, derived)
+    assert derived.outcome is None
+    off = Turn(tmp_path, make_config(tmp_path, confirm="off"), cwd=work, git=classify.run_git)
+    assert not off.call(command).allow, command
+
+
+@pytest.mark.parametrize("config", [{"confirm": "off"}, {"confirm_skip": ["delete", "merge"]}])
+def test_a_call_reached_by_unwrapping_a_shell_is_always_asked(tmp_path, config):
+    turn = Turn(tmp_path, make_config(tmp_path, **config))
+    for command in (f"bash -c '{DELETE}'", f"sh -c \"{MERGE}\"", f"bash -lc '{DELETE}'"):
+        result = turn.call(command)
+        assert not result.allow, (config, command)
+    assert all(e["outcome"] != "not_confirmed" for e in turn.state()["events"])
+    # The same call written out is let through as configured.
+    assert turn.call(DELETE).allow
