@@ -344,6 +344,9 @@ def _strip(argv: list[str]) -> tuple[list[str], bool, list[str]]:
                         rest = rest[1:]
                         continue
                     break
+                if any(word in ("-C", "--chdir") or word.startswith("--chdir=")
+                       for word in words[1:len(words) - len(rest)]):
+                    names.append("--chdir")  # the command runs in another directory
             else:
                 rest, ok = _skip_options(rest, flags, valued, attached)
                 if not ok:
@@ -477,12 +480,15 @@ def analyse(
             rest, ok = _skip_options(argv[1:], _SUDO_FLAGS, _SUDO_VALUE_OPTIONS, ())
             if not ok:
                 return compound(text, wrappers, everywhere=True)
+            chdir = ("--chdir",) if any(
+                word in ("-D", "--chdir") or word.startswith("--chdir=")
+                for word in argv[1:len(argv) - len(rest)]) else ()
             rest, ok, more = _strip(rest)
             if not ok:
                 return compound(text, wrappers, everywhere=True)
             if not rest:
                 return single(argv, wrappers, names, True)
-            return unwrap(rest, text, wrappers, depth + 1, names + tuple(more))
+            return unwrap(rest, text, wrappers, depth + 1, names + chdir + tuple(more))
 
         if name in shells:
             inner = _shell_c_string(argv[1:])

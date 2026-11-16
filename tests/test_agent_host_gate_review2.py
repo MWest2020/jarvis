@@ -550,3 +550,113 @@ def test_11_the_pre_turn_settings_check_runs_inside_the_turn_lock(tmp_path, monk
     monkeypatch.setattr(wrapper, "_checkout_settings_problem", spy)
     assert wrapper.handle_request(_raw(), config)["error"] == "unsafe_settings"
     assert seen == ["held"]
+
+
+# --- the verification of the last round (heads 1df3db0 / d7d22d6) ----------------------------------
+
+def _mapped_repo(tmp_path, how):
+    """A checkout on feature-x whose configuration sends feature-x to main."""
+    work = tmp_path / "area" / "work"
+    git_init(work, branch="feature-x")
+    run_git(work, "remote", "add", "origin", "git@github.com:me/demo.git")
+    if how == "mapping":
+        run_git(work, "config", "remote.origin.push", "refs/heads/feature-x:refs/heads/main")
+    else:
+        run_git(work, "update-ref", "refs/remotes/origin/main", "HEAD")
+        run_git(work, "config", "branch.feature-x.remote", "origin")
+        run_git(work, "config", "branch.feature-x.merge", "refs/heads/main")
+        run_git(work, "config", "push.default", "upstream")
+    return work, make_ctx(tmp_path, cwd=work, git=classify.run_git)
+
+
+@pytest.mark.parametrize("how", ["mapping", "upstream"])
+@pytest.mark.parametrize("command", [
+    "git push --force origin feature-x",
+    "git push --force-with-lease origin feature-x",
+    "git push origin +feature-x",
+    "git push -f origin HEAD",
+    "git push origin feature-x",
+])
+def test_b1_a_push_the_configuration_maps_elsewhere_is_push_mapped(tmp_path, how, command):
+    _, ctx = _mapped_repo(tmp_path, how)
+    verdict = bash(command, ctx)
+    assert verdict.gated and verdict.rule == "push:mapped", (command, verdict)
+
+
+def _other_repo(tmp_path):
+    """`../other`, whose default branch is develop and which maps feature-x to main."""
+    work = tmp_path / "area" / "work"
+    git_init(work, branch="feature-x")
+    run_git(work, "remote", "add", "origin", "git@github.com:me/demo.git")
+    other = tmp_path / "area" / "other"
+    git_init(other, branch="develop")
+    run_git(other, "remote", "add", "origin", "git@github.com:me/other.git")
+    run_git(other, "update-ref", "refs/remotes/origin/develop", "HEAD")
+    run_git(other, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+    run_git(other, "config", "remote.origin.push", "refs/heads/feature-x:refs/heads/main")
+    return make_ctx(tmp_path, cwd=work, git=classify.run_git)
+
+
+@pytest.mark.parametrize("command", [
+    "env -C ../other git push origin develop",
+    "env -C ../other git push origin feature-x",
+    "env --chdir=../other git push origin develop",
+    "env --chdir ../other git push origin feature-x:feature-x",
+    "GIT_DIR=../other/.git git push origin develop",
+    "GIT_WORK_TREE=../other git push origin develop",
+    "GIT_COMMON_DIR=../other/.git git push origin develop",
+    "env GIT_DIR=../other/.git git push origin feature-x:feature-x",
+    "sudo -D ../other git push origin develop",
+    "sudo --chdir=../other git push origin develop",
+])
+def test_b2_a_push_run_for_another_repository_is_push_redirected(tmp_path, command):
+    verdict = bash(command, _other_repo(tmp_path))
+    assert verdict.gated and "push:redirected" in verdict.rule, (command, verdict)
+
+
+def test_b2_a_plain_push_from_here_is_still_judged_here(tmp_path):
+    ctx = _other_repo(tmp_path)
+    assert not bash("git push origin feature-x", ctx).gated
+    assert not bash("env -i git push origin feature-x", ctx).gated
+
+
+@pytest.mark.parametrize("command", [
+    "scp notes.txt [fe80::1%eth0]:/srv/",
+    "scp notes.txt me@[fe80::1%25eth0]:/srv/",
+    "rsync -a dir/ [fe80::1%eth0]:/srv/",
+    "scp [fe80::1%eth0]:/srv/x .",
+])
+def test_a_copy_to_a_host_with_a_zone_id_is_outward(ctx, command):
+    verdict = bash(command, ctx)
+    assert verdict.gated and "outward" in verdict.classes, (command, verdict)
+
+
+@pytest.mark.parametrize("command", [
+    "tee -a .git/config",
+    "echo '[remote \"origin\"]' >> .git/config",
+    "printf x > .git/config",
+    "cp evil .git/hooks/pre-push",
+    "cp evil .git/info/attributes",
+    "echo x > ../other/.git/config",
+    "cp evil .git/worktrees/w1/config.worktree",
+    "cp evil .git/modules/sub/hooks/post-checkout",
+    "sed -i s/a/b/ .git/config",
+])
+def test_a_write_to_a_repositorys_configuration_or_hooks_is_self(ctx, command):
+    _self(ctx, command)
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write", "MultiEdit"])
+@pytest.mark.parametrize("path", [".git/config", ".git/hooks/pre-commit", ".git/info/exclude",
+                                  "/srv/repo/.git/config"])
+def test_the_write_tools_on_a_repositorys_configuration_are_self(ctx, tool, path):
+    verdict = classify.classify(tool, {"file_path": path, "content": "x"}, ctx)
+    assert verdict.gated and verdict.classes == ("self",), (tool, path, verdict)
+
+
+def test_reading_a_repositorys_configuration_and_writing_elsewhere_in_git_is_not_self(ctx):
+    for command in ("cat .git/config", "grep -n url .git/config", "ls .git/hooks",
+                    "git status", "git commit -m 'edit config docs'"):
+        assert not bash(command, ctx).gated, command
+    for path in (".git/COMMIT_EDITMSG", "src/config", "docs/hooks/x.md", ".gitconfig.example"):
+        assert not classify.classify("Write", {"file_path": path, "content": "x"}, ctx).gated, path
