@@ -224,35 +224,54 @@ def _positive_int(name: str, default: int, *, maximum: int) -> int:
     return value
 
 
-def _private_file(name: str, project_dirs: list[Path]) -> Path:
-    """A file the ssh client is pointed at: the key, or the pinned host key.
+# ssh reads more than a path in an option value: it splits on spaces, expands "~",
+# "%" tokens and "${VAR}", and takes quotes and backslashes as its own. None of
+# these may stand in the path of the key or of the known-hosts file.
+_UNSAFE_PATH_CHARS = frozenset("%$~\"'\\")
 
-    Refused when it is missing, when anyone but its owner has any permission on it,
-    when the bridge cannot read it, or when it lies inside a project directory (the
-    read-only agent may read everything there, and nothing else).
+
+def check_private_file(path: Path, name: str) -> None:
+    """The key file or the pinned host key, as it is right now.
+
+    ConfigError when it is missing, not a regular file, gives any permission to
+    group or others, or cannot be read by the bridge's own user. Checked at start
+    and again before every turn (bridge.remote_adapter): a file that went away or
+    was opened up since start is not used.
     """
-    raw = _require(name)
-    if any(ch.isspace() for ch in raw):
-        # ssh splits an option value on spaces: a second path would be read as
-        # another known-hosts file.
-        raise ConfigError(f"{name} must not contain whitespace")
-    path = Path(raw)
-    if not path.is_absolute():
-        raise ConfigError(f"{name}={raw!r} must be an absolute path")
     try:
         real = path.resolve(strict=True)
         info = real.stat()
     except OSError as exc:
-        raise ConfigError(f"{name}={raw!r} cannot be read: {exc.strerror or exc}") from exc
+        raise ConfigError(f"{name}={str(path)!r} cannot be read: {exc.strerror or exc}") from exc
     if not stat.S_ISREG(info.st_mode):
-        raise ConfigError(f"{name}={raw!r} is not a regular file")
+        raise ConfigError(f"{name}={str(path)!r} is not a regular file")
     if info.st_mode & 0o077:
         raise ConfigError(
-            f"{name}={raw!r} has mode {stat.S_IMODE(info.st_mode):04o}: it must give "
+            f"{name}={str(path)!r} has mode {stat.S_IMODE(info.st_mode):04o}: it must give "
             f"nothing to group or others (0400 or 0600)"
         )
     if not os.access(real, os.R_OK):
-        raise ConfigError(f"{name}={raw!r} is not readable by the bridge's own user")
+        raise ConfigError(f"{name}={str(path)!r} is not readable by the bridge's own user")
+
+
+def _private_file(name: str, project_dirs: list[Path]) -> Path:
+    """A file the ssh client is pointed at: the key, or the pinned host key.
+
+    Refused when its path holds a character ssh would read as something else, when
+    check_private_file refuses it, or when it lies inside a project directory (the
+    read-only agent may read everything there, and nothing else).
+    """
+    raw = _require(name)
+    if any(ch.isspace() or ch in _UNSAFE_PATH_CHARS for ch in raw):
+        raise ConfigError(
+            f"{name} must not contain whitespace or any of % $ ~ \" ' \\ "
+            f"(ssh would expand or split them)"
+        )
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ConfigError(f"{name}={raw!r} must be an absolute path")
+    check_private_file(path, name)
+    real = path.resolve()
     for directory in project_dirs:
         try:
             inside = real.is_relative_to(directory.resolve())

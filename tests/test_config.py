@@ -10,6 +10,12 @@ def _set_minimal_env(monkeypatch, tmp_path, **overrides):
         "JARVIS_PROJECTS": f"demo={tmp_path}",
     }
     env.update(overrides)
+    # Whatever the machine running the tests has set for `full` mode is not part
+    # of a test.
+    import os
+    for key in list(os.environ):
+        if key.startswith(("JARVIS_AGENT_", "JARVIS_CONFIRM_")):
+            monkeypatch.delenv(key)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
@@ -356,6 +362,15 @@ def test_full_mode_follows_a_mounted_secrets_links(monkeypatch, tmp_path):
 @pytest.mark.parametrize("name,value", [
     ("JARVIS_AGENT_KEY_FILE", "relative/key"),
     ("JARVIS_AGENT_KNOWN_HOSTS_FILE", "/secrets/known hosts"),
+    ("JARVIS_AGENT_KEY_FILE", "/secrets/%d/key"),
+    ("JARVIS_AGENT_KEY_FILE", "/secrets/${HOME}/key"),
+    ("JARVIS_AGENT_KEY_FILE", "/secrets/~/key"),
+    ("JARVIS_AGENT_KEY_FILE", '/secrets/"key"'),
+    ("JARVIS_AGENT_KEY_FILE", "/secrets/'key'"),
+    ("JARVIS_AGENT_KEY_FILE", "/secrets/k\\ey"),
+    ("JARVIS_AGENT_KEY_FILE", "/secrets/key\t"),
+    ("JARVIS_AGENT_KNOWN_HOSTS_FILE", "/secrets/%h"),
+    ("JARVIS_AGENT_KNOWN_HOSTS_FILE", "/secrets/$x"),
     ("JARVIS_AGENT_HOST", "-oProxyCommand=sh"),
     ("JARVIS_AGENT_HOST", "agent.example evil"),
     ("JARVIS_AGENT_HOST", "mark@agent"),
