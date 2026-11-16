@@ -52,10 +52,57 @@ def test_the_ssh_argv_is_the_one_of_d32():
         "-o", "ServerAliveInterval=15",
         "-o", "LogLevel=VERBOSE",
         "-E", "/tmp/ssh.log",
-        "-i", "/secrets/agent/key",
+        "-o", "IdentityFile=/secrets/agent/key",
         "-p", "2222",
         "mark@agent.example",
     ]
+
+
+def test_the_real_ssh_reads_the_argv_as_one_key_and_one_known_hosts_file(tmp_path):
+    # `ssh -G` prints the configuration ssh would use, without connecting. The key
+    # file does not exist here: it must stay the only identity all the same, with
+    # none of the default keys of ~/.ssh next to it (what `-i` would give).
+    import shutil
+    import subprocess
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        pytest.skip("no ssh client on this machine")
+    agent = AgentHostConfig(host="agent.example", port=2222, user="mark",
+                            key_file=tmp_path / "missing-key",
+                            known_hosts_file=tmp_path / "known_hosts", timeout_s=170)
+    argv = build_ssh_command(agent, str(tmp_path / "ssh.log"))
+    done = subprocess.run([ssh, "-G", *argv[1:]], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    shown = [line.split(" ", 1) for line in done.stdout.splitlines()]
+    values = lambda key: [v[1] for v in shown if v[0] == key and len(v) == 2]  # noqa: E731
+    assert values("identityfile") == [str(tmp_path / "missing-key")]
+    assert values("identitiesonly") == ["yes"]
+    assert values("identityagent") == ["none"]
+    assert values("userknownhostsfile") == [str(tmp_path / "known_hosts")]
+    assert values("globalknownhostsfile") == ["/dev/null"]
+    assert values("stricthostkeychecking") == ["true"] or values("stricthostkeychecking") == ["yes"]
+    assert values("batchmode") == ["yes"]
+    assert (values("user"), values("hostname"), values("port")) == (
+        ["mark"], ["agent.example"], ["2222"])
+
+
+@pytest.mark.parametrize("which", ["key_file", "known_hosts_file"])
+@pytest.mark.parametrize("damage", ["missing", "group-readable", "a directory"])
+def test_the_files_are_checked_again_before_every_turn(host, which, damage):
+    adapter = _adapter(host)
+    adapter.run_turn(project=DEMO, prompt="first")           # fine at first
+    path = getattr(host, which)
+    if damage == "missing":
+        path.unlink()
+    elif damage == "group-readable":
+        path.chmod(0o440)
+    else:
+        path.unlink()
+        path.mkdir()
+    with pytest.raises(AgentUnavailable) as caught:
+        adapter.run_turn(project=DEMO, prompt="second")
+    assert caught.value.reason == "unreachable"
+    assert len(host.calls()) == 1                            # ssh was not started again
 
 
 def test_the_argv_names_no_remote_command_and_nothing_of_the_turn(host):

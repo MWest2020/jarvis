@@ -31,7 +31,7 @@ from bridge.agent import (
     ConfirmAnswer,
     PendingConfirmation,
 )
-from bridge.config import AgentHostConfig, ProjectConfig
+from bridge.config import AgentHostConfig, ConfigError, ProjectConfig, check_private_file
 from bridge.logging_setup import FILE_ONLY
 from bridge.summary import FALLBACK_SUMMARY, extract_summary
 
@@ -129,7 +129,10 @@ def build_ssh_command(agent: AgentHostConfig, log_file: str) -> list[str]:
 
     `-F /dev/null`: no client configuration file, so no ProxyCommand, SendEnv or
     extra identity from one. `BatchMode`: never a prompt. `IdentitiesOnly` and
-    `IdentityAgent=none`: this key and no other. `StrictHostKeyChecking=yes` with
+    `IdentityAgent=none`: this key and no other. The key is named with
+    `-o IdentityFile=`, not `-i` as D32 writes it: with `-i`, a file that is not
+    there is dropped with a warning and ssh goes on with the default keys in
+    `~/.ssh`; with the option it stays the only identity (`ssh -G` shows both). `StrictHostKeyChecking=yes` with
     one pinned file and no global file: an unknown or changed host key ends the
     connection before the request is written (no trust on first use).
 
@@ -150,7 +153,7 @@ def build_ssh_command(agent: AgentHostConfig, log_file: str) -> list[str]:
         "-o", "ServerAliveInterval=15",
         "-o", "LogLevel=VERBOSE",
         "-E", log_file,
-        "-i", str(agent.key_file),
+        "-o", f"IdentityFile={agent.key_file}",
         "-p", str(agent.port),
         f"{agent.user}@{agent.host}",
     ]
@@ -311,6 +314,7 @@ class RemoteAdapter:
             # The agent host would refuse this name; it is not sent at all.
             raise AgentUnavailable(AgentUnavailable.NO_CHECKOUT,
                                    "the project name is not one the agent host accepts")
+        self._check_files()
         # With an answer the prompt is empty: the wrapper builds its own (D36).
         reply = self._ask(project.name, "" if confirm is not None else prompt, confirm)
 
@@ -346,6 +350,18 @@ class RemoteAdapter:
             logger.warning("project=%s: the cancel did not reach the agent host (%s)",
                            project.name, getattr(exc, "code", None) or exc.reason)
         return AgentTurn(spoken=NEEDS_THE_DESK, ref=turn_id)
+
+    def _check_files(self) -> None:
+        """Before every turn, not only at start: the key and the pinned host key
+        must still be there and still be the bridge's alone. ssh is not started
+        otherwise, so nothing leaves this machine."""
+        for path, name in ((self._agent.key_file, "JARVIS_AGENT_KEY_FILE"),
+                           (self._agent.known_hosts_file, "JARVIS_AGENT_KNOWN_HOSTS_FILE")):
+            try:
+                check_private_file(path, name)
+            except ConfigError as exc:
+                logger.error("agent=full: %s; ssh was not started", exc)
+                raise AgentUnavailable(AgentUnavailable.UNREACHABLE, str(exc)) from exc
 
     def _ask(self, project: str, prompt: str, confirm: ConfirmAnswer | None) -> dict:
         """One connection: one request, one parsed reply."""
