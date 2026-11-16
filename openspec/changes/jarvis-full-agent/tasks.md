@@ -5,11 +5,13 @@
 Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 1.17) ran
 on `agent-lxc` on 2026-11-16 (Claude Code 2.1.322), and both hard stops failed: the mid-turn
 settings check and the gate timeout check.** D36 got an answer the same day (#47: the gate's
-trusted values and its own deadline), and against that commit both hard stops **passed**
-on the host, and the other checks passed again against it. `full` mode stays off
-everywhere until the last open part of 1.17 is done: the cluster part of the classifier
-check (a volume claim delete is confirmable by voice; refused after a yes or not, untried). They
-are **(host)** work and come first in phase 3.
+trusted values and its own deadline), and against that commit (`bf8821a`) both hard stops
+**passed** on the host, and checks 1 to 5 and 7 to 10 passed again. After the review of
+#47 (whole-environment comparison, `env` pins in the turn settings, data-holding cluster
+deletes desk-only), commit `37a9b9e` passed checks 4, 5, 6 (with new environment cases),
+11 and 12. **1.17 is done**: every check has an outcome and both hard stops pass. `full`
+mode stays off until it is switched on in task 3.2 and onward, which is **(host)** work
+and comes first in phase 3.
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
 1b2, 1c). The last task of every phase
@@ -254,7 +256,7 @@ the finished guarantee.
   `disableAllHooks` (a failed mid-turn check stops phase 1, hardening or not), and the
   trust statement of D40 in plain words); `AGENTS.md` hard rule on the allow-list rewritten
   as in the proposal
-- [ ] 1.17 **(host)** Canary checks with the real Claude Code on the agent host (a factory build
+- [x] 1.17 **(host)** Canary checks with the real Claude Code on the agent host (a factory build
   cannot run them and leaves each one open, naming the host and the version to run against), written into the how-to with
   the version, and their outcome into design D36 where it says so:
 
@@ -267,10 +269,13 @@ the finished guarantee.
   **Re-run on 2026-11-16 after D36's answer** (#47, installed commit `bf8821a`, Claude Code
   2.1.322): checks 6 and 12 **passed**, checks 4 and 5 passed again, and the action log now
   records a failed call (`PostToolUseFailure`, "ran, failed"). Checks 1 to 3 and 7 to 10
-  were run again against `bf8821a` the same day and pass. **Still open, so 1.17 is not
-  ticked:** the cluster part of the last check. Namespace and resource definition deletes
-  are desk-only (not nameable), but a volume claim delete is confirmable by voice, and
-  whether the classifier refuses it after a yes has not been tried.
+  were run again against `bf8821a` the same day and pass.
+  **Second re-run, after the review of #47** (installed commit `37a9b9e`): checks 4, 5, 6
+  and 12 pass; check 6 now includes a checkout `env` that sets `LD_PRELOAD`, `PATH`,
+  `HOME` and `GIT_CONFIG_*`, at the start, mid-turn and brought in and taken away again
+  (denied every time; the pins held: no preload, no redirected `git`, no `HOME`); the
+  cluster part of the last check has its outcome (below). **Every check has an outcome and
+  both hard stops pass: 1.17 is done.**
 
   - [x] auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
@@ -309,7 +314,7 @@ the finished guarantee.
   - [x] a real merge call in the explicit shape is refused, read back and released; the same
     call without `--repo` gets the naming refusal and one repair;
   - [x] a dropped caller does not kill the turn;
-  - [ ] the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
+  - [x] the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
     a volume claim, namespace or resource definition): are they refused after a yes? If so
     they are marked desk-only in the rules. **2026-11-16, git part:** a force push was
     released and run after a yes; `reset --hard`, rebase and `branch -D` run when named
@@ -319,8 +324,13 @@ the finished guarantee.
     **2026-11-16, cluster part, named but never run (`bf8821a`):** `ssh jumpy kubectl delete
     namespace …` and `… delete crd …` are refused as desk-only (not nameable), nothing
     pending; `… delete pvc … -n default --context default` is read back and becomes pending
-    (no yes given). Still open: whether the classifier refuses a volume claim delete after a
-    yes
+    (no yes given). **Outcome of the cluster part: not run against the cluster (the
+    operator's permission classifier refuses running a delete, even of a nonexistent
+    object); data-holding kinds made desk-only by rule instead; other deletes need a
+    spoken yes.** `kubectl delete` of a volume claim, volume, namespace, resource definition
+    or stateful set, and `--all`, `-l`/`--selector`, `-f`/`--filename`, `-k`, are not
+    nameable, through `ssh <host>` too; on `37a9b9e` the volume claim delete through
+    `ssh jumpy` is refused as `needs_desk`
 - [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
   code as evidence, until 1.17 is done on the host. (Phase 2 was built before 1c was
   merged, so the heading went from 1c straight to 3)
