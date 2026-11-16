@@ -53,6 +53,7 @@ your process manager.
 | `JARVIS_WHISPER_MODEL` | no (default `base`) | faster-whisper model size; CPU-friendly sizes are `tiny`, `base`, `small`. |
 | `JARVIS_KOKORO_VOICE` | no (default `af_heart`) | A Kokoro voice name. Pick one by ear once the service runs (see below). |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
+| `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
 
 The tools headless Claude Code can use are **fixed** for this weekend slice:
@@ -276,13 +277,41 @@ recorded audio as the body. Replies:
 | Status | When |
 |---|---|
 | 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host; see "Agent modes". |
-| 400 | No project, an unknown project, an empty body, or a `Content-Length` that is not a number |
+| 400 | No project, an unknown project, an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
 | 409 | That project is still busy with another turn (one turn per session at a time) |
 | 413 | Audio larger than 10 MB |
 | 502 | The Claude Code turn failed or timed out (details in the log) |
+| 408 | The request line and headers did not arrive within 10 seconds in total (any route, before the token is looked at). The connection is closed. |
+| 503 | Eight connections are already open (any route, before the token is looked at). `Retry-After: 5`. |
 
-A connection that stalls for 30 seconds is closed.
+Every reply closes its connection: the bridge answers HTTP/1.0 and keeps none alive.
+
+How long a client can keep a connection without a turn running:
+
+- **The request line and headers: 10 seconds in total** (`JARVIS_HEADER_DEADLINE_S`),
+  counted from the moment the connection is taken up, however the bytes are spread. When
+  the time is up the bridge sends a 408 and closes. A client that sends a header byte
+  every few seconds gets the same 10 seconds as one that sends nothing.
+- **A body that is read to be thrown away: 30 seconds in total** (below).
+- **The body of an accepted turn: 30 seconds per read.** Only a client with the token gets
+  this far.
+
+The bridge serves at most eight connections at once (`MAX_CONNECTIONS` in
+`bridge/server.py`). A connection counts from the moment it is accepted until it closes.
+The ninth gets no thread and no place in a queue: the bridge writes a 503 at once, without
+reading the request, and closes. A client that had already started a large upload can see
+a broken connection instead of the 503. The phone app shows "The bridge is busy with other
+connections" for a 503.
+
+The two limits work together. Without the cap every connection got a thread. With the cap
+alone, eight clients trickling header bytes could hold all eight slots for as long as they
+liked, token or not. With the header deadline such a client loses its slot after 10
+seconds, so eight of them must reconnect every 10 seconds to keep the bridge busy. That is
+still possible for anyone who can connect: the bridge does not limit connections per
+address, and without the token a client can also hold a slot for 30 seconds with an
+announced body that never comes. The tailnet ACL and the NetworkPolicy decide who can
+connect at all ([`run-in-cluster.md`](run-in-cluster.md)).
 
 A refused request (404, 401, 400) still gets its status line when the phone is already
 uploading a long question: if the announced `Content-Length` is a valid number of at most

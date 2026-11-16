@@ -46,6 +46,8 @@ object TurnErrors {
             FailureKind.BAD_REQUEST,
             "Nothing answers at this address as a Jarvis bridge. Check the address in Settings.",
         )
+        // The bridge serves a fixed number of connections at once and refuses the next.
+        503 -> TurnFailure(FailureKind.BUSY, "The bridge is busy with other connections. Try again in a moment.")
         502 -> TurnFailure(FailureKind.AGENT_FAILED, "The agent turn failed on the bridge. Try again; the bridge log has the details.")
         else -> TurnFailure(FailureKind.SERVER_ERROR, "The bridge answered with an error ($status).")
     }

@@ -1,6 +1,6 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 1a (Agent host: the wrapper and one turn)
+## Current phase: 1b (The gate, the hash and grant, the read-back)
 
 One build does one phase: the phase named in this heading. Phase 1 is three builds (1a, 1b,
 1c). The last task of every phase
@@ -23,15 +23,15 @@ mid-turn settings check reopens the design (D36).
 
 ### 1a. The wrapper and one turn, no gate
 
-- [ ] 1.1 `agent_host/turn`: the wrapper. Reads one request (version 1, 64 KB cap, closed
+- [x] 1.1 `agent_host/turn`: the wrapper. Reads one request (version 1, 64 KB cap, closed
   field list), ignores `SSH_ORIGINAL_COMMAND` and argv, starts from an empty environment plus
   the root-owned environment file (no `LANG`/`LC_*` from the client, no `BASH_ENV`/`ENV`),
   honours the kill switch, answers one JSON object with exactly the version 1 fields of D33 (`v`, `status`, `error`,
   `turn`, `spoken`, `pending`, `readback`, `confirm`, `notice`) and the closed error list; a
   request with `confirm` must carry an empty `prompt`, a non-empty one is `bad_request`
-- [ ] 1.2 Project resolution: the explicit list, or the root minus exclusions; name pattern,
+- [x] 1.2 Project resolution: the explicit list, or the root minus exclusions; name pattern,
   real path under the root, a git repository with a work tree (bare refused) (D33)
-- [ ] 1.3 Session id per project in the state directory (0700 / 0600); read back only when
+- [x] 1.3 Session id per project in the state directory (0700 / 0600); read back only when
   it is a canonical UUID, passed as `--resume=<uuid>`; anything else is discarded and a new
   session starts and the reply says so. Test with the stored value
   `--dangerously-skip-permissions` and with `--version`: neither reaches argv (D33)
@@ -42,17 +42,17 @@ mid-turn settings check reopens the design (D36).
   of the forbidden options; refusal to start when the user's settings default to bypass.
   The turn settings are written by the installer only; no code path writes settings into
   the state directory
-- [ ] 1.5 One turn at a time (lock), the memory floor, own process group, the timeout that
+- [x] 1.5 One turn at a time (lock), the memory floor, own process group, the timeout that
   kills the group, a turn that survives the caller going away (D34)
-- [ ] 1.6 `agent_host/prompt.md`: the generic appended prompt of D35, with the spoken-line
+- [x] 1.6 `agent_host/prompt.md`: the generic appended prompt of D35, with the spoken-line
   instruction, the explicit call shape per gated class (`--repo`, `--match-head-commit`,
   `-n` and `--context`, an explicit remote and refspec, explicit recipients) and the one
   permitted repair after a refusal that names missing parts; an optional second prompt file from the configuration
-- [ ] 1.13 The identity environment: the configured session identity exported, `JARVIS_TURN`
+- [x] 1.13 The identity environment: the configured session identity exported, `JARVIS_TURN`
   and the turn id set, no git author or committer variables (D37)
-- [ ] 1.12a The record per turn (0700 / 0600) with redaction (D38). The reply to the caller
+- [x] 1.12a The record per turn (0700 / 0600) with redaction (D38). The reply to the caller
   carries the agent's marker line verbatim in `spoken` and nothing else of the reply
-- [ ] 1.6b Tests for this build: the argv byte for byte, in the normal form and in both
+- [x] 1.6b Tests for this build: the argv byte for byte, in the normal form and in both
   fallback forms; a stored session id of `--dangerously-skip-permissions` and of `--version`
   never reaching argv; a request with an extra field, with a `confirm` and a non-empty
   prompt, a path as project, a symlinked project, a bare repository, an oversized body, all
@@ -60,7 +60,7 @@ mid-turn settings check reopens the design (D36).
   answering `disabled`; the lock, the memory floor and the timeout; every reply has exactly
   the version 1 fields; `spoken` is the marker line with its marker, and
   `bridge/summary.extract_summary` gives the same summary for it as for the full reply
-- [ ] 1.6c Phase heading to 1b
+- [x] 1.6c Phase heading to 1b
 
 ### 1b. The gate, the hash and grant, the read-back
 

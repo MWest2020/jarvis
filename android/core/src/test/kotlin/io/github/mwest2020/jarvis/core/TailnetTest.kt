@@ -29,4 +29,37 @@ class TailnetTest {
         assertFalse(Tailnet.isTailscaleAddress(ip("2001:db8::1")))
         assertFalse(Tailnet.isTailscaleAddress(ip("::1")))
     }
+
+    @Test
+    fun aUnicastRouteCarriesTheAddress() {
+        assertTrue(Tailnet.carries(listOf(MatchingRoute(10, unicast = true))))
+        assertTrue(Tailnet.carries(listOf(MatchingRoute(0, unicast = true), MatchingRoute(10, unicast = true))))
+    }
+
+    @Test
+    fun noMatchingRouteCarriesNothing() {
+        assertFalse(Tailnet.carries(emptyList()))
+    }
+
+    @Test
+    fun aThrowRouteAloneDoesNotCarry() {
+        assertFalse(Tailnet.carries(listOf(MatchingRoute(32, unicast = false))))
+    }
+
+    @Test
+    fun anExcludedAddressInsideAUnicastRangeIsNotCarried() {
+        // 100.64.0.0/10 into the tunnel, 100.100.1.1/32 excluded from it.
+        assertFalse(Tailnet.carries(listOf(MatchingRoute(10, unicast = true), MatchingRoute(32, unicast = false))))
+        assertFalse(Tailnet.carries(listOf(MatchingRoute(32, unicast = false), MatchingRoute(10, unicast = true))))
+    }
+
+    @Test
+    fun aMoreSpecificUnicastRouteInsideAnExcludedRangeIsCarried() {
+        assertTrue(Tailnet.carries(listOf(MatchingRoute(10, unicast = false), MatchingRoute(32, unicast = true))))
+    }
+
+    @Test
+    fun aTieBetweenUnicastAndThrowIsRefused() {
+        assertFalse(Tailnet.carries(listOf(MatchingRoute(24, unicast = true), MatchingRoute(24, unicast = false))))
+    }
 }
