@@ -236,8 +236,8 @@ summary (before a read-back):
 |---|---|---|
 | Cloned, or already a checkout whose `origin` is exactly that repository | (ready) | "It's ready. You can switch to it." (or, when the app shows typed names, "It's ready. Add it to your project list in the app.") |
 | The clone failed or took longer than `clone_timeout_s` | `retrying` | "I'm still setting it up at the desk." |
-| A different folder with that name is already there | `name_taken` | "A different folder with that name exists. That needs the desk." |
-| A `[projects]` table, another owner than `own_owners`, an excluded or invalid name, or three attempts used up | `needs_desk` | "The repository was created, but I could not set it up as a project. That needs the desk." |
+| A different folder with that name is already there | `name_taken` | "A different folder with that name exists. I passed that on to the coding session." |
+| A `[projects]` table, another owner than `own_owners`, an excluded or invalid name, or three attempts used up | `needs_desk` | "The repository was created, but I could not set it up as a project. I passed that on to the coding session." |
 
 The clone runs `clone_command <owner>/<name> <destination> -- --depth 1` (a new
 repository has one commit or none, and a shallow clone has a work tree like any other)
@@ -263,7 +263,7 @@ do is have one of your own repositories cloned to an empty name under the root.
 The turn record says what happened in the confirmed action's `project` field (`ready`, or
 `not ready (<reason>): <why>`). A repository whose name the forge accepts but a project
 cannot have (`.github`, over 64 characters) is not cloned; it is in the record only, the
-reply has no `project` field, and Jarvis says "That one needs the desk." with the summary. The agent cannot clone into the home directory itself:
+reply has no `project` field, and Jarvis says "I passed that on to the coding session." with the summary. The agent cannot clone into the home directory itself:
 that write is in the class `self`.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A
@@ -311,6 +311,21 @@ Everything else makes the checkout unsafe. In particular:
 A file that does not exist is safe. To use such a checkout by voice, take the key out of
 the project's settings (your user settings are the place for hooks and MCP servers), or
 work on it at the desk.
+
+## Refused turns go to the coding session
+
+Mark talks to Jarvis without a keyboard, so "that needs the desk" is a dead end for him.
+Every refused call is in the turn's record (`records/<turn>.json`, `gated_actions` with
+`outcome: refused`) together with what he asked. The coding session at the desk reads the
+new records every 30 minutes, takes each refused request over under its own rules (a
+worktree, a pull request, a review; a change to Jarvis's own rules the same way as any
+other change) and pings Mark the outcome in Ratatoskr. Jarvis says so instead of "the
+desk": "I passed that on to the coding session." The gate itself does not change: by voice,
+those calls stay refused.
+
+A worktree for another repository goes under `~/.worktrees/<name>` (the turn prompt says
+so). A new directory directly in the home directory stays in the class `self`: it would
+show up as a project, and only the wrapper sets projects up.
 
 ## The kill switch
 

@@ -260,17 +260,17 @@ def test_every_other_error_fails_the_turn_with_its_code(host, code, turn):
 
 
 @pytest.mark.parametrize("notice,spoken,expected", [
-    ("needs_desk", "", "That one needs the desk."),
+    ("needs_desk", "", "I passed that on to the coding session."),
     ("needs_desk", "SPOKEN SUMMARY: The pull request is open.",
-     "That one needs the desk. The pull request is open."),
+     "I passed that on to the coding session. The pull request is open."),
     ("run_alone", "", "That command has to be run on its own, so it was refused."),
-    ("settings_changed", "", "The project settings changed. That needs the desk."),
+    ("settings_changed", "", "The project settings changed. I passed that on to the coding session."),
     ("new_session", "SPOKEN SUMMARY: Two are open.",
      "I started a new session for this project. Two are open."),
-    ("target_changed", "", "The push target changed. That one needs the desk."),
+    ("target_changed", "", "The push target changed. I passed that on to the coding session."),
     ("out_of_budget", "", "The agent is out of budget for now."),
     # A summary that may not be spoken leaves the fixed sentence alone.
-    ("needs_desk", "SPOKEN SUMMARY: see `gate.py`", "That one needs the desk."),
+    ("needs_desk", "SPOKEN SUMMARY: see `gate.py`", "I passed that on to the coding session."),
     (None, "", "Done. Check the log for details."),
 ])
 def test_a_notice_is_spoken_as_the_bridges_own_fixed_sentence(host, notice, spoken, expected):

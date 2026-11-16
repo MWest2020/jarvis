@@ -102,8 +102,8 @@ PROJECT_READY_TYPED = "It's ready. Add it to your project list in the app."
 PROJECT_SENTENCES = {
     "retrying": "I'm still setting it up at the desk.",
     "needs_desk": "The repository was created, but I could not set it up as a project. "
-                  "That needs the desk.",
-    "name_taken": "A different folder with that name exists. That needs the desk.",
+                  "I passed that on to the coding session.",
+    "name_taken": "A different folder with that name exists. I passed that on to the coding session.",
 }
 
 

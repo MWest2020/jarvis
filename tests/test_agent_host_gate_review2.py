@@ -661,3 +661,28 @@ def test_reading_a_repositorys_configuration_and_writing_elsewhere_in_git_is_not
         assert not bash(command, ctx).gated, command
     for path in (".git/COMMIT_EDITMSG", "src/config", "docs/hooks/x.md", ".gitconfig.example"):
         assert not classify.classify("Write", {"file_path": path, "content": "x"}, ctx).gated, path
+
+
+
+# --- worktrees for another repository (Mark, 2026-11-16) ---------------------------------
+# A voice turn's `git -C ~/bazibo worktree add ~/bazibo-piano …` was refused as `self`. That
+# stays so (a directory in ~ becomes a project, and only the wrapper sets projects up); the
+# prompt sends such worktrees to ~/.worktrees/<name>, which is not a protected place.
+
+@pytest.mark.parametrize("command", [
+    "git -C ~/bazibo worktree add ~/.worktrees/bazibo-piano -b feat/piano main",
+    "git worktree add ~/.worktrees/bazibo-piano feat/piano",
+    "mkdir -p ~/.worktrees/scratch",
+])
+def test_1_a_worktree_under_dot_worktrees_is_not_self(ctx, command):
+    (ctx.home / "bazibo").mkdir()  # an existing checkout, as on the host
+    assert "self" not in bash(command, ctx).classes, command
+
+
+@pytest.mark.parametrize("command", [
+    "git -C ~/bazibo worktree add ~/bazibo-piano -b feat/piano main",
+    "git clone https://example.invalid/x ~/x",
+])
+def test_1_a_new_directory_directly_in_home_stays_self(ctx, command):
+    (ctx.home / "bazibo").mkdir()
+    assert "self" in bash(command, ctx).classes, command

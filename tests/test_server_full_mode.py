@@ -392,9 +392,9 @@ def test_a_typed_list_hears_to_add_it(bridge):
 
 @pytest.mark.parametrize("reason,line", [
     ("retrying", "I'm still setting it up at the desk."),
-    ("name_taken", "A different folder with that name exists. That needs the desk."),
+    ("name_taken", "A different folder with that name exists. I passed that on to the coding session."),
     ("needs_desk", "The repository was created, but I could not set it up as a project. "
-                   "That needs the desk."),
+                   "I passed that on to the coding session."),
 ])
 def test_a_project_that_is_not_ready_says_why_and_changes_no_list(bridge, reason, line):
     bridge.host.scenario(mode="wrapper", spoken="SPOKEN SUMMARY: Made it.",
