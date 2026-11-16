@@ -37,6 +37,7 @@ What is in it:
   `--build-arg KOKORO_VOICES="bm_george af_heart bf_emma"`; another Whisper size also needs its
   commit added to `fetch_models.py`.
 - `jarvis-sync-projects` (the project sync below).
+- The OpenSSH client, for `full` mode only (below). Never started in `readonly` mode.
 - User uid 10001. Claude Code's auto-updater and non-essential traffic are off.
 
 CI runs every build with `--read-only --tmpfs /tmp --network none` and `HOME=/tmp`: the
@@ -206,6 +207,122 @@ containers:
 
 The init container must also create `/data/state` (owned by uid 10001) so the second
 sub-path exists; run it as `sh -c 'mkdir -p /data/state && exec jarvis-sync-projects'`.
+
+## Full mode: the road to the agent host
+
+Only for `JARVIS_AGENT_MODE=full` ([`bridge-service.md`](bridge-service.md), "Agent
+modes"; change [`jarvis-full-agent`](../../openspec/changes/jarvis-full-agent/design.md),
+D32 and D40). Without it nothing in this section applies and the pod stays as described
+above. The pieces belong in your own cluster repository, like the rest.
+
+**This changes D2 of `run-bridge-in-cluster`.** Egress was DNS and HTTPS only. In `full`
+mode it is DNS, HTTPS and ssh to the one address of the agent host, and nothing else.
+
+**The road is the private network the cluster's nodes and the agent host share, straight
+to the agent host's sshd.** There is no Tailscale egress Service in it. Design D32 describes
+one (an `ExternalName` Service that the Tailscale operator fills in); it was dropped when
+this was wired (2026-11-16), because the operator rewrites that Service after it is applied,
+which a GitOps tool then reports as drift unless it is told to ignore the difference. What
+D32 asks of the connection holds without it: ssh encrypts and authenticates both ends (the
+bridge's key, the pinned host key), the key's `authorized_keys` line forces the wrapper and
+names the one source address, and the NetworkPolicy allows the one destination. What is
+different: the packets cross the local network, not a WireGuard tunnel, and the source
+address the agent host sees is a **node's**, not the bridge's own (below). The design text
+of D32 still describes the tailnet road and needs a follow-up.
+
+1. **No Service.** `JARVIS_AGENT_HOST` is the agent host's address on that network, and
+   `JARVIS_AGENT_PORT` its sshd port (22).
+
+2. **One more egress rule** in the bridge's NetworkPolicy: TCP 22 to that single address,
+   as a `/32`, never a range or a namespace.
+
+   ```yaml
+   egress:
+     - to:
+         - ipBlock: { cidr: "<agent host address>/32" }
+       ports:
+         - { protocol: TCP, port: 22 }
+   ```
+
+   **Which address the agent host sees.** A pod's traffic to an address outside the cluster
+   leaves through its node and is rewritten to the node's address (SNAT, the CNI's
+   masquerading). So `from=` on the key's `authorized_keys` line is the address of the
+   **node the bridge runs on**. Two consequences. Keep the bridge on that node (a
+   `nodeSelector`), or a rescheduled pod is refused and every turn is answered read-only
+   with "the agent host could not be reached"; or list every node's address in `from=`.
+   And `from=` then narrows the key to that node, not to the bridge: every pod and process
+   on the node has the same source address. What keeps another pod out is that it does not
+   have the key, and that its own NetworkPolicy, where there is one, does not allow the
+   destination. Check the address once from a throwaway pod on that node, and read it back
+   in the agent host's sshd log.
+
+   The `known_hosts` file has one line: the address exactly as in `JARVIS_AGENT_HOST`, then
+   the agent host's ed25519 public host key (`<address> ssh-ed25519 AAAA…`; as
+   `[<address>]:<port>` when the port is not 22). Take the key on the agent host itself
+   (`/etc/ssh/ssh_host_ed25519_key.pub`), not with `ssh-keyscan` from the cluster: that
+   would be trust on first use by another name.
+
+   In Mark's setup (verified 2026-11-16 with a throwaway pod: the ssh banner came back and
+   the agent host logged the node's address as the source): the agent host is
+   `192.168.178.58`, the bridge's node sends as `192.168.178.207`, so the rule is
+   `192.168.178.58/32`, `JARVIS_AGENT_HOST=192.168.178.58` and the key's line starts with
+   `restrict,from="192.168.178.207",command=…`. These values live in the cluster's own
+   repository and on the agent host; nothing in the bridge's code knows them.
+
+3. **The key and the pinned host key as files, from a Secret.** Never as environment
+   variables, and never under `/work` or any other project directory: the read-only agent
+   in the pod is confined to the project directory, so it cannot read them where they are.
+   The bridge refuses to start when either file gives any permission to group or others,
+   and the bridge runs as uid 10001, so the files must be `0400` **and owned by that
+   user**. A Secret volume cannot do that by itself (its files are root's; with an
+   `fsGroup` they become group-readable, which the bridge refuses). Copy them once per
+   start, in an init container, into a memory-backed `emptyDir` that only the bridge
+   container mounts:
+
+   ```yaml
+   initContainers:
+     - name: agent-key
+       image: ghcr.io/mwest2020/jarvis-bridge@sha256:<digest>
+       command: ["sh", "-c", "install -m 0400 /secret/key /secret/known_hosts /agent/"]
+       volumeMounts:
+         - { name: agent-secret, mountPath: /secret, readOnly: true }
+         - { name: agent-key, mountPath: /agent }
+   containers:
+     - name: bridge
+       env:
+         - { name: JARVIS_AGENT_MODE, value: full }
+         - { name: JARVIS_AGENT_HOST, value: "<agent host address>" }
+         - { name: JARVIS_AGENT_USER, value: "<the coding session's user>" }
+         - { name: JARVIS_AGENT_KEY_FILE, value: /agent/key }
+         - { name: JARVIS_AGENT_KNOWN_HOSTS_FILE, value: /agent/known_hosts }
+       volumeMounts:
+         - { name: agent-key, mountPath: /agent, readOnly: true }
+   volumes:
+     - name: agent-secret
+       secret: { secretName: jarvis-agent-key, defaultMode: 0440 }
+     - name: agent-key
+       emptyDir: { medium: Memory, sizeLimit: 1Mi }
+   securityContext: { runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001 }
+   ```
+
+**Which projects.** Unchanged: the pod's synced copies decide what can be asked and what
+`GET /projects` lists. A project that exists only on the agent host cannot be reached by
+voice; one that is only in the pod is answered read-only.
+
+**What a reader of that Secret can now reach.** Before this, the cluster had no road to
+the agent host. With it, anyone who can read the Secret and send from the bridge's node,
+or run code in the bridge's pod, can put any prompt to a full agent on the agent host, and can
+answer its read-backs with a yes: that is the coding session's reach, with its GitHub
+token, its ssh keys and its secrets client. The forced command limits the form (one
+prompt, one answer), not the power. What keeps it narrow: `from=` on the key (the node's
+address, see above), the Secret
+mounted in this pod only, the NetworkPolicy, the kill switch on the agent host, and the
+notification on every confirmed action. Give read access to that Secret, and `exec` into
+that pod, to nobody who should not have a shell on the agent host. This trust edge is the
+question put to the owner in [#25](https://github.com/MWest2020/jarvis/issues/25).
+
+The image has the OpenSSH client for this. In `readonly` mode it is never started, and the
+CI smoke test (offline, no `JARVIS_AGENT_MODE`) passes as before.
 
 ## Resources and probes
 
