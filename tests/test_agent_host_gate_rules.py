@@ -579,6 +579,7 @@ def test_rm_r_outside_the_worktree_is_class_delete(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     ctx = make_ctx(tmp_path, cwd=work, temp_roots=[scratch])
+    (tmp_path / "home" / "projects").mkdir()  # an existing tree in home (a file there is `self`)
 
     for command in (
         f"rm -r {tmp_path / 'elsewhere'}",
