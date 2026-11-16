@@ -103,7 +103,8 @@ PROJECT_SENTENCES = {
     "retrying": "I'm still setting it up at the desk.",
     "needs_desk": "The repository was created, but I could not set it up as a project. "
                   "I passed that on to the coding session.",
-    "name_taken": "A different folder with that name exists. I passed that on to the coding session.",
+    "name_taken": "A different folder with that name exists. "
+                  "I passed that on to the coding session.",
 }
 
 

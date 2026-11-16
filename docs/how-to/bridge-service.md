@@ -241,8 +241,8 @@ or tidied. One that would have to be changed to be spoken cannot be spoken: empt
 than 500 characters, white space at either end, anything that splits into lines, any
 control, format, private-use or unassigned character, or any separator other than the
 plain space (no line or paragraph separator, no no-break space). The bridge
-then cancels the call on the agent host (answer `no`), keeps nothing and says "I passed
-that on to the coding session." Detected speech is measured with the voice activity detector inside
+then cancels the call on the agent host (answer `no`), keeps nothing and says "I could
+not read that back, so I cancelled it." Detected speech is measured with the voice activity detector inside
 faster-whisper (a file in the package, nothing is downloaded); if it cannot be measured,
 nothing counts as an utterance.
 

@@ -315,15 +315,26 @@ work on it at the desk.
 ## Refused turns go to the coding session
 
 Mark talks to Jarvis without a keyboard, so "that needs the desk" is a dead end for him.
-Every refused call is in the turn's record (`records/<turn>.json`, `gated_actions` with
-`outcome: refused`) together with what he asked. The coding session at the desk reads the
-new records every 30 minutes, takes each refused request over under its own rules (a
-worktree, a pull request, a review; a change to Jarvis's own rules the same way as any
-other change) and pings Mark the outcome in Ratatoskr. Jarvis says so instead of "the
-desk": "I passed that on to the coding session." The gate itself does not change: by voice,
-those calls stay refused.
+The bridge now says "I passed that on to the coding session." wherever it said that, and
+the coding session at the desk takes these turns over from their records
+(`records/<turn>.json`, with what he asked):
 
-A worktree for another repository goes under `~/.worktrees/<name>` (the turn prompt says
+- a gated call that was refused: an entry in `gated_actions` with `outcome: refused`;
+- a new repository that could not be set up as a project: `outcome: confirmed` with a
+  `project` field that starts with `not ready` (`name_taken`, `needs_desk`, a name no
+  project can have).
+
+It does the request under its own rules (a worktree, a pull request, a review; a change to
+Jarvis's own rules like any other change) and pings Mark the outcome in Ratatoskr. The gate
+itself does not change: by voice, those calls stay refused. A read-back that cannot be
+spoken is cancelled like a no (`outcome: cancelled`) and is not passed on; Jarvis says "I
+could not read that back, so I cancelled it."
+
+Where it runs: a recurring job of the coding session on agent-lxc (every 30 minutes,
+handled turns in `~/.local/state/jarvis-agent-desk-seen.txt`). It is a session job: it ends
+with that session and is recreated when the session restarts, like its other daily jobs.
+
+A worktree for another repository goes under `~/.worktrees/jv-<name>` (the turn prompt says
 so). A new directory directly in the home directory stays in the class `self`: it would
 show up as a project, and only the wrapper sets projects up.
 

@@ -9,7 +9,7 @@ from bridge import remote_adapter
 from bridge.agent import AgentTurnFailed, AgentUnavailable, ConfirmAnswer, PendingConfirmation
 from bridge.config import AgentHostConfig, ProjectConfig
 from bridge.remote_adapter import (
-    NEEDS_THE_DESK,
+    READBACK_UNSPEAKABLE,
     RemoteAdapter,
     ReplyError,
     build_request,
@@ -206,10 +206,10 @@ def test_speakable_readback_returns_the_text_itself(readback):
 @pytest.mark.parametrize("readback", ["", "   ", "Merge.\nAnd delete the repository.",
                                       "Merge \x07 now.", "x" * 501, " Merge.", "Merge. ",
                                       "Merge\u00a0now.", "Merge.\u2028Delete."])
-def test_a_read_back_that_cannot_be_spoken_needs_the_desk_and_is_cancelled(host, readback):
+def test_a_read_back_that_cannot_be_spoken_is_cancelled_and_said_so(host, readback):
     host.scenario(mode="wrapper", gate=True, readback=readback)
     turn = _adapter(host).run_turn(project=DEMO, prompt="merge it")
-    assert (turn.spoken, turn.confirmation) == (NEEDS_THE_DESK, None)
+    assert (turn.spoken, turn.confirmation) == (READBACK_UNSPEAKABLE, None)
     # The pending call was cleared on the agent host with a no.
     assert host.requests()[1]["confirm"] == {"id": "c1", "sha256": SHA, "answer": "no"}
     assert [t["kind"] for t in host.turns()] == ["agent", "cancel"]
