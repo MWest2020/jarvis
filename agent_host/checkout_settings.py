@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 from pathlib import Path
+
+from agent_host.boundedio import MAX_SETTINGS_BYTES, read_regular
 
 # The three names of D36. Kept for what they are: the reason the rule
 # exists. The rule itself is the allow-list below.
@@ -55,22 +56,12 @@ SAFE_KEYS: frozenset[str] = frozenset({
 # only, as the user's own allow rules do (D34, D40). `defaultMode`,
 # `additionalDirectories` and anything else in it are not.
 SAFE_PERMISSION_KEYS: frozenset[str] = frozenset({"deny", "ask", "allow"})
-MAX_SETTINGS_BYTES = 1024 * 1024
 
 
 def _read_regular(path: Path) -> bytes:
     """The bytes of a regular file, never following a symlink and never
     blocking on a FIFO or a device. Raises OSError otherwise."""
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise OSError("not a regular file")
-        if info.st_size > MAX_SETTINGS_BYTES:
-            raise OSError("too large")
-        return os.read(fd, MAX_SETTINGS_BYTES + 1)
-    finally:
-        os.close(fd)
+    return read_regular(path, MAX_SETTINGS_BYTES, follow=False)
 
 
 def file_problem(path: Path) -> str | None:

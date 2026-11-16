@@ -2,9 +2,16 @@
 
 ## Current phase: 3 (Wiring)
 
-Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 1.17) are
-open, and `full` mode stays off everywhere until every one of them has passed on the agent
-host.** They are **(host)** work and come first in phase 3.
+Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 1.17) ran
+on `agent-lxc` on 2026-11-16 (Claude Code 2.1.322), and both hard stops failed: the mid-turn
+settings check and the gate timeout check.** D36 got an answer the same day (#47: the gate's
+trusted values and its own deadline), and against that commit (`bf8821a`) both hard stops
+**passed** on the host, and checks 1 to 5 and 7 to 10 passed again. After the review of
+#47 (whole-environment comparison, `env` pins in the turn settings, data-holding cluster
+deletes desk-only), commit `37a9b9e` passed checks 4, 5, 6 (with new environment cases),
+11 and 12. **1.17 is done**: every check has an outcome and both hard stops pass. `full`
+mode stays off until it is switched on in task 3.2 and onward, which is **(host)** work
+and comes first in phase 3.
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
 1b2, 1c). The last task of every phase
@@ -249,25 +256,41 @@ the finished guarantee.
   `disableAllHooks` (a failed mid-turn check stops phase 1, hardening or not), and the
   trust statement of D40 in plain words); `AGENTS.md` hard rule on the allow-list rewritten
   as in the proposal
-- [ ] 1.17 **(host)** Canary checks with the real Claude Code on the agent host (a factory build
+- [x] 1.17 **(host)** Canary checks with the real Claude Code on the agent host (a factory build
   cannot run them and leaves each one open, naming the host and the version to run against), written into the how-to with
   the version, and their outcome into design D36 where it says so:
 
-  **Left open by build 1c, every check below.** To run on the agent host (`agent-lxc`,
-  where the coding session runs, as the coding session's user) against the Claude Code
-  installed there (2.1.322 at the time of this build; `claude --version`). The table to
-  fill in is in `docs/how-to/agent-host.md`, "Host checks".
+  **Run on 2026-11-16** on the agent host (`agent-lxc`, as the coding session's user)
+  against Claude Code 2.1.322 and the installed commit `1fc6d97`. The outcomes, with the
+  commands, are in `docs/how-to/agent-host.md`, "Host checks". Ticked: passed. **Two hard
+  stops failed** (the gate timeout check and the mid-turn settings check), so this task
+  stays open, phase 1 does not ship, and the design is reopened (D36). Every check is run
+  again once D36 has an answer.
+  **Re-run on 2026-11-16 after D36's answer** (#47, installed commit `bf8821a`, Claude Code
+  2.1.322): checks 6 and 12 **passed**, checks 4 and 5 passed again, and the action log now
+  records a failed call (`PostToolUseFailure`, "ran, failed"). Checks 1 to 3 and 7 to 10
+  were run again against `bf8821a` the same day and pass.
+  **Second re-run, after the review of #47** (installed commit `37a9b9e`): checks 4, 5, 6
+  and 12 pass; check 6 now includes a checkout `env` that sets `LD_PRELOAD`, `PATH`,
+  `HOME` and `GIT_CONFIG_*`, at the start, mid-turn and brought in and taken away again
+  (denied every time; the pins held: no preload, no redirected `git`, no `HOME`); the
+  cluster part of the last check has its outcome (below). **Every check has an outcome and
+  both hard stops pass: 1.17 is done.**
 
-  - auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
+  - [x] auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
-  - a blocked call is denied and the turn ends; it does not hang until the timeout;
-  - a gate that times out (the hook `timeout` in the turn settings, 10 s) denies the call;
+  - [x] a blocked call is denied and the turn ends; it does not hang until the timeout;
+  - [x] a gate that times out (the hook `timeout` in the turn settings, now 30 s) denies the call;
     it does not let it through. **If Claude Code lets the call through on a hook timeout,
-    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened;
-  - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
+    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened.
+    **2026-11-16: FAIL.** Claude Code 2.1.322 lets the call through on a hook timeout.
+    **Re-run, `bf8821a`: pass.** The gate keeps its own 5 s deadline and decides in a
+    worker; with the worker frozen, the call was denied at the deadline and did not run.
+    Claude Code itself still fails open on a hook timeout (D36 says so);
+  - [x] the gate from `--settings` runs next to the user's hooks; a gated dummy command is
     refused without a grant and runs once with one;
-  - a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
-  - the checkout settings, with the wrapper's start check switched off for the test: `env`
+  - [x] a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
+  - [x] the checkout settings, with the wrapper's start check switched off for the test: `env`
     (a planted grant included), `hooks` and `disableAllHooks` in a checkout's
     `.claude/settings.json`, present at the start and appearing in the middle of a turn,
     in the turn checkout and in a worktree the agent entered during the turn,
@@ -276,19 +299,38 @@ the finished guarantee.
     file that says `true`. **If this fails,
     phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened
     (D36). This check goes into the update runbook: run again on every Claude Code version
-    bump on the agent host, before Jarvis uses the new version;
-  - the employer hook refuses in a `-p` turn;
-  - `autoMemoryDirectory` from `--settings` gives the turn the coding session's memory; if
+    bump on the agent host, before Jarvis uses the new version. **2026-11-16: FAIL.**
+    `disableAllHooks: false` held, but project `env` reaches the gate, at the start and
+    mid-turn: a mid-turn `env` that set `JARVIS_GRANT` and redirected
+    `JARVIS_TURN_CHECKOUT` released a gated call made from a clean worktree.
+    **Re-run, `bf8821a`: pass**, all six cases plus a file that came and went: every gated
+    call denied with `settings_changed`;
+  - [x] the employer hook refuses in a `-p` turn;
+  - [x] `autoMemoryDirectory` from `--settings` gives the turn the coding session's memory; if
     not, the symlink fallback of D34 is set up for each listed checkout;
-  - `--append-system-prompt-file` exists, else the wrapper's fallback switch is set (the
+  - [x] `--append-system-prompt-file` exists, else the wrapper's fallback switch is set (the
     contents in `--append-system-prompt`); `--system-prompt-snapshot off` exists and a
     changed prompt reaches a resumed session, else the daily session rotation is set (D34);
-  - a real merge call in the explicit shape is refused, read back and released; the same
+  - [x] a real merge call in the explicit shape is refused, read back and released; the same
     call without `--repo` gets the naming refusal and one repair;
-  - a dropped caller does not kill the turn;
-  - the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
+  - [x] a dropped caller does not kill the turn;
+  - [x] the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
     a volume claim, namespace or resource definition): are they refused after a yes? If so
-    they are marked desk-only in the rules
+    they are marked desk-only in the rules. **2026-11-16, git part:** a force push was
+    released and run after a yes; `reset --hard`, rebase and `branch -D` run when named
+    (not gated); nothing marked desk-only, and that is accepted (D36: recoverable through
+    the reflog, except uncommitted work under `reset --hard`; no new class). The cluster
+    deletions were not run (outside the sandbox), so this stays open.
+    **2026-11-16, cluster part, named but never run (`bf8821a`):** `ssh jumpy kubectl delete
+    namespace …` and `… delete crd …` are refused as desk-only (not nameable), nothing
+    pending; `… delete pvc … -n default --context default` is read back and becomes pending
+    (no yes given). **Outcome of the cluster part: not run against the cluster (the
+    operator's permission classifier refuses running a delete, even of a nonexistent
+    object); data-holding kinds made desk-only by rule instead; other deletes need a
+    spoken yes.** `kubectl delete` of a volume claim, volume, namespace, resource definition
+    or stateful set, and `--all`, `-l`/`--selector`, `-f`/`--filename`, `-k`, are not
+    nameable, through `ssh <host>` too; on `37a9b9e` the volume claim delete through
+    `ssh jumpy` is refused as `needs_desk`
 - [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
   code as evidence, until 1.17 is done on the host. (Phase 2 was built before 1c was
   merged, so the heading went from 1c straight to 3)

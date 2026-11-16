@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""The PostToolUse hook of a Jarvis turn: the action log (1.12b, D38).
+"""The PostToolUse and PostToolUseFailure hook of a Jarvis turn: the action
+log (1.12b, D38).
 
-Installed root-owned (1.15) and named in the static turn settings. For
-every tool call of a turn that can change something (everything except the
-read-only file and search tools) it appends one line to
-`<state dir>/actions/<turn id>.jsonl`: the tool, the command or target, the
-exit status, with values shaped like secrets redacted. The tool's output is
-never logged.
+Installed root-owned (1.15) and named in the static turn settings, for both
+events: Claude Code runs PostToolUse only for a call that succeeded, and
+PostToolUseFailure for one that failed (a Bash call that exits non-zero,
+host check of 2026-11-16). For every tool call of a turn that can change
+something (everything except the read-only file and search tools) it
+appends one line to `<state dir>/actions/<turn id>.jsonl`: the tool, the
+command or target, the exit status, with values shaped like secrets
+redacted. The tool's output is never logged.
+
+The turn id is the trusted one (agent_host.trusted), not the one in this
+process's environment, which project `env` settings can change: a line
+cannot be sent to another turn's log. Without a trusted record, no line.
 
 Without the turn marker (`JARVIS_TURN`) it exits 0 at once, before anything
 is imported or read: the coding session is not logged. It never blocks and
@@ -20,6 +27,7 @@ if "JARVIS_TURN" not in os.environ:
     sys.exit(0)
 
 
+
 def main() -> int:
     try:
         import json
@@ -27,20 +35,24 @@ def main() -> int:
         from pathlib import Path
 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from agent_host import record
+        from agent_host import boundedio, record, trusted
         from agent_host.config import hook_config_path, load_config
         from agent_host.sessions import is_canonical_uuid
 
-        turn_id = os.environ["JARVIS_TURN_ID"]
-        if not is_canonical_uuid(turn_id):
+        raw = boundedio.read_stdin()
+        if raw is None:
             return 0
-        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             return 0
         line = record.action_line(payload, datetime.now(timezone.utc).isoformat())
         if line is None:
             return 0
         config = load_config(hook_config_path(os.environ, Path(__file__).resolve().parent))
+        turn = trusted.find(config.gate_dir)
+        turn_id = turn.turn_id if turn is not None else None
+        if turn_id is None or not is_canonical_uuid(turn_id):
+            return 0
         record.append_action(config.actions_dir, turn_id, line)
     except BaseException:  # noqa: BLE001 - this hook never fails a call
         pass

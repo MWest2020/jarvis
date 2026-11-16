@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from agent_host import classify, config as config_mod, decision, shell
-from tests.gatekit import REPO_ROOT, bash, git_init, make_config, make_ctx, run_git
+from tests.gatekit import REPO_ROOT, bash, git_init, make_config, make_ctx, run_git, run_hook
 
 M = "me/demo"
 
@@ -467,10 +467,11 @@ def test_9_an_installed_copy_of_the_gate_does_not_follow_a_planted_configuration
     env = {"JARVIS_TURN": "1", "JARVIS_TURN_ID": str(uuid.uuid4()),
            "JARVIS_AGENT_CONFIG": str(planted), "JARVIS_TURN_CHECKOUT": str(checkout),
            "PATH": os.environ.get("PATH", "")}
-    installed = subprocess.run([sys.executable, "-I", str(src / "agent_host" / "gate")],
-                               input=payload.encode(), capture_output=True, env=env, timeout=30)
-    source = subprocess.run([sys.executable, str(REPO_ROOT / "agent_host" / "gate")],
-                            input=payload.encode(), capture_output=True, env=env, timeout=30)
+    gate_dir = tmp_path / "state" / "gate"
+    installed = run_hook([sys.executable, "-I", src / "agent_host" / "gate"], payload.encode(), env,
+                         gate_dir=gate_dir)
+    source = run_hook([sys.executable, REPO_ROOT / "agent_host" / "gate"], payload.encode(), env,
+                      gate_dir=gate_dir)
     # From the source checkout the planted file is read, and `ls` passes ...
     assert (source.returncode, source.stdout) == (0, b"")
     # ... the installed copy looks at /etc/jarvis-agent/config.toml only.

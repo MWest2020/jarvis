@@ -131,25 +131,40 @@ def test_the_turn_settings_name_the_real_paths_not_the_fake_root(source, destdir
     assert install(source, destdir, "--memory-dir", "/home/someone/.claude/memory").returncode == 0
     settings = json.loads((destdir / LIB / "turn-settings.json").read_text())
 
-    assert set(settings) == {"disableAllHooks", "hooks", "autoMemoryDirectory"}
+    assert set(settings) == {"disableAllHooks", "env", "hooks", "autoMemoryDirectory"}
     assert settings["disableAllHooks"] is False
     assert settings["autoMemoryDirectory"] == "/home/someone/.claude/memory"
-    assert set(settings["hooks"]) == {"PreToolUse", "PostToolUse"}
-    (pre,), (post,) = settings["hooks"]["PreToolUse"], settings["hooks"]["PostToolUse"]
-    assert pre["matcher"] == "*" and post["matcher"] == "*"
+    # The pins (D36): env in --settings outranks a checkout's env. PATH comes from
+    # the environment file the installer has just written from its template.
+    env = settings["env"]
+    assert {k: env[k] for k in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "GIT_CONFIG_COUNT")} \
+        == {"LD_PRELOAD": "", "LD_LIBRARY_PATH": "", "LD_AUDIT": "", "GIT_CONFIG_COUNT": "0"}
+    assert set(settings["hooks"]) == {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+    (pre,), (post,), (failure,) = (settings["hooks"][event] for event in (
+        "PreToolUse", "PostToolUse", "PostToolUseFailure"))
+    assert pre["matcher"] == post["matcher"] == failure["matcher"] == "*"
     assert [h["command"] for h in pre["hooks"]] == ["/usr/local/lib/jarvis-agent/gate"]
-    # An explicit timeout for the gate, so a hanging gate ends in a known time (the host
-    # check "a gate that times out denies the call" says what happens then).
-    assert [h["timeout"] for h in pre["hooks"]] == [10]
+    # A hook that runs past its timeout fails OPEN in Claude Code (host check 12,
+    # 2.1.322). The gate keeps its own deadline far inside this one (agent_host/gate,
+    # DEADLINE_S), so the margin is large.
+    assert [h["timeout"] for h in pre["hooks"]] == [30]
+    # The action log for a call that succeeded and for one that failed: Claude Code
+    # runs PostToolUse only for the first, PostToolUseFailure for the second.
     assert [h["command"] for h in post["hooks"]] == ["/usr/local/lib/jarvis-agent/action-log"]
+    assert [h["command"] for h in failure["hooks"]] == ["/usr/local/lib/jarvis-agent/action-log"]
+    assert [h["timeout"] for h in post["hooks"] + failure["hooks"]] == [10, 10]
     assert str(destdir) not in json.dumps(settings)
 
 
 def test_the_static_turn_settings_in_the_repository_hold_only_what_d34_allows():
     settings = json.loads((REPO_ROOT / "agent_host/turn-settings.json").read_text())
-    assert set(settings) == {"disableAllHooks", "hooks"}
+    assert set(settings) == {"disableAllHooks", "env", "hooks"}
     assert settings["disableAllHooks"] is False
-    assert "env" not in settings and "permissions" not in settings
+    assert "permissions" not in settings
+    # env holds only pins of what loads code or changes git's configuration; PATH and
+    # HOME are added per host by the installer. No grant, no JARVIS_* (D34, D36).
+    assert settings["env"] == {"LD_PRELOAD": "", "LD_LIBRARY_PATH": "", "LD_AUDIT": "",
+                               "GIT_CONFIG_COUNT": "0"}
 
 
 def test_a_second_run_changes_nothing_and_keeps_what_was_filled_in(source, destdir):
@@ -164,8 +179,19 @@ def test_a_second_run_changes_nothing_and_keeps_what_was_filled_in(source, destd
     # No --memory-dir this time: an update keeps the installed value.
     proc = install(source, destdir)
     assert proc.returncode == 0, proc.stderr
-    assert snapshot(destdir) == before
+    settings_key = "usr/local/lib/jarvis-agent/turn-settings.json"
+    after = snapshot(destdir)
+    assert {k: v for k, v in after.items() if k != settings_key} \
+        == {k: v for k, v in before.items() if k != settings_key}
     assert "enabled = true" in config.read_text()
+    # The turn settings follow the environment file: PATH and HOME are pinned to it.
+    settings = json.loads((destdir / LIB / "turn-settings.json").read_text())
+    assert settings["autoMemoryDirectory"] == "/home/someone/mem"
+    assert (settings["env"]["PATH"], settings["env"]["HOME"]) == ("/opt/bin", "/home/someone")
+    # And a third run with nothing changed changes nothing at all.
+    again = snapshot(destdir)
+    assert install(source, destdir).returncode == 0
+    assert snapshot(destdir) == again
 
 
 def test_an_update_replaces_the_code_and_drops_files_that_are_gone(source, destdir):

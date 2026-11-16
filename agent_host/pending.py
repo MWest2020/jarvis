@@ -44,9 +44,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_host.boundedio import read_text
 from agent_host.config import PENDING_SECONDS
 from agent_host.sessions import is_canonical_uuid  # noqa: F401 - also used by the gate
 
+# The gate's state for one turn, and a pending call: small files. A larger
+# one, or one that is not a regular file, cannot be read (the gate denies).
+MAX_STATE_BYTES = 1024 * 1024
 _PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
@@ -57,7 +61,10 @@ class StateError(RuntimeError):
 def _write_private(path: Path, data: dict) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_NONBLOCK and O_NOFOLLOW: a FIFO or a symlink planted in its place
+    # fails at once instead of blocking or writing elsewhere.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NONBLOCK | os.O_NOFOLLOW,
+                 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(json.dumps(data))
     tmp.replace(path)
@@ -101,7 +108,7 @@ class TurnState:
         if not os.path.lexists(path):
             return cls(path, json.loads(json.dumps(_EMPTY_STATE)))
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(read_text(path, MAX_STATE_BYTES, follow=False))
         except (OSError, ValueError) as exc:
             raise StateError(f"the gate's state for this turn cannot be read: {exc}") from exc
         if not isinstance(data, dict) or set(data) != set(_EMPTY_STATE) \
@@ -112,16 +119,22 @@ class TurnState:
     def save(self) -> None:
         _write_private(self._path, self.data)
 
-    def note(self, outcome: str, *, code: str | None, verdict=None, sentence: str | None = None) -> None:
+    def note(self, outcome: str, *, code: str | None, verdict=None, sentence: str | None = None,
+             why: str | None = None) -> None:
         """One line for the record: `outcome` is pending, refused, released
-        or not_confirmed; `code` is the notice it leads to, if any."""
-        self.data["events"].append({
+        or not_confirmed; `code` is the notice it leads to, if any; `why`, when
+        given, a short reason made of fixed words and names only (never a
+        value from the environment or the call)."""
+        event = {
             "outcome": outcome,
             "code": code,
             "classes": list(verdict.classes) if verdict is not None else [],
             "rule": verdict.rule if verdict is not None else "",
             "readback": sentence,
-        })
+        }
+        if why is not None:
+            event["why"] = why
+        self.data["events"].append(event)
 
 
 def read_turn_state(gate_dir: Path, turn_id: str) -> dict:

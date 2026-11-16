@@ -205,7 +205,10 @@ working directory:
 - The turn settings are one static, root-owned file written by the installer. They are never
   generated per turn and never live in the state directory, which the agent can write: the
   per-turn part (the grant, D36) travels in the process environment instead. The file holds
-  only: the gate and the action log as hooks (D36, D38), added to the user's own hooks, and
+  only: the gate and the action log as hooks (D36, D38), added to the user's own hooks; an
+  `env` block that pins what a checkout's `env` must not change (`LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `LD_AUDIT` to empty, `GIT_CONFIG_COUNT` to `0`, and `PATH` and `HOME`
+  to the environment file's values, written per host by the installer; D36); and
   `autoMemoryDirectory` pointing at the memory directory the coding session uses. That last
   one matters: Claude Code keys its memory to the working directory, and the turn runs in a
   project checkout while the coding session runs in the home directory. Without it Jarvis
@@ -513,13 +516,92 @@ deleting a volume claim, a namespace or a resource definition). **Decided (Mark:
 desk-only. The gate's rules then mark them, no read-back is offered, and Jarvis says "that
 one needs the desk". The outcome of the check is written into this section when phase 1
 is built.
+**Outcome (host check 11, 2026-11-16, Claude Code 2.1.322), git part:** not refused. A
+force push read back and confirmed by a yes was let through by the classifier. `reset --hard`,
+rebase and `branch -D` are not gated, and run when the driver names them (`branch -D` matches
+the user's allow rule `git branch`, so the classifier does not see it). So none of them is
+marked desk-only. **Accepted** (Mark, 2026-11-16): rebase, `reset --hard` and `branch -D`
+stay ungated and get no class of their own. They act on local history, and what they drop
+can be recovered from the reflog, with one exception: uncommitted work in the working tree
+under `reset --hard` is gone.
+**Cluster part: not run against the cluster** (the operator's permission classifier
+refuses running a delete, even of a nonexistent object); **data-holding kinds made
+desk-only by rule instead; other deletes need a spoken yes** (decided 2026-11-16). The
+agent host has no cluster access of its own; a turn reaches the cluster as
+`ssh jumpy kubectl …`, which the gate unwraps and judges by the inner `kubectl`. A
+`kubectl delete` of a volume claim, a volume, a namespace, a resource definition or a
+stateful set, and every form that deletes more than the named objects (`--all`, `-l` /
+`--selector`, `-f` / `--filename`, `-k`), is not nameable, so it needs the desk, through
+`ssh` as well. Deleting a pod, a deployment, a job and the other namespaced kinds keeps its
+read-back. Seen on the host: before the rule, a volume claim delete through `ssh jumpy`
+was read back and became pending (no yes given); with the rule it is refused as
+`needs_desk`, and a namespace or resource definition delete was refused either way.
 
 *Why a grant in the process environment.* The agent has a shell as the same user as every
 file the wrapper writes, so a grant in a file could be written by the agent itself. The
 environment of the running `claude` process is set by the wrapper before the agent exists
-and cannot be changed by its tools; the gate, started by that process, inherits it. This
+and cannot be changed by its tools. This
 holds for an agent that works through its tools. It is not a wall against one that attacks
 its own host (D40).
+**What the gate reads, after host check 6.** The gate does *not* inherit that environment
+as it was set: Claude Code adds a checkout's `env` settings to the environment of every
+hook process, and reloads them mid-turn (host check 6, 2.1.322). So the gate takes nothing
+it relies on (`JARVIS_TURN_ID`, `JARVIS_TURN_CHECKOUT`, `JARVIS_GRANT`,
+`JARVIS_GRANT_BASE`) from its own environment. It reads them from two places that project
+settings do not reach, and both must agree:
+- *the wrapper's record*: when the wrapper starts `claude`, the new process writes the
+  turn's `JARVIS_*` values to `<gate state dir>/trusted-<pid>-<start>-<boot>.json` between
+  fork and exec (`preexec_fn`), so the record exists before any hook can run. It is keyed
+  by the pid, the start time from `/proc/<pid>/stat` and the boot id, so a reused pid never
+  matches an old record, and removed when the turn ends. The gate's state directory is in
+  the class `self`;
+- *the exec-time environment of that process*, `/proc/<pid>/environ`: the block the kernel
+  got at `execve`. Settings that Claude Code applies later change its own copy of the
+  environment, not this block (seen on the host: the hook had the planted grant,
+  `/proc/<claude>/environ` the wrapper's).
+The gate walks up from its parent (a hook runs as `gate → sh -c → claude`) and takes the
+**topmost** process with a record, so a process the agent starts inside the turn (a nested
+`claude` with an environment and a record of its own making) cannot stand in for the
+turn's: it is always below it. The record's values must equal that process's exec-time
+`JARVIS_*` values exactly. No record, or no agreement: every call is denied, gated or not.
+The record alone would name the right process; the exec-time environment alone would have
+no sure way to find it. Together they do not depend on how Claude Code applies its
+settings, and a record the agent wrote by some road the gate does not see still has to
+match an environment it cannot change.
+**And then the gate's whole environment is compared with the trusted one** (after the
+review of #47, not only `JARVIS_*`). Expected is the exec-time environment of `claude`,
+with the values the turn settings pin, minus the names Claude Code itself adds to every
+hook process (measured on the host for 2.1.322: `CLAUDECODE`, `CLAUDE_PROJECT_DIR`, `PWD`,
+the session and messaging variables and a few more; the list is in
+`agent_host/trusted.py`). Any other name whose value differs, is added or is gone (an
+`LD_PRELOAD`, a `PATH`, a `HOME`, a `GIT_CONFIG_*`, an `SSH_*`, a `PYTHON*`, a
+`NODE_OPTIONS`, a `JARVIS_*`) means a project file has touched it, and every gated call is
+denied with `settings_changed`, with or without a matching grant. The gate's state records
+the names (never values). This also catches an `env` that outlives its file: Claude Code
+2.1.322 keeps a checkout's `env` after the file is gone (host check 6, re-run), when no
+settings file is left for the per-call re-read to find, and the gate itself still runs
+with that environment. A Claude Code version that adds a name of its own that is not on
+the list shows up as every gated call denied: the update runbook's check 4 catches it.
+**Pinning in the turn settings.** `env` in `--settings` outranks a checkout's `env`, at the
+start of a turn and after a mid-turn reload (seen on the host, 2.1.322). The turn settings
+therefore pin `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT` to empty, `GIT_CONFIG_COUNT`
+to `0` (git then ignores any `GIT_CONFIG_KEY_n`), and `PATH` and `HOME` to the values of
+the environment file (the installer writes those two per host; run it again after editing
+that file). A pinned name keeps its value for the hooks and for the agent's own tools
+alike. Seen on the host: a checkout whose `env` set all of these, at the start and
+mid-turn, loaded no preload library anywhere, redirected no `git` and no `HOME`, and its
+`alias.status` stayed inert; the two names it set that are not pinned
+(`GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0`) reached the gate, which denied on them.
+**What is left (said plainly).** A checkout's `env` reaches the `sh` that Claude Code starts
+to run a hook before any gate code runs. A name the turn settings do not pin and that
+changes what `sh` or the dynamic loader does (another loader variable such as
+`GCONV_PATH`, if `sh` loads a module through it) could subvert the hook runner itself; no
+check inside the gate can stop what happens before the gate starts. The mitigations are
+the pins, the wrapper's refusal of unsafe settings before the turn, the per-call re-read
+and the whole-environment comparison; together they catch everything except an
+`LD_PRELOAD`-like variable that subverts the hook runner itself and is not pinned. The
+real fix is to keep the credentials out of the agent's reach altogether, the credential
+broker (option B, https://github.com/MWest2020/jarvis/issues/45).
 
 *The checkout's own settings.* A project's `.claude/settings.json` and `settings.local.json`
 are loaded by Claude Code, and they can carry `env`, `hooks` and `disableAllHooks`. They
@@ -532,7 +614,8 @@ whether or when Claude Code re-reads its settings:
 1. **Before the turn**, the confirming turn included, the wrapper reads both files and
    refuses the turn (`unsafe_settings`) when either contains `env`, `hooks` or
    `disableAllHooks`. Jarvis says that the project's settings need the desk.
-2. **On every call**, the gate itself re-reads both files of the turn's checkout, and also
+2. **On every call**, the gate itself re-reads both files of the turn's checkout (the
+   trusted one, from the wrapper's record, never from its own environment), and also
    both files at the git top level of the working directory that the call itself reports
    (the hook input's `cwd`). Jarvis works in its own worktrees, so the files that matter for
    a call are often not the turn checkout's. While any of them contains one of the three
@@ -551,6 +634,31 @@ real Claude Code, with the settings present at the start and appearing mid-turn.
 check fails**, phase 1 does not ship: `full` mode is not enabled anywhere until the design
 has an answer that passes. The mid-turn check is part of the update runbook: it is run again
 on every Claude Code version bump on the agent host, before Jarvis uses the new version.
+**Outcome (host check 6, 2026-11-16, Claude Code 2.1.322): failed; this section is
+reopened.** `disableAllHooks: false` from `--settings` held: the gate ran in every case,
+including when a project file said `true`, at the start and mid-turn. What fails is
+`env`. Claude Code applies a checkout's `env` to the hook processes, the gate included,
+and reloads it when the file appears mid-turn (a `git checkout` was enough). The gate
+takes `JARVIS_TURN_CHECKOUT`, `JARVIS_GRANT` and `JARVIS_GRANT_BASE` from that
+environment. A mid-turn file that set a grant computed in advance, and pointed
+`JARVIS_TURN_CHECKOUT` at a clean checkout, released a gated call that the agent made from
+a clean worktree: neither directory the gate re-reads held the file. Check 1 (before the
+turn) does not see a file that arrives later, and check 3 (after the turn) comes after the
+call has run. A worktree's own settings were not loaded by Claude Code at all; the per-call
+re-read denied every case where the call's own directory held the file.
+**Answer (Mark, 2026-11-16), and the re-run: passed.** The gate reads the turn's values
+from the wrapper's record, checked against the exec-time environment of `claude`, and
+compares its own environment with them (above, "What the gate reads"). The per-call
+re-read uses the trusted checkout. Run again on the host against Claude Code 2.1.322 and
+the commit with this answer: all six cases denied the gated call with `settings_changed`,
+the case that failed included, and so did a seventh: the file brought in and taken away
+again before the call, so that only the planted environment was left.
+After the review of #47 the comparison covers the whole environment and the turn settings
+pin the loader variables, `PATH`, `HOME` and `GIT_CONFIG_COUNT` (below). Run again on the
+host against that commit (`37a9b9e`): the seven cases again, and a checkout whose `env`
+set `LD_PRELOAD` (a test library that only writes a marker), `PATH`, `HOME` and
+`GIT_CONFIG_COUNT`/`KEY`/`VALUE`, at the start, mid-turn, and brought in and taken away
+again: every gated call denied with `settings_changed`, and the pins held.
 
 *Optional hardening, Mark's own to install.* The gate can also be loaded from Claude Code's
 managed settings on the agent host, which project settings cannot override or switch off.
@@ -563,11 +671,33 @@ short hook timeout; and in the coding session a missing or broken script lets th
 through (fail open), while in a Jarvis turn the copy from the turn settings stays the one
 that decides and is expected to fail closed. For a gate that crashes or denies, that is the
 hook's own answer; for a gate that runs into its timeout it is Claude Code's, and the gate
-timeout check of task 1.17 has to confirm it. The hardening adds nothing against `disableAllHooks`: if the
+timeout check of task 1.17 has to confirm it. **Outcome (host check 12, 2026-11-16,
+Claude Code 2.1.322): it does not.** A gate that ran past its hook `timeout` was dropped and
+the gated call ran: on a timeout the hook fails open. The hardening adds nothing against `disableAllHooks`: if the
 mid-turn check of task 1.17 fails, phase 1 does not ship, hardening or not.
 
+*A gate that Claude Code times out fails open.* Said plainly: when a hook runs past its
+`timeout`, Claude Code (2.1.322, host check 12) drops it and runs the call. A deny that
+comes too late is no deny. **The mitigation is the gate's own deadline** (Mark,
+2026-11-16): its first statement sets a timer (`setitimer`, 5 seconds), and it decides in a
+forked worker while the first process only waits for the worker's answer and is the only
+one that writes to stdout. When the deadline comes first, it kills the worker and prints
+the denial ("the gate ran out of time"), whatever the worker is stuck in: a blocked read, a
+regular expression, a lock. The hook `timeout` in the turn settings is 30 seconds, so the
+margin is 25. No step of the gate waits without a bound either: every file it reads is
+opened without blocking and read up to a cap, and the git lookups and the state lock share
+one budget of 3.5 seconds (a single lookup at most 2). A lookup that runs out of time is
+*unknown*, never "unset" (an unset `remote.X.push` would read as harmless): the gate
+denies. A grant is used (its marker created) in the gate's first process, after the
+worker's answer and just before the call is let through, so a deadline never uses one
+up. This holds unless the gate's own process stalls
+for longer than the hook timeout: a host that stalls for more than 30 seconds, or a process
+that stops the gate from outside (D40). Re-run on the host: with the gate's worker frozen
+the moment it started, the call was denied at the deadline and did not run.
+
 *Failing closed.* In a turn started by the wrapper, if the gate cannot read its rules or the
-checkout's settings, cannot parse the call or crashes, the call is denied. The coding
+checkout's settings, cannot parse the call, finds no trusted values, runs out of time or
+crashes, the call is denied. The coding
 session is never gated: without the optional hardening it does not load the gate at all (it
 is in the turn settings, not in the user's settings); with it, the managed entry exits at
 once because the turn marker is absent, and cannot block a call even when it is broken.
@@ -612,8 +742,12 @@ turn from the coding session.
   duration and outcome, and every pending, confirmed, cancelled or refused gated action with
   its read-back;
 - one line per tool call that can change something (everything except the read-only file
-  and search tools), written by a PostToolUse hook from the turn settings: tool, the command
-  or target, exit status. Values shaped like secrets are redacted with the same patterns the
+  and search tools), written by a hook from the turn settings: tool, the command
+  or target, exit status. The same hook runs for PostToolUse (a call that succeeded) and
+  PostToolUseFailure (a call that failed: Claude Code runs no PostToolUse for a Bash call
+  that exits non-zero, seen in host check 1.17). A confirmed call whose line says it
+  failed is recorded as "ran, failed". The hook writes to the turn's log by the trusted
+  turn id (D36), not by the one in its own environment. Values shaped like secrets are redacted with the same patterns the
   bridge's log uses;
 - kept 90 days by default.
 The records are written by the agent's own user, so they are an account of what an agent
@@ -676,6 +810,11 @@ host; see D40.
   assembles a command the rules do not know. The classes `root` and `self`, the refusal of
   unsafe checkout settings, before the turn and on every gated call, close the obvious
   roads; they do not make the others impossible.
+- *A checkout's `env` before the gate runs.* It reaches the `sh` that runs each hook. The
+  turn settings pin the loader variables, `PATH`, `HOME` and `GIT_CONFIG_COUNT`, and the
+  gate compares its whole environment, but a variable that is not pinned and subverts the
+  hook runner itself is out of the gate's reach (D36, "What is left"). The real fix is the
+  credential broker, https://github.com/MWest2020/jarvis/issues/45.
 - *A copy to another host.* The read-back of an `outward` call names the host, not the
   files. After a yes, whatever the command copies leaves to that host.
 - *The classifier.* It does not see calls that match an allow rule (D34).
@@ -736,11 +875,19 @@ None for Mark in the design (the trust edge is his, in #25). For the build, sett
 |---|---|
 | Does `--settings` add the gate next to the user's hooks? | phase 1 does not ship |
 | Do project settings that appear mid-turn (`env`, `hooks`, `disableAllHooks`) fail to get a gated call through? | phase 1 does not ship; the design is reopened (D36) |
+| Does a gate that runs into its hook timeout deny the call? | phase 1 does not ship (D36) |
 | Is auto mode active in a `-p` turn, and is a blocked call denied rather than left hanging? | phase 1 does not ship |
 | Is `autoMemoryDirectory` honoured from `--settings`? | the symlink of D34 |
 | Does `--append-system-prompt-file` exist? | the contents go in `--append-system-prompt` (D34) |
 | Does `--system-prompt-snapshot off` exist and work on a resumed session? | a new session per project at the first turn after 04:00 (D34) |
 | Do the classifier's own refusals survive a yes? | those actions are marked desk-only (D36) |
+
+Answered on 2026-11-16 (Claude Code 2.1.322): mid-turn `env` *did* get a gated call
+through, and a hook timeout *does* let the call run. The design was reopened, D36 now
+answers both (the gate's trusted values, and its own deadline), and the re-run passed. The
+git part of the last question is answered "no, not refused", and accepted (D36). Its
+cluster part was not run against the cluster; data-holding kinds are desk-only by rule
+instead, and other deletes need a spoken yes (D36).
 
 Not a question but a fact to build on (D30): in `full` mode the bridge's own project list
 still decides what can be asked at all.
