@@ -350,10 +350,11 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
     if _shell_writes_protected(command, ctx):
         return Verdict(gated=True, classes=("self",), rule="self:shell")
 
-    analysis = shell.analyse(
-        command, known_programs=rules.known_programs, root_programs=rules.root_programs,
-        shells=rules.shells, indirect=rules.indirect,
-    )
+    everyday = _everyday_form(command, ctx)
+    if everyday is not None:
+        return everyday
+
+    analysis = _analyse(command, ctx)
 
     if analysis.compound:
         # Not one command the gate can follow. A gated candidate decides
@@ -381,6 +382,19 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
             return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
         return UNGATED
 
+    return _single_verdict(analysis, ctx)
+
+
+def _analyse(command: str, ctx: Context) -> shell.Analysis:
+    rules = ctx.rules
+    return shell.analyse(
+        command, known_programs=rules.known_programs, root_programs=rules.root_programs,
+        shells=rules.shells, indirect=rules.indirect,
+    )
+
+
+def _single_verdict(analysis: shell.Analysis, ctx: Context) -> Verdict:
+    """The verdict on a call that `shell.analyse` read as one command."""
     if not analysis.commands:
         return UNGATED
     inner = analysis.commands[0]
@@ -429,6 +443,169 @@ def _confirm_switch(command: str, ctx: Context) -> tuple[str, ...] | None:
     if len(words) == 4 and words[3] not in CONFIRM_CLASSES:
         return None
     return ("sudo", *words[1:])
+
+
+# --- three everyday forms of a compound command, read in full ---------------------------
+#
+# What the gate cannot fully understand does not get through. These forms
+# it can: each is taken apart completely, every part is judged by the same
+# rules as a call of its own, and anything that does not fit exactly falls
+# back to the refusal. None of them makes a gated command confirmable: a
+# gated command in one of these forms is still "run it alone" (D36).
+
+_HEREDOC_RE = re.compile(r"(?P<before>[^\n]*?)<<(?P<dash>-?)[ \t]*(?P<quote>['\"]?)"
+                         r"(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)(?P<after>[^\n]*)")
+_CAT_HEREDOC_RE = re.compile(
+    r"(?P<before>[^\n]*)\"\$\(cat <<'(?P<word>[A-Za-z_][A-Za-z0-9_]*)'\n"
+    r"(?P<body>.*?)\n(?P=word)\n\)\"(?P<after>[^\n]*)", re.DOTALL)
+_LITERAL_DIR_RE = re.compile(r"[^$*?\[\]{}`]+")
+
+
+def _alone(verdict: Verdict) -> Verdict:
+    """A gated command inside a compound form is never read back."""
+    if verdict.gated and not verdict.run_alone:
+        return dataclasses.replace(verdict, run_alone=True)
+    return verdict
+
+
+def _one_command(text: str, ctx: Context) -> Verdict | None:
+    """The verdict on `text` as one command by the ordinary rules, or None
+    when it is not one command the gate can follow."""
+    if _shell_writes_protected(text, ctx):
+        return Verdict(gated=True, classes=("self",), rule="self:shell")
+    analysis = _analyse(text, ctx)
+    if analysis.compound:
+        return None
+    return _single_verdict(analysis, ctx)
+
+
+def _plain_program(text: str, ctx: Context) -> list[str] | None:
+    """The words of `text` when it is one command that is not a shell, an
+    interpreter, a wrapper or a program that runs what it reads from stdin:
+    the program itself, by its plain name, as the first word."""
+    rules = ctx.rules
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    if not words:
+        return None
+    stripped, ok = shell.strip_prefixes(words)
+    program = words[0]
+    if not ok or stripped != words or "/" in program:
+        return None
+    if program in rules.shells | rules.indirect | rules.root_programs | rules.stdin_runners \
+            or program in ("ssh", "env") or _is_interpreter(program, ctx):
+        return None
+    return words
+
+
+def _everyday_form(command: str, ctx: Context) -> Verdict | None:
+    text = shell.without_benign_redirects(command)
+    if "\n" in text or "\r" in text:
+        return _heredoc_form(text, ctx)
+    if shell.substitutes(text):
+        return None
+    split = shell.top_level(text)
+    if split is None:
+        return None
+    pieces, operators = split
+    if operators == ["&&"]:
+        return _cd_form(pieces[0], pieces[1], ctx)
+    if operators and all(operator == "|" for operator in operators):
+        return _filter_form(pieces, ctx)
+    return None
+
+
+def _cd_form(first: str, second: str, ctx: Context) -> Verdict | None:
+    """`cd <dir> && <one command>`: the directory is a literal path, and the
+    command is judged as a call of its own made in that directory, with all
+    the path rules."""
+    try:
+        words = shlex.split(first)
+    except ValueError:
+        return None
+    if len(words) != 2 or words[0] != "cd":
+        return None
+    directory = words[1]
+    if not _LITERAL_DIR_RE.fullmatch(directory) or directory.startswith("-"):
+        return None
+    if directory.startswith("~") and not (directory == "~" or directory.startswith("~/")):
+        return None
+    resolved = os.path.realpath(_resolve(directory, ctx))
+    if not os.path.isdir(resolved):
+        return None
+    if ".." in directory.split("/"):
+        # `..` may walk around inside the checkout, not out of it.
+        top = git_top_level(ctx.cwd)
+        root = os.path.realpath(top) if top is not None else None
+        if root is None or not (resolved == root or resolved.startswith(root + os.sep)):
+            return None
+    there = dataclasses.replace(ctx, cwd=Path(resolved))
+    verdict = _one_command(second, there)
+    return None if verdict is None else _alone(verdict)
+
+
+def _filter_form(pieces: list[str], ctx: Context) -> Verdict | None:
+    """`<one command> | <filter> [| <filter> ...]`: the left side is judged
+    as a call of its own; every filter is on the list."""
+    rules = ctx.rules
+    for piece in pieces[1:]:
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            return None
+        if not words or words[0] not in rules.filters:
+            return None
+        if any(">" in word or "<" in word for word in words):
+            return None
+        if words[0] == "tee":
+            targets = [word for word in words[1:] if not word.startswith("-")]
+            if any(_outside_roots(target, ctx) for target in targets):
+                return None
+    verdict = _one_command(pieces[0], ctx)
+    return None if verdict is None else _alone(verdict)
+
+
+def _heredoc_form(text: str, ctx: Context) -> Verdict | None:
+    """A here-document into one command that is not a shell, an interpreter
+    or a wrapper (`git commit -F - <<'EOF'`), and exactly
+    `git commit ... "$(cat <<'EOF' ... EOF)" ...`: the text is data for one
+    program, and that one command is judged."""
+    cat = _CAT_HEREDOC_RE.fullmatch(text.rstrip("\n"))
+    if cat is not None:
+        reduced = cat.group("before") + '"x"' + cat.group("after")
+        if shell.substitutes(reduced) or shell.has_separator(reduced):
+            return None
+        words = _plain_program(reduced, ctx)
+        if words is None or words[:2] != ["git", "commit"]:
+            return None
+        verdict = _one_command(reduced, ctx)
+        return None if verdict is None else _alone(verdict)
+
+    lines = text.split("\n")
+    match = _HEREDOC_RE.fullmatch(lines[0])
+    if match is None:
+        return None
+    word = match.group("word")
+    body: list[str] = []
+    for index, line in enumerate(lines[1:], start=1):
+        if (line.strip("\t") if match.group("dash") else line) == word:
+            if any(rest.strip() for rest in lines[index + 1:]):
+                return None  # something follows the here-document: another command
+            break
+        body.append(line)
+    else:
+        return None  # never terminated
+    if not match.group("quote") and any("$" in line or "`" in line for line in body):
+        return None  # an unquoted here-document expands what is in it
+    reduced = match.group("before") + " " + match.group("after")
+    if shell.substitutes(reduced) or shell.has_separator(reduced):
+        return None
+    if _plain_program(reduced, ctx) is None:
+        return None
+    verdict = _one_command(reduced, ctx)
+    return None if verdict is None else _alone(verdict)
 
 
 def _remote_read(command: shell.Command, ctx: Context) -> bool:

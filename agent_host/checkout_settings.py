@@ -12,8 +12,10 @@ mode. Such a file needs no `Edit` call to appear: a `git pull` or a
 
 So the rule is an **allow-list**: a settings file is safe only when every
 top-level key is one of a few that cannot run anything or widen anything
-(`SAFE_KEYS`), and `permissions` only when it holds nothing but `deny` and
-`ask`. Every other key makes the checkout unsafe, the three D36 names and
+(`SAFE_KEYS`), and `permissions` only when it holds nothing but `deny`,
+`ask` and `allow`. A checkout that enables project MCP servers
+(`enabledMcpjsonServers`, `enableAllProjectMcpServers`, `mcpServers`) is
+unsafe: it gets read-only turns. Every other key makes the checkout unsafe, the three D36 names and
 every key nobody has thought of yet.
 
 One function answers the question, for everyone who asks it:
@@ -47,9 +49,12 @@ SAFE_KEYS: frozenset[str] = frozenset({
     "$schema", "model", "includeCoAuthoredBy", "cleanupPeriodDays", "outputStyle",
     "permissions",
 })
-# `permissions` may only take away: `allow`, `defaultMode`,
-# `additionalDirectories` and anything else in it widen what a turn may do.
-SAFE_PERMISSION_KEYS: frozenset[str] = frozenset({"deny", "ask"})
+# Inside `permissions`: `deny` and `ask` only take away. `allow` is safe
+# for the gate: the gate is a PreToolUse hook and hooks run before
+# permission rules, so an allow rule cannot skip it; it skips the classifier
+# only, as the user's own allow rules do (D34, D40). `defaultMode`,
+# `additionalDirectories` and anything else in it are not.
+SAFE_PERMISSION_KEYS: frozenset[str] = frozenset({"deny", "ask", "allow"})
 MAX_SETTINGS_BYTES = 1024 * 1024
 
 

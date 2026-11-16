@@ -372,7 +372,9 @@ def _checkout_settings(tmp_path, name, content):
     "{ not json",
     '{"apiKeyHelper": "/tmp/x.sh"}',
     '{"enabledMcpjsonServers": ["x"]}',
-    '{"permissions": {"allow": ["Bash(*)"]}}',
+    '{"permissions": {"defaultMode": "bypassPermissions"}}',
+    '{"enableAllProjectMcpServers": true}',
+    '{"mcpServers": {"x": {"command": "x"}}}',
 ])
 def test_a_checkout_whose_settings_carry_one_of_the_three_keys_is_refused(
     tmp_path, monkeypatch, name, content,
@@ -395,7 +397,7 @@ def test_a_checkout_whose_settings_carry_one_of_the_three_keys_is_refused(
 def test_checkout_settings_with_only_harmless_keys_do_not_stop_a_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _popen(stdout=_ok_payload("hi\nSPOKEN SUMMARY: hi.")))
     config = _config(tmp_path)
-    _checkout_settings(tmp_path, "settings.json", '{"model": "x", "permissions": {"deny": ["Bash(rm:*)"]}}')
+    _checkout_settings(tmp_path, "settings.json", '{"model": "x", "permissions": {"deny": ["Bash(rm:*)"], "allow": ["Bash(ls:*)"]}}')
     _checkout_settings(tmp_path, "settings.local.json", "{}")
 
     reply = handle_request(_raw(), config)

@@ -120,6 +120,8 @@ class Rules:
     shells: frozenset[str]
     indirect: frozenset[str]
     harmless: frozenset[str]
+    filters: frozenset[str]
+    stdin_runners: frozenset[str]
     harmless_git: frozenset[str]
     interpreters: tuple[str, ...]
     inline_letters: frozenset[str]
@@ -367,7 +369,8 @@ def rules_from_dict(data: dict) -> Rules:
     root = _table(data, "root", "")
     _known_keys(root, {"programs"}, "root")
     shell = _table(data, "shell", "")
-    _known_keys(shell, {"shells", "indirect", "harmless", "harmless_git"}, "shell")
+    _known_keys(shell, {"shells", "indirect", "harmless", "harmless_git", "filters",
+                        "stdin_runners"}, "shell")
     interpreters = _table(data, "interpreters", "")
     _known_keys(interpreters, {"programs", "inline_letters", "inline_words"}, "interpreters")
     tools = _table(data, "tools", "")
@@ -408,6 +411,8 @@ def rules_from_dict(data: dict) -> Rules:
         shells=frozenset(_strings(shell, "shells", "shell.")),
         indirect=frozenset(_strings(shell, "indirect", "shell.")),
         harmless=frozenset(_strings(shell, "harmless", "shell.")),
+        filters=frozenset(_strings(shell, "filters", "shell.")),
+        stdin_runners=frozenset(_strings(shell, "stdin_runners", "shell.")),
         harmless_git=frozenset(_strings(shell, "harmless_git", "shell.")),
         interpreters=_strings(interpreters, "programs", "interpreters."),
         inline_letters=frozenset(_strings(interpreters, "inline_letters", "interpreters.")),
