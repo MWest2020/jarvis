@@ -1,0 +1,57 @@
+# Configuration of the Jarvis agent host wrapper (/etc/jarvis-agent/config.toml).
+# Root-owned, world-readable: the wrapper runs as the coding session's user and
+# must read it; the agent must not be able to write it. No secrets belong here.
+# Every key is explained in docs/how-to/agent-host.md.
+
+# The kill switch (design D33). false: the wrapper answers `disabled` and does
+# nothing else; the bridge then answers read-only. The template ships with
+# false: set it to true only after the host checks of task 1.17 have passed.
+enabled = false
+
+# Which checkouts a turn may run in. Exactly one of the two forms.
+# Form 1: every directory directly under a root, minus exclusions.
+projects_root = "/home/CHANGE-ME/projects"
+project_exclusions = []
+# Form 2: an explicit list (remove projects_root and project_exclusions).
+# [projects] must then be the LAST thing in this file, or the keys below it
+# become project names.
+# [projects]
+# example = "/home/CHANGE-ME/example"
+
+# The wrapper's own state: session ids, records, the turn lock. Created by the
+# wrapper as the user it runs as (0700, files 0600).
+state_dir = "/home/CHANGE-ME/.local/state/jarvis-agent"
+
+# The only environment a turn starts from, plus the turn variables.
+environment_file = "/etc/jarvis-agent/environment"
+
+# Installed by install.sh; do not point these anywhere a turn can write.
+turn_settings = "/usr/local/lib/jarvis-agent/turn-settings.json"
+prompt_file = "/usr/local/lib/jarvis-agent/prompt.md"
+# Optional: the user's own additions to the appended prompt (design D35).
+# second_prompt_file = "/etc/jarvis-agent/prompt.local.md"
+
+# The identity builds and pings go out under (design D37), and the variable
+# that carries it.
+session_identity = "jarvis"
+identity_env_var = "IDENT"
+
+# Read before every turn: a turn is refused when these settings default to
+# the bypass permission mode. Never written by Jarvis or by install.sh.
+user_settings_path = "/home/CHANGE-ME/.claude/settings.json"
+
+# The forge whose repositories can be named in a read-back (design D36).
+forge_host = "github.com"
+
+# No turn below this much available memory; a turn is killed after timeout_s.
+memory_floor_mb = 600
+timeout_s = 600
+
+# Fallbacks of design D34, set only when a host check of task 1.17 says so.
+append_system_prompt_fallback = false
+session_rotation_fallback = false
+
+# Voice confirmation (design D36). "off" lets gated calls through unconfirmed
+# (the class `self` stays desk-only); confirm_skip does that per class.
+confirm = "on"
+confirm_skip = []
