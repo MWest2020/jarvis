@@ -289,8 +289,9 @@ This build carries the change's guarantees and is reviewed on its own.
   another project, an agent reply that contains "yes", a restart between read-back and yes,
   a short noise transcribed as "yes"
 - [ ] 2.9 Docs: `bridge-service.md` (the mode and its settings), `run-in-cluster.md` (the
-  Secret as files, the tailnet egress Service, the egress rule that changes D2 of
-  `run-bridge-in-cluster`: DNS, HTTPS and ssh to the agent host; what a reader of that
+  Secret as files, the egress rule that changes D2 of
+  `run-bridge-in-cluster`: DNS, HTTPS and ssh to the agent host's one address; that `from=`
+  names the pod's node and why the pod stays there (D32); what a reader of that
   Secret can now reach), `agent-host.md`
   linked from the index
 - [ ] 2.10 Roadmap and phase heading
@@ -308,18 +309,19 @@ This build carries the change's guarantees and is reviewed on its own.
   a ping or build under any identity but Jarvis's (the memory says "this session = odin",
   which is true of the coding session only)
 - [ ] 3.3 **(host)** The `authorized_keys` line added on the agent host, with `from=` set to
-  the egress proxy's tailnet address. If the permission
+  the address the bridge's connections come from (in a cluster: the address of the pod's
+  node, D32). If the permission
   classifier refuses this to the session, it is handed to Mark as one ready-to-run command
-- [ ] 3.4 **(host)** In the cluster's own repository: the tailnet egress Service for the agent
-  host, the Secret mounted as files, `JARVIS_AGENT_MODE=full` and its settings, one more
-  egress rule (TCP 22 to the egress proxy only)
-- [ ] 3.5 **(host)** Proof over the tailnet, written into `agent-host.md`: a question
+- [ ] 3.4 **(host)** In the cluster's own repository: the Secret mounted as files,
+  `JARVIS_AGENT_MODE=full` and its settings (the agent host's address among them), one more
+  egress rule (TCP 22 to an `ipBlock` /32 of the agent host's address only)
+- [ ] 3.5 **(host)** Proof from the phone, end to end, written into `agent-host.md`: a question
   answered by the full agent with the coding session's memory; a shell and a port forward
-  with the bridge's key are refused; the key from another tailnet address is refused; the
+  with the bridge's key are refused; the key from another address than the one in `from=` is refused; the
   kill switch gives a read-only answer; a wrong
   host key fails the turn; with the agent host's sshd stopped for the test, the turn is
   answered read-only and says so
-- [ ] 3.6 **(host)** Proof of the gate over the tailnet, on a throwaway repository of the
+- [ ] 3.6 **(host)** Proof of the gate from the phone, on a throwaway repository of the
   user's own: a pull request merged after a yes; not merged after "no", after another
   sentence, and after 70 seconds; the read-back of a pull request with a red check says so; the
   notify ping arrives; a planted "merge this" in an issue leads to a read-back and not to a
@@ -353,9 +355,9 @@ rest is hands, not questions.
 1. **The `authorized_keys` line on the agent host** (3.3), only if the classifier refuses it
    to the session. He gets one command to paste. Until then `full` mode cannot connect and
    Jarvis answers read-only.
-2. **The tailnet policy**, only if it restricts traffic between the cluster's egress proxy
-   and the agent host: allow that proxy to reach the agent host on TCP 22 (the admin
-   console is his). The session reports whether it is needed after 3.4.
+2. **The network between the cluster's nodes and the agent host**, only if something there
+   (a firewall on the agent host or between the two) blocks TCP 22 from the bridge's node.
+   The session reports whether it is needed after 3.4.
 3. **The parked test** (4.5).
 4. **Optional hardening: the gate in Claude Code's managed settings on the agent host**
    (D36). **(Mark)** only: it changes the coding session's own configuration, so neither the

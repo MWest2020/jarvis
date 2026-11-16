@@ -29,8 +29,8 @@ Read this before installing. It is design D40 in plain words.
   question with a yes. The forced command limits the *form* of what can be asked (one
   prompt, one answer); it does not limit the *power* of what answers.
 - **The cluster gets a road to this machine that did not exist.** Anyone who can read the
-  Secret with the bridge's key, or run code in the bridge's pod or on the machine its
-  connections come from, inherits the line above. What keeps it narrow: `from=` on the
+  Secret with the bridge's key, or run code in the bridge's pod or connect from the address `from=` names (in
+  a cluster: any pod on the bridge's node, and the node itself), inherits the line above. What keeps it narrow: `from=` on the
   key, the Secret mounted only in the bridge's pod, the NetworkPolicy, the kill switch
   below, and a ping to your phone after every confirmed action.
 - **The gate is not a wall against the agent.** The agent has a shell as the user that
@@ -125,10 +125,12 @@ agent_host/install.sh --print-authorized-keys --pubkey bridge.pub --from 192.0.2
 
 - `restrict` switches off the pty, every kind of forwarding and the user's rc file.
 - `from=` is the one address the bridge's connections arrive from, as this machine sees
-  them. Which address that is depends on the road: the tailnet address of the egress
-  proxy or of the bridge's machine, or, when the pod reaches this machine over the local
-  network, the address of the node its traffic leaves from. The key is useless from
-  anywhere else. The installer accepts one address, host name or network, and refuses
+  them. On a workstation that is the bridge machine's own address. In a cluster it is
+  the address of the **node** the bridge's pod runs on: the pod's traffic is
+  source-translated to it. The pod stays on that node because its state volume is
+  node-local; if the volume ever moves to another node, this line needs the new address.
+  The key is then pinned to the node, not to the pod: every pod on that node connects
+  from the same address (design D32). The key is useless from anywhere else. The installer accepts one address, host name or network, and refuses
   wildcards and lists.
 - `command=` replaces whatever the client asks to run. The wrapper ignores
   `SSH_ORIGINAL_COMMAND` and takes no arguments.

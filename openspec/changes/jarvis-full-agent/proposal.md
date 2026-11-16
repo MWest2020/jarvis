@@ -21,7 +21,7 @@ mouth for the same agent, never a privileged way around it.
 - **Two agent modes.** `readonly` is what exists and stays the default and the fallback.
   `full` runs the turn on the *agent host*: the machine where the coding session lives.
 - **A remote agent adapter** on the D8 seam. The bridge (in the cluster) opens one `ssh`
-  connection per turn over the tailnet, with a dedicated key whose `authorized_keys` line
+  connection per turn over a private network, with a dedicated key whose `authorized_keys` line
   forces one fixed wrapper. The wrapper runs `claude -p --output-format json`, resumed per
   project, in the project's checkout on the agent host, in the `auto` permission mode. No
   `--dangerously-skip-permissions`, no bypass mode, no tool list of its own. Speech stays in
@@ -67,7 +67,7 @@ Said plainly, because "everything you can do" has a price (design D40):
   Secret with the bridge's key, or run code in the bridge's pod, inherits the line above.
   **Accepted by default; Mark is asked explicitly** in
   https://github.com/MWest2020/jarvis/issues/25 (if he says no, the cluster side stays
-  read-only and changes stay desk-only). Kept narrow by `from=` on the key, the NetworkPolicy, a
+  read-only and changes stay desk-only). Kept narrow by `from=` on the key (in a cluster it names the pod's node, design D32), the NetworkPolicy, a
   kill switch on the agent host and a ping to Mark's phone on every confirmed action.
 - The gate and its records live on a host where the agent has a shell as their owner, and
   passwordless `sudo`. The guarantees of the gate hold for an agent that works through its
@@ -164,13 +164,13 @@ by the coding session; tasks marked **(Mark)** need Mark's hands, phone or ears.
 - Capability `voice-bridge`: two requirements modified (Approval for changes, Session
   continuity), eight added.
 - `run-bridge-in-cluster`, D2: the pod's egress was DNS and HTTPS only. In `full` mode it is
-  also ssh to the agent host through the tailnet egress proxy; that change's how-to says so.
+  also ssh to the agent host, directly, to its one address; that change's how-to says so.
 - Code: `bridge/` (adapter seam, remote adapter, confirmation state), new `agent_host/`
   (wrapper, gate hook, gate rules, prompt, installer; Python standard library only),
   `deploy/Dockerfile` (the ssh client). `agent_host/` is added to the `docs-gates` code paths.
 - Docs: a new how-to for the agent host; `bridge-service.md` and `run-in-cluster.md` updated.
 - Outside this repository: one `authorized_keys` line, a root-owned install and host-local
-  gate rules on the agent host; the daily mail step reading Jarvis's line; a Secret with the bridge's key, a tailnet egress Service and one more egress rule in
+  gate rules on the agent host; the daily mail step reading Jarvis's line; a Secret with the bridge's key and one more egress rule (TCP 22 to the agent host's address) in
   the cluster's own repository.
 - The Claude credentials in the pod stay, for `readonly` mode. `full` mode uses the agent
   host's own login, so its turns count against the same usage limits as the coding session.

@@ -78,11 +78,13 @@ Alternatives considered:
 **D32. Transport: ssh with a dedicated key and a forced command.** One connection per turn.
 The `authorized_keys` line on the agent host is
 
-    restrict,from="<the egress proxy's tailnet address>",command="/usr/local/lib/jarvis-agent/turn" ssh-ed25519 AAAA… jarvis-bridge
+    restrict,from="<the address the bridge's connections come from>",command="/usr/local/lib/jarvis-agent/turn" ssh-ed25519 AAAA… jarvis-bridge
 
 `restrict` switches off pty, port, agent and X11 forwarding and the user's rc file; `from`
-names the one address the bridge's connections come from (on a workstation: the bridge
-machine's tailnet address), so the key is useless from anywhere else, on or off the tailnet;
+names the one address the bridge's connections come from, as the agent host sees them (on
+a workstation: the bridge machine's own address; in a cluster: the address of the pod's
+node, below). It is configuration, a parameter of the installer, never a constant. The key
+is useless from anywhere else;
 `command` replaces whatever the
 client asks to run. sshd enforces all three before any of our code runs.
 The bridge calls `ssh -T -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes
@@ -102,10 +104,27 @@ Alternatives considered:
 - *A separate Unix user for Jarvis.* Rejected: another user has another home, so not the
   same instructions, memory, hooks and credentials. That is D31 again.
 
-In a cluster the pod has no tailnet interface. The road is a tailnet egress Service of the
-Tailscale operator (an `ExternalName` Service that names the agent host on the tailnet); the
-bridge's NetworkPolicy gets one more egress rule, TCP 22 to that egress proxy only. This
-changes D2 of `run-bridge-in-cluster` ("egress is limited to DNS and HTTPS"): in `full` mode
+In a cluster the pod has no tailnet interface, and none is needed when the agent host is on
+the same local network as the cluster's nodes. The pod reaches the agent host directly on
+TCP 22; the bridge's NetworkPolicy gets one more egress rule, TCP 22 to an `ipBlock` of
+exactly the agent host's address (a /32). The agent host's address is configuration of the
+deployment, in the cluster's own repository.
+The pod's traffic to an address outside the cluster is source-translated to the address of
+the node the pod runs on, so that is what sshd sees and what `from=` holds. The pod stays on
+one node: its state is a volume claim on node-local storage, which binds the pod to the
+node that holds the volume. That is why `from=` stays valid across restarts; a deployment
+that moves the volume to another node needs a new `authorized_keys` line, and until then
+the turn falls back to read-only (D30, "could not connect").
+`from=` therefore pins the key to the node, not to the pod: every pod on that node, and
+the node itself, connects from the same address. The NetworkPolicy of the other pods and
+the Secret that holds the key are what separate them from the bridge. That is accepted
+under D40.
+Alternative considered: *a tailnet egress Service of the Tailscale operator* (an
+`ExternalName` Service that names the agent host on the tailnet, `from=` set to the egress
+proxy's tailnet address). It pins the key to one proxy instead of one node, at the price of
+another component in the path of every turn. Not chosen where the agent host and the
+nodes share a network; it remains the road when they do not.
+This changes D2 of `run-bridge-in-cluster` ("egress is limited to DNS and HTTPS"): in `full` mode
 it is DNS, HTTPS and ssh to the agent host, and that change's how-to is updated with it. The
 private key and the pinned host key come from a Secret mounted as files (mode 0400), never
 as environment variables, outside every project directory: the read-only fallback agent in
@@ -633,7 +652,8 @@ host; see D40.
   can also answer its own read-back with a yes. The forced command limits the *form* (one
   prompt, one answer), not the *power*.
 - *A new trust edge.* Anyone who can read the cluster Secret that holds the key, or run code
-  in the bridge's pod or as the egress proxy, inherits that. Before this change the cluster
+  in the bridge's pod, or connect from the address `from=` names (in a cluster: any pod on
+  the bridge's node, and the node itself, D32), inherits that. Before this change the cluster
   could not reach the agent host; after it, a compromise of the cluster reaches the host
   where the GitHub token, the ssh keys and the secrets client live. This is what "Jarvis can
   do everything the coding session can" costs. It is **accepted by default; Mark is asked
