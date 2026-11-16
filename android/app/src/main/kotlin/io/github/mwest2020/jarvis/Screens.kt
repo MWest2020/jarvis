@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -156,8 +157,13 @@ fun TalkScreen(
         ) {
             val error = state.error
             when {
-                error != null -> Text(error, color = ErrorText, fontSize = 20.sp, lineHeight = 26.sp)
-                state.summary.isNotEmpty() -> Text(state.summary, fontSize = 20.sp, lineHeight = 26.sp)
+                // Selectable, so a reply (a link, a command) can be copied.
+                error != null -> SelectionContainer {
+                    Text(error, color = ErrorText, fontSize = 20.sp, lineHeight = 26.sp)
+                }
+                state.summary.isNotEmpty() -> SelectionContainer {
+                    Text(state.summary, fontSize = 20.sp, lineHeight = 26.sp)
+                }
                 else -> Text(
                     "Hold the button while you talk, or tap to start and tap again to send.",
                     color = Color(0xFF9FB0C0),
