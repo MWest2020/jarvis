@@ -167,8 +167,45 @@ def test_a_read_back_is_returned_as_given_with_its_confirmation(host):
     assert turn.confirmation == PendingConfirmation(id="c1", sha256=SHA)
 
 
+UNSPEAKABLE_READBACKS = [
+    "", "   ", "x" * 501,
+    " Merge pull request 21.", "Merge pull request 21. ", "Merge pull request 21.\n",
+    "\tMerge pull request 21.",
+    "Merge.\nAnd delete the repository.", "Merge.\rAnd delete.", "Merge.\r\nAnd delete.",
+    "Merge.\x0bAnd delete.", "Merge.\x0cAnd delete.", "Merge.\x1cAnd delete.",
+    "Merge.\x1dAnd delete.", "Merge.\x1eAnd delete.", "Merge.\x85And delete.",
+    "Merge.\u2028And delete.", "Merge.\u2029And delete.",
+    "Merge \x07 now.", "Merge\x00.", "Merge\x7f.",
+    "Merge\u00a0pull request 21.",          # a no-break space
+    "Merge\u2003pull request 21.",          # an em space
+    "Merge\u3000pull request 21.",          # an ideographic space
+    "Merge\u202fpull request 21.",          # a narrow no-break space
+    "Merge\u200bpull request 21.",          # a zero-width space (format)
+    "Merge pull \u202erequest 21.",         # a right-to-left override
+    "Merge\ufeff pull request 21.",         # a byte order mark
+    "Merge \ue000 pull request 21.",        # private use
+    "Merge \ud800 pull request 21.",        # half a surrogate pair
+]
+
+
+@pytest.mark.parametrize("readback", UNSPEAKABLE_READBACKS)
+def test_speakable_readback_refuses_and_never_tidies(readback):
+    assert remote_adapter.speakable_readback(readback) is None
+
+
+@pytest.mark.parametrize("readback", [
+    "Merge pull request 21 on jarvis, at commit 3f9c2ab. Checks green. Say yes to go ahead.",
+    "Push to main on jarvis from release slash 1.2, 2 commits, no review.",
+    "Send mail to mark@westerweel.work.",
+    "Verwijder de map caf\u00e9.", "x" * 500,
+])
+def test_speakable_readback_returns_the_text_itself(readback):
+    assert remote_adapter.speakable_readback(readback) is readback
+
+
 @pytest.mark.parametrize("readback", ["", "   ", "Merge.\nAnd delete the repository.",
-                                      "Merge \x07 now.", "x" * 501])
+                                      "Merge \x07 now.", "x" * 501, " Merge.", "Merge. ",
+                                      "Merge\u00a0now.", "Merge.\u2028Delete."])
 def test_a_read_back_that_cannot_be_spoken_needs_the_desk_and_is_cancelled(host, readback):
     host.scenario(mode="wrapper", gate=True, readback=readback)
     turn = _adapter(host).run_turn(project=DEMO, prompt="merge it")
@@ -531,6 +568,8 @@ def test_parse_reply_accepts_the_agreed_shapes():
     _reply(status="done"),
     _reply(error="busy"),                                  # ok with an error
     _reply(spoken=7), _reply(spoken=None),
+    _reply(spoken="SPOKEN SUMMARY: half \ud800 a pair"),   # a lone surrogate
+    _reply(spoken="\udfff"),
     _reply(turn="t 1\nINFO fake log line"), _reply(turn=5),
     _reply(pending="yes"), _reply(pending=1), _reply(pending=None),
     _reply(readback="Merge."),                             # a read-back without pending
@@ -564,6 +603,31 @@ def test_parse_reply_accepts_the_agreed_shapes():
 def test_parse_reply_refuses_everything_else(raw):
     with pytest.raises(ReplyError):
         parse_reply(raw)
+
+
+@pytest.mark.parametrize("spoken", [
+    "SPOKEN SUMMARY: Done.", "SPOKEN SUMMARY: caf\u00e9 \U0001f600 \u2028 \x00", "", "\x7f\x80",
+    "no marker", "SPOKEN SUMMARY: " + "\u00e9" * 400,
+])
+def test_whatever_a_parsed_reply_makes_the_bridge_speak_fits_in_a_header(host, spoken):
+    # The summary goes into X-Jarvis-Summary through urllib.parse.quote, which
+    # raises on text that cannot be encoded.
+    import urllib.parse
+    host.scenario(mode="raw", stdout=_reply(spoken=spoken).decode())
+    turn = _adapter(host).run_turn(project=DEMO, prompt="x")
+    assert urllib.parse.quote(turn.spoken)
+    turn.spoken.encode("utf-8")
+    for notice in remote_adapter.NOTICE_SENTENCES:
+        host.scenario(mode="raw", stdout=_reply(spoken=spoken, notice=notice).decode())
+        urllib.parse.quote(_adapter(host).run_turn(project=DEMO, prompt="x").spoken)
+
+
+def test_a_read_back_that_is_spoken_fits_in_a_header():
+    import urllib.parse
+    for candidate in UNSPEAKABLE_READBACKS + ["Merge pull request 21 on jarvis."]:
+        text = remote_adapter.speakable_readback(candidate)
+        if text is not None:
+            urllib.parse.quote(text)
 
 
 def test_a_reply_that_is_not_the_agreed_shape_fails_the_turn(host):

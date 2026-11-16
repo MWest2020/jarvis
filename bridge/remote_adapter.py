@@ -240,6 +240,10 @@ def parse_reply(raw: bytes) -> dict:
         raise ReplyError("turn is not a turn id")
     if not isinstance(spoken, str):
         raise ReplyError("spoken is not text")
+    if any(unicodedata.category(ch) == "Cs" for ch in spoken):
+        # JSON can carry half a surrogate pair ("\\ud800"). It is not text: it cannot
+        # be encoded, so the header with the summary could not be written.
+        raise ReplyError("spoken holds a lone surrogate")
     if type(pending) is not bool:
         raise ReplyError("pending is not true or false")
     if notice is not None and (not isinstance(notice, str) or notice not in NOTICE_SENTENCES):
@@ -288,13 +292,25 @@ def parse_reply(raw: bytes) -> dict:
 
 
 def speakable_readback(readback: str) -> str | None:
-    """The read-back exactly as given, or None when it cannot be spoken at all."""
-    text = readback.strip()
-    if not text or len(text) > MAX_READBACK_CHARS:
+    """The read-back exactly as given, or None when it cannot be spoken as given.
+
+    Nothing is taken out or tidied: a sentence that would have to be changed to be
+    spoken is not spoken. So refused, not stripped: an empty or over-long text,
+    white space at either end, anything Python would split into lines, every
+    control, format, surrogate, private-use or unassigned character (category C),
+    and every separator (category Z) but the plain space: no line or paragraph
+    separator, no no-break or other odd space that looks like one word break and
+    is another.
+    """
+    if not readback or len(readback) > MAX_READBACK_CHARS:
         return None
-    if any(unicodedata.category(ch)[0] == "C" for ch in text):   # newlines, controls
+    if readback != readback.strip() or len(readback.splitlines()) != 1:
         return None
-    return text
+    for ch in readback:
+        category = unicodedata.category(ch)
+        if category[0] == "C" or (category[0] == "Z" and ch != " "):
+            return None
+    return readback
 
 
 # With an empty log, two things ssh says on its real stderr before it has a log
