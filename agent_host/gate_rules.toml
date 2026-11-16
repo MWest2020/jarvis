@@ -215,14 +215,48 @@ programs = ["sudo", "su", "pkexec", "doas"]
 
 # --- the shell ----------------------------------------------------------------
 [shell]
-# Unwrapped: the string after -c is judged by the same rules.
-shells = ["bash", "sh", "zsh", "dash", "ksh"]
-# Programs that run their arguments in a way the gate does not follow. A
-# gated command anywhere behind one of them is refused with "run it alone".
+# Unwrapped: the string after -c is judged by the same rules. A shell
+# without -c and without a script file reads its commands from stdin: gated.
+shells = ["bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"]
+# Programs that run their arguments, or other commands, in a way the gate
+# does not follow. A call of one of them is refused with "run it alone".
 indirect = [
-    "eval", "xargs", "source", ".", "find", "watch", "parallel", "flock",
-    "script", "strace", "ltrace", "fish",
+    "eval", "xargs", "source", ".", "trap", "coproc", "watch", "parallel",
+    "flock", "script", "strace", "ltrace", "chroot", "nsenter", "unshare",
+    "systemd-run", "busybox", "runuser", "setpriv", "chrt", "taskset",
 ]
+# A command that is not one plain command (a pipe, a separator, a
+# substitution, a redirection to a file) runs only when every piece of it
+# is one of these: programs that read and print and never run another
+# program. Their arguments are data. Everything else is refused with "run
+# it alone": what the gate cannot fully understand does not get through.
+# `echo` and `printf` are not on it: they are how text is fed to something.
+harmless = [
+    "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "sort",
+    "uniq", "jq", "cut", "tr", "column", "nl", "tac", "rev", "diff", "cmp",
+    "stat", "file", "du", "df", "basename", "dirname", "realpath", "readlink",
+    "pwd", "cd", "true", "false", "test", "[", "date",
+    "which", "type", "id", "whoami", "uname", "sleep", "uptime", "free", "ps",
+    "nproc", "hostname",
+]
+# `git <subcommand>` counts as harmless for these subcommands, with nothing
+# between the two words.
+harmless_git = ["status", "log", "diff", "show", "rev-parse", "ls-files", "describe", "blame"]
+
+# --- interpreters with inline code ---------------------------------------------
+# `python -c`, `node -e`, `perl -e`, a program read from stdin: code the gate
+# cannot read. Gated, and never nameable: it needs the desk. A script file
+# is not followed (D40) and runs.
+[interpreters]
+# Program names; `*` matches the rest of a name (python3.12).
+programs = [
+    "python*", "pypy*", "node", "nodejs", "deno", "bun", "perl", "ruby", "php",
+    "osascript", "lua*", "Rscript", "tclsh", "groovy",
+]
+# A short option group holding one of these letters, anywhere in the call.
+inline_letters = ["c", "e", "E", "p", "r"]
+# A word or long option that says "the code follows", anywhere in the call.
+inline_words = ["--eval", "--print", "--execute", "eval", "-"]
 
 # --- rm -r outside the worktree and the temp directory: class `delete` ------
 [rm]
@@ -235,6 +269,23 @@ words = [
     "send", "reply", "forward", "delete", "trash", "publish", "share", "post",
     "message", "comment", "upload", "invite",
 ]
+
+# --- built-in tools --------------------------------------------------------------
+# A tool that is neither `Bash`, a connector tool (`mcp__*`, above), nor on
+# one of these two lists is gated: a tool nobody decided about does not run
+# by voice. Such a call has no sentence, so it needs the desk.
+[tools]
+# Read, search, plan, and start or stop the agent's own work. A subagent's
+# tool calls come through the gate themselves.
+ungated = [
+    "Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch",
+    "TodoWrite", "TodoRead", "Task", "Agent", "TaskOutput", "TaskStop",
+    "BashOutput", "KillShell", "KillBash", "ExitPlanMode", "EnterPlanMode",
+    "AskUserQuestion", "ToolSearch", "ListMcpResourcesTool",
+    "ReadMcpResourceTool", "EnterWorktree", "ExitWorktree",
+]
+# Write a file: not gated, unless the file is one of Jarvis's own rules.
+write = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
 # --- the class `self`: Jarvis's own rules (D36). Always desk-only. -------------
 #
@@ -256,11 +307,11 @@ read_programs = [
     "cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg",
     "ls", "stat", "wc", "diff", "cmp", "file", "jq", "bat", "test", "[",
     "md5sum", "sha256sum", "readlink", "realpath", "basename", "dirname",
-    "echo", "cd", "pwd", "du", "tree",
+    "echo", "cd", "pwd", "du",
 ]
 # These act on a whole tree: naming a directory that holds a protected path
 # is a write to it.
-tree_programs = ["rm", "chmod", "chown", "chgrp"]
+tree_programs = ["rm", "mv", "find", "chmod", "chown", "chgrp"]
 
 # --- rules that name an action (D36's table) ---------------------------------
 #

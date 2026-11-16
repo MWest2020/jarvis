@@ -55,7 +55,10 @@ def main() -> int:
 
         reason = decision.REASON_ERROR
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        config = load_config(Path(os.environ["JARVIS_AGENT_CONFIG"]))
+        config_path = os.environ["JARVIS_AGENT_CONFIG"]
+        if not os.path.isabs(config_path):
+            raise ValueError("JARVIS_AGENT_CONFIG is not an absolute path")
+        config = load_config(Path(config_path))
         checkout = os.environ["JARVIS_TURN_CHECKOUT"]
         if not os.path.isabs(checkout):
             raise ValueError("JARVIS_TURN_CHECKOUT is not an absolute path")

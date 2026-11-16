@@ -7,6 +7,7 @@ hands tool calls to the gate, with the environment the wrapper built for
 the turn. The gate is the real decision code.
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -285,6 +286,37 @@ def test_a_turn_with_nothing_pending_carries_the_notice_of_its_refusal(host, mon
     assert reply["notice"] == notice
     assert reply["spoken"] == "SPOKEN SUMMARY: that was refused."
     assert not host.pending_file().exists()
+
+
+def test_of_several_refusals_the_most_important_notice_is_sent_not_the_last(host, monkeypatch):
+    host.agent(monkeypatch, ["terraform apply", MERGE + " && echo done", "cd x && make"],
+               reply="x\nSPOKEN SUMMARY: refused.")
+    reply = host.ask()
+    assert reply["notice"] == "needs_desk"                  # before run_alone, by the fixed order
+    codes = [a.get("code") for a in host.records()[-1]["gated_actions"]]
+    assert codes == ["needs_desk", "run_alone", None]
+
+
+def test_a_call_the_gate_could_not_read_leaves_no_notice(host, monkeypatch):
+    host.agent(monkeypatch, ["cd x && make", "make"], reply="x\nSPOKEN SUMMARY: built.")
+    reply = host.ask()
+    assert reply["notice"] is None and reply["pending"] is False
+    assert reply["spoken"] == "SPOKEN SUMMARY: built."
+    assert [d.allow for d in host.popens[-1].decisions] == [False, True]
+
+
+def test_the_wrapper_and_the_gate_judge_by_the_same_surroundings(host, monkeypatch):
+    """Neither takes a temp root or a home from an environment: the turn's
+    TMPDIR is not where `rm -r` is free, for the gate or for the wrapper."""
+    victim = host.tmp / "victim"
+    victim.mkdir()
+    (host.tmp / "environment").write_text(f"PATH=/usr/local/bin:/usr/bin:/bin\nTMPDIR={victim.parent}\n")
+    monkeypatch.setenv("TMPDIR", str(victim.parent))
+    monkeypatch.setattr(wrapper.decision, "build_context", wrapper.decision.build_context)
+    from agent_host import rules as rules_mod
+    rules = rules_mod.load_rules(host.config.rules_dir)
+    ctx = decision.build_context(host.config, host.checkout)
+    assert set(ctx.temp_roots) == {os.path.realpath(root) for root in rules.temp_roots}
 
 
 def test_a_read_back_that_cannot_be_built_leaves_nothing_pending(host, monkeypatch):

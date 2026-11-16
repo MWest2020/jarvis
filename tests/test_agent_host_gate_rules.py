@@ -274,7 +274,6 @@ NAMED_NEAR_MISSES = [
     "gh gist list",
     "gh gist view abc",
     "mailcap --help",
-    "man mail",
 ]
 
 
@@ -419,8 +418,11 @@ def test_a_plain_http_read_is_not_gated(ctx, command):
     ("git push origin +feature:main", ["merge", "force"]),
     ("git push -f origin main", ["merge", "force"]),
     ("git push origin :main", ["delete"]),
-    ("git -C /srv/repo push origin main", ["merge"]),
-    ("git -c http.proxy=x push origin main", ["merge"]),
+    # Another repository or configuration than the directory's: not resolved, gated.
+    ("git -C /no/such/directory push origin main", []),
+    ("git -c http.proxy=x push origin main", []),
+    ("git --git-dir=/srv/x/.git push origin feature", []),
+    ("git --work-tree /srv/x push origin feature", []),
     ("git --no-pager push origin main", ["merge"]),
     ("/usr/bin/git push origin main", ["merge"]),
     # git's own options that the gate cannot place, with a push behind them.
@@ -428,6 +430,7 @@ def test_a_plain_http_read_is_not_gated(ctx, command):
     # An alias defined on the command line that is a push.
     ("git -c alias.p=push p origin main", []),
     ("git -c alias.p='push -f' p", []),
+    ("git -c alias.l=log l", []),
 ])
 def test_a_push_is_classified_by_git_option_grammar(ctx, command, classes):
     _assert(ctx, command, True, classes)
@@ -454,7 +457,6 @@ def test_a_push_is_classified_by_git_option_grammar(ctx, command, classes):
     "git fetch --prune --tags",
     "git branch -d feature",
     "git stash push -m wip",
-    "git -c alias.l=log l",
     "git -c user.name=x commit -m y",
 ])
 def test_a_push_of_a_feature_branch_and_other_git_work_is_not_gated(ctx, command):
@@ -589,13 +591,22 @@ def test_rm_r_outside_the_worktree_is_class_delete(tmp_path):
         "rm -rf ~/projects",
         "rm -rf $TARGET",
         "rm -rf -- -weird ../other",
+        # What the shell would still expand, and every `..`, is not placed at all.
+        "rm -rf sub/*",
+        "rm -rf sub/../sub",
+        "rm -rf {sub,/etc}",
+        "rm -rf sub/{a,b}",
+        "rm -rf ~root/x",
+        "rm -rf ~other",
+        "rm --r ../x",
+        "rm --re ../x",
+        "rm --rec -f ../x",
     ):
         _assert(ctx, command, True, ["delete"])
 
     for command in (
         "rm -rf build",
         "rm -r ./sub",
-        "rm -rf sub/*",
         f"rm -rf {work / 'sub'}",
         f"rm -rf {scratch / 'x'}",
         "rm notes.txt",
@@ -637,7 +648,6 @@ def test_rm_r_with_no_worktree_around_it_is_gated(tmp_path):
     ("env sudo systemctl restart web", ["root"]),
     ("FOO=1 sudo systemctl restart web", ["root"]),
     ("nice -n 5 sudo systemctl restart web", ["root"]),
-    ("watchdog sudo systemctl restart web", ["root"]),
     # The inner command keeps its own classes.
     ("sudo kubectl delete pod web", ["root", "delete"]),
     ("sudo -u deploy helm upgrade web ./chart", ["root", "deploy"]),
@@ -676,9 +686,9 @@ def test_a_connector_tool_whose_name_says_it_sends_is_gated(ctx, tool):
 
 @pytest.mark.parametrize("tool", [
     "mcp__x__get_thing", "mcp__mail__search_threads", "mcp__docs__read", "mcp__x__list_labels",
-    "send_thing", "Read", "Grep", "Glob", "WebFetch", "Task",
+    "Read", "Grep", "Glob", "WebFetch", "Task",
 ])
-def test_a_connector_tool_that_reads_and_a_tool_that_is_no_connector_are_not_gated(ctx, tool):
+def test_a_connector_tool_that_reads_and_a_listed_built_in_tool_are_not_gated(ctx, tool):
     assert not classify.classify(tool, {"anything": 1}, ctx).gated
 
 

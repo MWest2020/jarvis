@@ -81,6 +81,25 @@ NOTICE_CODES = frozenset({
 })
 
 
+# One reply carries one notice. When more than one applies they must not
+# hide each other by accident: the most important one is sent, by this
+# fixed order. First what means "something is wrong with this checkout or
+# this call, go to the desk", last what is only good to know.
+NOTICE_ORDER: tuple[str, ...] = (
+    "settings_changed", "target_changed", "needs_desk", "run_alone", "out_of_budget",
+    "new_session",
+)
+assert set(NOTICE_ORDER) == NOTICE_CODES
+
+
+def most_important_notice(notices) -> str | None:
+    present = {notice for notice in notices if notice is not None}
+    for notice in NOTICE_ORDER:
+        if notice in present:
+            return notice
+    return None
+
+
 def load_runtime_config() -> AgentHostConfig:
     """The wrapper's own configuration file. JARVIS_AGENT_CONFIG overrides the
     installed default path - a test seam only; the child's environment (what
@@ -88,7 +107,10 @@ def load_runtime_config() -> AgentHostConfig:
     it is (agent_host.identity).
     """
     path = Path(os.environ.get("JARVIS_AGENT_CONFIG", str(DEFAULT_CONFIG_PATH)))
-    return load_config(path)
+    # Made absolute here: the gate is told this path through the turn's
+    # environment and runs in another directory (the checkout, a worktree),
+    # where a relative path would name another file, one the agent can write.
+    return load_config(Path(os.path.abspath(path)))
 
 
 def _reply(
@@ -243,9 +265,7 @@ def _derive(call: dict, config: AgentHostConfig, env: dict[str, str]):
     try:
         if not pending.valid_call(call):
             return None, None
-        ctx = decision.build_context(
-            config, Path(call["cwd"]), git=classify.git_runner(env), environ=env,
-        )
+        ctx = decision.build_context(config, Path(call["cwd"]), git=classify.git_runner(env))
         return naming.derive(call["tool"], call["input"], ctx, config), ctx
     except Exception:  # noqa: BLE001 - whatever went wrong: no read-back, nothing pending
         return None, None
@@ -387,11 +407,10 @@ def _after_turn(
     record, the pending reply fields or None, the notice or None)."""
     state = pending.read_turn_state(config.gate_dir, turn_id)
     actions = [dict(event) for event in state["events"] if isinstance(event, dict)]
-    notice = None
-    for event in reversed(actions):
-        if event.get("code") in NOTICE_CODES:
-            notice = event["code"]
-            break
+    # More than one refusal in a turn: the most important notice, by the
+    # fixed order, never just the last one.
+    notice = most_important_notice(
+        event.get("code") for event in actions if event.get("code") in NOTICE_CODES)
 
     if confirmed is not None:
         if state["grant_used"] is True:
@@ -509,6 +528,5 @@ def _run_turn(
         # While a confirmation is pending, the agent's own line is not sent.
         return _reply(status="ok", turn=turn_id, spoken="", pending=True, **pending_fields)
     spoken = last_marker_line(reply_text)
-    if notice is None and discarded:
-        notice = "new_session"
+    notice = most_important_notice([notice, "new_session" if discarded else None])
     return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice)

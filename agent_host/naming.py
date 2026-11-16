@@ -242,6 +242,8 @@ def _name_gh(subpath, args, rest, ctx, config) -> Named | Missing:
             if not rest:
                 raise NotNameable("no number")
             number = targets.number(rest[0])
+        if len(classify.explicit_repos(args, ctx.rules.gh.repo_options)) > 1:
+            raise NotNameable("--repo given more than once")
         value = classify.explicit_repo(args, ctx.rules.gh.repo_options)
         if value is None:
             return Missing((PART_REPO,), ("--repo", "-R"))
@@ -575,6 +577,11 @@ def _name_inner(argv: tuple[str, ...], ctx, config) -> Named | Missing:
 def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | None:
     command = verdict.command
     if command is None or not command.argv:
+        return None
+    if command.env:
+        # A variable set in front of the command (`GH_HOST=...`,
+        # `KUBECONFIG=...`, `GIT_SSH_COMMAND=...`) can change what every
+        # target in the sentence means. Such a call is not read back.
         return None
     roots = [name for kind, name in command.wrappers if kind == "root"]
     hosts = [name for kind, name in command.wrappers if kind == "ssh"]

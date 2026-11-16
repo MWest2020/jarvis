@@ -23,10 +23,13 @@ tested without a process.
     only options from that list, the same `cwd`), which then becomes
     pending. Anything else gated after such a refusal needs the desk;
   - not nameable, or the class `self`: it needs the desk. Never pending.
-  - a compound command: "run it alone". Never pending.
+  - a command the gate cannot read as one command: with something gated
+    found in it, "run it alone", and the turn ends; with nothing gated found
+    in it, "run each part as its own call", and the agent may go on. Never
+    pending.
 - The checkout settings rule comes before all of that: while a
   `.claude/settings*.json` of the turn's checkout or of the call's own
-  worktree carries `env`, `hooks` or `disableAllHooks`, every gated call is
+  worktree carries anything but the few harmless keys, every gated call is
   denied, **with or without a matching grant**.
 - `confirm = "off"`, or a call whose classes are all in `confirm_skip`:
   the call is let through and noted as not confirmed. The class `self`
@@ -63,6 +66,14 @@ REASON_RUN_ALONE = (
     " read back as one command, without a separator, pipe, substitution, redirection"
     " or newline anywhere in it (inside quotes too), and without eval, xargs or"
     " source." + _STOP
+)
+REASON_NOT_UNDERSTOOD = (
+    "[split] The gate reads one plain command at a time, and it could not read this"
+    " call as one: a pipe, a separator, a substitution, a here-document, a redirection"
+    " to a file, a wrapper it does not follow, or a program that runs other commands."
+    " What it cannot fully understand it does not let through. Run each part as its own"
+    " call, and put text that holds such characters (a commit message, a body) in a"
+    " file and pass the file. Nothing was run."
 )
 REASON_SELF = (
     "[needs_desk] That one needs the desk: it writes to Jarvis's own rules or"
@@ -127,7 +138,7 @@ def user_home() -> Path:
 
 def build_context(config: AgentHostConfig, cwd: Path, *, home: Path | None = None,
                   lib_dir: Path | None = None, git: classify.GitRunner = classify.run_git,
-                  environ=None) -> classify.Context:
+                  ) -> classify.Context:
     """The classification context of one call. The gate and the wrapper both
     build it here, so that they cannot judge by different surroundings."""
     rules = rules_mod.load_rules(config.rules_dir)
@@ -135,9 +146,6 @@ def build_context(config: AgentHostConfig, cwd: Path, *, home: Path | None = Non
         config, rules, cwd=cwd,
         home=home if home is not None else user_home(),
         lib_dir=lib_dir if lib_dir is not None else Path(__file__).resolve().parent,
-        # The turn's TMPDIR: the gate has it in its own environment, the
-        # wrapper passes the environment it built for the turn.
-        extra_temp_roots=((os.environ if environ is None else environ).get("TMPDIR", ""),),
         git=git,
     )
 
@@ -194,6 +202,8 @@ def decide(
         state.note("not_confirmed", code=None, verdict=verdict)
         state.save()
         return Decision(True, "", verdict)
+    if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
+        return deny(REASON_NOT_UNDERSTOOD, None)
     if verdict.run_alone:
         return deny(REASON_RUN_ALONE, "run_alone")
 

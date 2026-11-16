@@ -9,15 +9,19 @@ are gated is `agent_host.classify`'s business.
   `bash -c` and `sh -c` are unwrapped, at any depth: the result is the
   innermost command plus the wrappers around it.
 - *More than one command, or one the gate cannot follow.* If the string
-  holds `;`, `&`, `|`, `$(`, `<(`, a backtick or a newline **anywhere,
-  inside quotes included**, or starts with a subshell, a group or a
-  redirection, or uses `eval`, `xargs`, `source` or another program that
-  runs its arguments, it is not read as one command. It is cut at every
-  separator, parenthesis and redirection, quotes are ignored, and every
-  place where a command could start becomes a *candidate*. If the classifier finds one candidate gated, the whole call
-  is refused with "run it alone" and never becomes pending: a read-back of
-  one sentence cannot cover two commands (D36). If no candidate is gated,
-  the call is not the gate's business and runs (`ls | wc -l`).
+  holds `;`, `&`, `|`, `$(`, `<(`, `>(`, a backtick, a newline, a
+  here-document or here-string (`<<`), or ANSI-C or locale quoting (`$'`,
+  `$"`) **anywhere, inside quotes included**, or starts with a subshell, a
+  group or a redirection, or uses `eval`, `xargs`, `source`, `trap`,
+  `coproc` or another program that runs its arguments, or a wrapper with
+  an option this module does not know, it is not read as one command. It
+  is cut at every separator, parenthesis and redirection, quotes are
+  ignored, and the pieces go to the classifier, which lets such a call
+  through only when **every** piece is a known-harmless read program
+  (`ls | wc -l`). Everything else is refused with "run it alone": when the
+  gate cannot fully understand a command, it does not let it through. The
+  places where a command could start are *candidates*; a gated candidate
+  only decides what the refusal says.
 
 This is rules over text, built for mistakes and for an agent that follows
 its rules (D40). A variable that holds a program name, an alias, a script or
@@ -31,34 +35,66 @@ import shlex
 from dataclasses import dataclass
 
 # D36's list: `;`, `&&`, `||`, `|`, `&`, `$(`, `<(`, a backtick, a newline.
-# `&` covers `&&` and `|` covers `||`.
-_SEPARATOR_RE = re.compile(r"[\n\r;&|`]|\$\(|<\(")
-# Where a candidate command can start in a string that is not one command:
-# after a separator, and also after a parenthesis or a redirection.
+# `&` covers `&&` and `|` covers `||`. Added on review: `>(`, a
+# here-document or here-string (`<<`), and ANSI-C and locale quoting
+# (`$'...'`, `$"..."`), which shlex does not read the way bash does.
+_SEPARATOR_RE = re.compile(r"[\n\r;&|`]|\$\(|<\(|>\(|<<|\$'|\$\"")
+# Where a piece ends in a string that is not one command: at a separator,
+# and also at a parenthesis or a redirection.
 _CUT_RE = re.compile(r"[\n\r;&|()<>`]")
 # A first word like `(gh`, `{`, `>out` or `2>out`: a subshell, a group or a
 # redirection in front of the program. Not one command the gate can follow.
 _NOT_A_PROGRAM_RE = re.compile(r"[({<>]|\d+[<>]")
 _QUOTE_RE = re.compile(r"[\"'{}$]")
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# Redirections that send nothing anywhere: `2>&1`, `>/dev/null`,
+# `2>/dev/null`, `&>/dev/null`, `</dev/null`. They are taken out before the
+# command is read, so `pytest -q 2>&1` is still one command.
+_BENIGN_REDIRECT_RE = re.compile(
+    r"(?<![\w$])(?:\d?>&\d|&>>?\s*/dev/null|\d?>>?\s*/dev/null|<\s*/dev/null)(?=\s|$)")
+_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+_NICE_SHORT_RE = re.compile(r"-\d+")
 
 _MAX_DEPTH = 8
 
-# Prefixes that run the rest of the line unchanged.
-_PLAIN_PREFIXES = frozenset({"command", "exec", "nohup", "time", "builtin", "stdbuf", "setsid"})
 # Shell keywords a command can stand behind (`if gh pr merge 1; then ...`).
 _KEYWORDS = frozenset({"if", "then", "else", "elif", "do", "while", "until"})
-_TIMEOUT_VALUE_OPTIONS = frozenset({"-k", "-s", "--kill-after", "--signal"})
-_ENV_FLAGS = frozenset({"-i", "-", "--ignore-environment", "-0", "--null"})
-_ENV_VALUE_OPTIONS = frozenset({"-u", "--unset", "-C", "--chdir"})
+
+# Prefixes that run the rest of the line unchanged, with the options each
+# takes: (flags, options with a value, short options whose value may be
+# attached). An option that is not listed makes the command one the gate
+# cannot follow: where the real command starts would be a guess.
+_PREFIXES: dict[str, tuple[frozenset[str], frozenset[str], tuple[str, ...]]] = {
+    "command": (frozenset({"-p"}), frozenset(), ()),
+    "builtin": (frozenset(), frozenset(), ()),
+    "nohup": (frozenset(), frozenset(), ()),
+    "exec": (frozenset({"-c", "-l"}), frozenset({"-a"}), ()),
+    "setsid": (frozenset({"-c", "-f", "-w", "--ctty", "--fork", "--wait"}), frozenset(), ()),
+    "time": (frozenset({"-p", "-a", "-v", "--portability", "--append", "--verbose"}),
+             frozenset({"-f", "-o", "--format", "--output"}), ()),
+    "stdbuf": (frozenset(), frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+               ("-i", "-o", "-e")),
+    "nice": (frozenset(), frozenset({"-n", "--adjustment"}), ("-n",)),
+    "ionice": (frozenset({"-t", "--ignore"}),
+               frozenset({"-c", "-n", "--class", "--classdata"}), ("-c", "-n")),
+    "timeout": (frozenset({"--preserve-status", "--foreground", "-v", "--verbose"}),
+                frozenset({"-k", "-s", "--kill-after", "--signal"}), ()),
+    "env": (frozenset({"-i", "-", "--ignore-environment", "-0", "--null", "-v", "--debug"}),
+            frozenset({"-u", "--unset", "-C", "--chdir"}), ()),
+}
 
 _SUDO_VALUE_OPTIONS = frozenset({
     "-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t",
     "--user", "--group", "--host", "--prompt", "--close-from", "--chdir",
     "--chroot", "--command-timeout", "--other-user", "--role", "--type",
 })
+_SUDO_FLAGS = frozenset({
+    "-A", "-b", "-E", "-H", "-i", "-k", "-K", "-n", "-P", "-S", "-s",
+    "--askpass", "--background", "--preserve-env", "--set-home", "--login",
+    "--reset-timestamp", "--non-interactive", "--preserve-groups", "--stdin", "--shell",
+})
 _SSH_VALUE_OPTIONS = frozenset(
-    "-" + letter for letter in "BbcDEeFIiJLlmOopQRSWw"
+    "-" + letter for letter in "BbcDEeFIiJLlmOoPpQRSWw"
 )
 _SHELL_VALUE_OPTIONS = frozenset({"-o", "-O", "+o", "+O", "--rcfile", "--init-file"})
 
@@ -74,6 +110,9 @@ class Command:
     argv: tuple[str, ...]
     # Outermost first: ("root", "sudo"), ("ssh", "<host>"), ("shell", "bash").
     wrappers: tuple[tuple[str, str], ...] = ()
+    # The names of the variables set in front of it (`GH_HOST=x gh ...`,
+    # `env CURL_HOME=/tmp curl ...`).
+    env: tuple[str, ...] = ()
 
     @property
     def program(self) -> str:
@@ -84,16 +123,63 @@ class Command:
 class Analysis:
     # False: `commands` is exactly the one command of the call (or empty for
     # an empty string). True: the call is not one command the gate can
-    # follow, and `commands` are the candidates.
+    # follow; `commands` are the candidates and `segments` its pieces.
     compound: bool
     commands: tuple[Command, ...]
     # A program of the class `root` stands somewhere in the call, in any
     # position (D36: "sudo, su, pkexec, doas, in any position").
     root_word: bool
+    # The words of every piece between separators, quotes ignored. The
+    # classifier lets a compound call through only when every piece is a
+    # known-harmless read program.
+    segments: tuple[tuple[str, ...], ...] = ()
+    # One command, with a separator character inside a quoted argument
+    # (`grep -E 'a|b' f`, `git commit -m 'a & b'`). It runs like any other
+    # single command when no rule gates it; a gated one is refused with
+    # "run it alone", because D36 wants no such character anywhere in a
+    # call that is read back.
+    quoted_separator: bool = False
+
+
+def without_benign_redirects(command: str) -> str:
+    return _BENIGN_REDIRECT_RE.sub(" ", command)
 
 
 def has_separator(command: str) -> bool:
     return bool(_SEPARATOR_RE.search(command))
+
+
+# With one of these in the text a quoted argument can still run a command
+# or end where shlex does not think it ends: never "only quoted".
+_SUBSTITUTIONS = ("`", "$(", "<(", ">(", "<<", "$'", '$"', "\n", "\r")
+
+
+def separators_only_inside_quotes(command: str) -> bool:
+    """Every `;`, `&` and `|` of the command stands inside quotes (or behind
+    a backslash), and nothing in it substitutes a command. Then the command
+    is one command with separator characters in its arguments."""
+    if any(mark in command for mark in _SUBSTITUTIONS):
+        return False
+    state = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if state == "'":
+            if char == "'":
+                state = ""
+        elif state == '"':
+            if char == "\\":
+                index += 1
+            elif char == '"':
+                state = ""
+        elif char == "\\":
+            index += 1
+        elif char in "'\"":
+            state = char
+        elif char in ";&|":
+            return False
+        index += 1
+    return state == ""
 
 
 def lenient_segments(command: str) -> list[list[str]]:
@@ -106,50 +192,84 @@ def lenient_segments(command: str) -> list[list[str]]:
     return segments
 
 
-def strip_prefixes(argv: list[str]) -> tuple[list[str], bool]:
-    """Drop assignments and transparent prefixes from the front.
+def _skip_options(args: list[str], flags, valued, attached) -> tuple[list[str], bool]:
+    """What follows the options of a prefix; False when one is not known."""
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word == "--":
+            return args[index + 1:], True
+        if not word.startswith("-") or word == "-" and "-" not in flags:
+            break
+        name, has_value, _ = word.partition("=")
+        if word in flags:
+            index += 1
+        elif word in valued:
+            if index + 1 >= len(args):
+                return args[index:], False
+            index += 2
+        elif has_value and name.startswith("--") and name in valued:
+            index += 1
+        elif any(word.startswith(short) and len(word) > len(short) for short in attached):
+            index += 1
+        else:
+            return args[index:], False
+    return args[index:], True
 
-    The second value is False when a prefix has an option this function does
-    not know: where the command then starts is a guess, and the caller must
-    treat the call as one it cannot follow.
-    """
+
+def _strip(argv: list[str]) -> tuple[list[str], bool, list[str]]:
     words = list(argv)
+    names: list[str] = []
     while words:
         word = words[0]
         name = program_name(word)
-        if _ASSIGNMENT_RE.match(word) or word == "!" or word in _KEYWORDS:
+        if _ASSIGNMENT_RE.match(word):
+            names.append(word.split("=", 1)[0])
             words = words[1:]
-        elif name in _PLAIN_PREFIXES:
+        elif word == "!" or word in _KEYWORDS:
             words = words[1:]
-            while words and words[0].startswith("-") and words[0] != "-":
-                words = words[1:]
-        elif name == "nice":
-            words = words[1:]
-            if words and words[0] in ("-n", "--adjustment"):
-                words = words[2:]
-            elif words and words[0].startswith("-"):
-                words = words[1:]
-        elif name == "timeout":
-            words = words[1:]
-            while words and words[0].startswith("-"):
-                words = words[2:] if words[0] in _TIMEOUT_VALUE_OPTIONS else words[1:]
-            words = words[1:]  # the duration
-        elif name == "env":
-            words = words[1:]
-            while words:
-                if _ASSIGNMENT_RE.match(words[0]) or words[0] in _ENV_FLAGS:
-                    words = words[1:]
-                elif words[0] in _ENV_VALUE_OPTIONS:
-                    words = words[2:]
-                elif words[0].startswith(("--unset=", "--chdir=")):
-                    words = words[1:]
-                elif words[0].startswith("-"):
-                    return words, False
-                else:
+        elif name in _PREFIXES:
+            flags, valued, attached = _PREFIXES[name]
+            rest = words[1:]
+            if name == "command" and rest and rest[0] in ("-v", "-V"):
+                return [], True, names  # a question about a command, not a command
+            if name == "nice" and rest and _NICE_SHORT_RE.fullmatch(rest[0]):
+                rest = rest[1:]
+            if name == "env":
+                # Options and assignments, in any order.
+                while True:
+                    rest, ok = _skip_options(rest, flags, valued, attached)
+                    if not ok:
+                        return words, False, names
+                    if rest and _ASSIGNMENT_RE.match(rest[0]):
+                        names.append(rest[0].split("=", 1)[0])
+                        rest = rest[1:]
+                        continue
                     break
+            else:
+                rest, ok = _skip_options(rest, flags, valued, attached)
+                if not ok:
+                    return words, False, names
+            if name == "timeout":
+                if not rest or not _DURATION_RE.fullmatch(rest[0]):
+                    return words, False, names
+                rest = rest[1:]
+            words = rest
         else:
             break
-    return words, True
+    return words, True, names
+
+
+def strip_prefixes(argv: list[str]) -> tuple[list[str], bool]:
+    """Drop assignments and transparent prefixes (`env`, `nohup`, `time`,
+    `timeout 30`, `nice -n 5` ...) from the front.
+
+    The second value is False when a prefix has an option this function does
+    not know (`env -S`, `exec --weird`): where the command then starts is a
+    guess, and the caller must treat the call as one it cannot follow.
+    """
+    words, ok, _ = _strip(argv)
+    return words, ok
 
 
 def _has_root_word(words, root_programs: frozenset[str]) -> bool:
@@ -164,23 +284,23 @@ def _candidates(
 
     In each piece between separators that is the first word, after
     prefixes. When that word is a program that runs its own arguments (a
-    shell, `ssh`, `sudo`, `xargs`, `find` ...), or the prefixes could not be
-    read, every later word that is a program some rule knows starts a
-    candidate too: `bash -c 'gh pr merge 1; gh repo delete x'` is cut at the
+    shell, `ssh`, `sudo`, `xargs` ...), or the prefixes could not be read,
+    every later word that is a program some rule knows starts a candidate
+    too: `bash -c 'gh pr merge 1; gh repo delete x'` is cut at the
     semicolon, and the merge is found behind `bash -c`. With `everywhere`
     that holds for every piece: the caller could not tell where the program
     of the call is at all (`>out gh repo delete x`).
     """
     out: list[Command] = []
     for words in lenient_segments(command):
-        stripped, ok = strip_prefixes(words)
+        stripped, ok, names = _strip(words)
         if not stripped:
             continue
-        out.append(Command(tuple(stripped), wrappers))
+        out.append(Command(tuple(stripped), wrappers, tuple(names)))
         if everywhere or not ok or program_name(stripped[0]) in follow_all:
             for index in range(1, len(stripped)):
                 if program_name(stripped[index]) in known_programs:
-                    out.append(Command(tuple(stripped[index:]), wrappers))
+                    out.append(Command(tuple(stripped[index:]), wrappers, tuple(names)))
     return tuple(out)
 
 
@@ -193,38 +313,54 @@ def analyse(
 ) -> Analysis:
     """Read one `Bash` command string. See the module docstring."""
     follow_all = shells | indirect | root_programs | {"ssh", "env"}
+    command = without_benign_redirects(command)
     root_word = False
 
     def compound(text: str, wrappers, everywhere: bool = False) -> Analysis:
         # Quotes mean nothing here, so a root program counts wherever the
         # word stands in the whole call.
-        all_words = [word for segment in lenient_segments(command) for word in segment]
+        segments = lenient_segments(command)
+        all_words = [word for segment in segments for word in segment]
         return Analysis(
             compound=True,
             commands=_candidates(text, wrappers, known_programs=known_programs,
                                  follow_all=follow_all, everywhere=everywhere),
             root_word=root_word or _has_root_word(all_words, root_programs),
+            segments=tuple(tuple(segment) for segment in segments),
         )
 
+    quoted_separator = False
+
     def one(text: str, wrappers: tuple[tuple[str, str], ...], depth: int) -> Analysis:
-        if depth > _MAX_DEPTH or has_separator(text):
+        nonlocal quoted_separator
+        if depth > _MAX_DEPTH:
             return compound(text, wrappers)
+        if has_separator(text):
+            if not separators_only_inside_quotes(text):
+                return compound(text, wrappers)
+            quoted_separator = True
         try:
             words = shlex.split(text, posix=True)
         except ValueError:  # an unbalanced quote: not one command we can read
             return compound(text, wrappers)
         nonlocal root_word
         root_word = root_word or _has_root_word(words, root_programs)
-        argv, ok = strip_prefixes(words)
+        argv, ok, names = _strip(words)
         if not ok:
             return compound(text, wrappers, everywhere=True)
         if not argv:
-            return Analysis(compound=False, commands=(), root_word=root_word)
+            return Analysis(compound=False, commands=(), root_word=root_word,
+                            quoted_separator=quoted_separator)
         if _NOT_A_PROGRAM_RE.match(argv[0]):
             return compound(text, wrappers, everywhere=True)
-        return unwrap(argv, text, wrappers, depth)
+        return unwrap(argv, text, wrappers, depth, tuple(names))
 
-    def unwrap(argv: list[str], text: str, wrappers, depth: int) -> Analysis:
+    def single(argv, wrappers, names, root=None) -> Analysis:
+        return Analysis(False, (Command(tuple(argv), wrappers, names),),
+                        root_word if root is None else root,
+                        quoted_separator=quoted_separator)
+
+    def unwrap(argv: list[str], text: str, wrappers, depth: int, names) -> Analysis:
         name = program_name(argv[0])
 
         if name in indirect:
@@ -235,20 +371,22 @@ def analyse(
             if name == "su":
                 inner = _option_value(argv[1:], ("-c", "--command"))
                 if inner is None:
-                    return Analysis(False, (Command(tuple(argv), wrappers),), True)
+                    return single(argv, wrappers, names, True)
                 return one(inner, wrappers, depth + 1)
-            rest = _after_options(argv[1:], _SUDO_VALUE_OPTIONS)
-            rest, ok = strip_prefixes(rest)
+            rest, ok = _skip_options(argv[1:], _SUDO_FLAGS, _SUDO_VALUE_OPTIONS, ())
             if not ok:
-                return compound(text, wrappers)
+                return compound(text, wrappers, everywhere=True)
+            rest, ok, more = _strip(rest)
+            if not ok:
+                return compound(text, wrappers, everywhere=True)
             if not rest:
-                return Analysis(False, (Command(tuple(argv), wrappers),), True)
-            return unwrap(rest, text, wrappers, depth + 1)
+                return single(argv, wrappers, names, True)
+            return unwrap(rest, text, wrappers, depth + 1, names + tuple(more))
 
         if name in shells:
             inner = _shell_c_string(argv[1:])
             if inner is None:
-                return Analysis(False, (Command(tuple(argv), wrappers),), root_word)
+                return single(argv, wrappers, names)
             return one(inner, wrappers + (("shell", name),), depth + 1)
 
         if name == "ssh":
@@ -256,12 +394,12 @@ def analyse(
             # ssh also takes options behind the host (`ssh host -t cmd`).
             remote = _after_options(rest[1:], _SSH_VALUE_OPTIONS)
             if not rest or not remote:  # no host, or no remote command
-                return Analysis(False, (Command(tuple(argv), wrappers),), root_word)
+                return single(argv, wrappers, names)
             # ssh joins its arguments with spaces and the remote shell reads
             # the result again: that string is what is judged.
             return one(" ".join(remote), wrappers + (("ssh", rest[0]),), depth + 1)
 
-        return Analysis(False, (Command(tuple(argv), wrappers),), root_word)
+        return single(argv, wrappers, names)
 
     return one(command, (), 0)
 

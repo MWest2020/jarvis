@@ -444,3 +444,73 @@ def test_every_denial_has_a_code_and_the_notice_codes_are_d33s():
     for reason in (decision.REASON_PENDING, decision.REASON_ONE_AT_A_TIME):
         assert reason.startswith("[pending]") and "end your turn" in reason
     assert decision.reason_missing(("add -n namespace",)).startswith("[missing]")
+
+
+# --- after the review of #43: what the gate cannot read, in the 1b2 flow ---------------------
+
+def test_a_call_the_gate_cannot_read_is_never_pending_and_ends_nothing(tmp_path):
+    turn = Turn(tmp_path)
+    result = turn.call("cd /srv/repo && pytest -q")
+    assert not result.allow and result.reason == decision.REASON_NOT_UNDERSTOOD
+    state = turn.state()
+    assert state["pending"] is None
+    assert state["events"][-1]["code"] is None            # no notice: the agent goes on
+    # ... and a nameable call after it can still become pending.
+    assert turn.call(MERGE).reason == decision.REASON_PENDING
+
+
+def test_a_grant_never_releases_a_call_the_gate_cannot_read(tmp_path):
+    asking = Turn(tmp_path)
+    command = "cd /srv/repo && pytest -q"
+    turn = Turn(tmp_path, asking.config, grant=asking.derive(command).hash,
+                grant_base=asking.derive(command).base_hash)
+    assert not turn.call(command).allow
+    assert turn.state()["grant_used"] is False
+
+
+def test_confirm_off_lets_it_through_like_everything_but_self(tmp_path):
+    turn = Turn(tmp_path, make_config(tmp_path, confirm="off"))
+    assert turn.call("cd /srv/repo && pytest -q").allow
+    assert turn.call("python3 -c 'print(1)'").allow
+    assert not turn.call("cd /tmp && echo x >> ~/.bashrc").allow
+    turn = Turn(tmp_path, make_config(tmp_path, confirm_skip=["merge"]))
+    assert not turn.call("cd /srv/repo && pytest -q").allow
+
+
+@pytest.mark.parametrize("command", [
+    f"GH_HOST=evil.example gh pr merge 21 --repo {M} --match-head-commit {SHA}",
+    f"env GH_REPO=them/x gh pr merge 21 --repo {M} --match-head-commit {SHA}",
+    "KUBECONFIG=/tmp/other kubectl delete pod web -n shop --context homelab",
+    "env KUBECONFIG=/tmp/other kubectl delete pod web -n shop --context homelab",
+    "HELM_KUBECONTEXT=x helm uninstall web -n shop --kube-context homelab",
+    f"FOO=1 gh repo delete {M}",
+])
+def test_a_variable_set_in_front_of_a_call_makes_it_not_nameable(tmp_path, command):
+    """The sentence would name targets that the variable can point somewhere
+    else: another forge host, another cluster behind the same context name."""
+    turn = Turn(tmp_path)
+    derived = turn.derive(command)
+    assert derived.verdict.gated and derived.outcome is None
+    assert turn.call(command).reason == decision.REASON_DESK
+    assert turn.state()["pending"] is None
+
+
+def test_gated_calls_the_review_added_have_no_sentence(tmp_path):
+    turn = Turn(tmp_path)
+    for command in ("python3 -c 'print(1)'", "ssh jumpy systemctl restart web",
+                    "ssh jumpy rm -rf build", "git -c alias.x=push x",
+                    f"gh pr comment 5 --repo {M} --repo them/demo --body hi",
+                    f"gh pr comment https://github.com/them/demo/pull/5 --repo {M} --body hi"):
+        derived = turn.derive(command)
+        assert derived.verdict.gated and derived.outcome is None, command
+    result = turn.call(tool="SendMessage", tool_input={"to": "main", "message": "x"})
+    assert result.reason == decision.REASON_DESK
+    assert turn.state()["pending"] is None
+
+
+def test_a_gated_call_with_a_separator_in_a_quoted_argument_is_run_it_alone(tmp_path):
+    turn = Turn(tmp_path)
+    result = turn.call(MERGE + " --subject 'one; two'")
+    assert result.reason == decision.REASON_RUN_ALONE
+    assert turn.state()["pending"] is None
+    assert turn.call("git commit -m 'one; two'").allow
