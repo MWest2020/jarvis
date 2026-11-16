@@ -331,8 +331,34 @@ def test_the_gate_works_through_a_symlink_as_the_installer_places_it(setup, tmp_
     assert _denied(proc) == decision.REASON_DESK
 
 
+def test_the_gate_runs_isolated_behind_a_symlink_as_installed(setup, tmp_path):
+    """The installer (1.15) gives the entry points the shebang
+    `#!/usr/bin/python3 -I` and places them as symlinks: the script's own
+    directory is then not on sys.path and PYTHONPATH is ignored, so the
+    script must find its package itself."""
+    _, config_path, checkout = setup
+    link = tmp_path / "isolated" / "gate"
+    link.parent.mkdir()
+    link.symlink_to(GATE)
+    env = {"JARVIS_TURN": "1", "JARVIS_AGENT_CONFIG": str(config_path),
+           "JARVIS_TURN_CHECKOUT": str(checkout), "PATH": os.environ.get("PATH", ""),
+           "PYTHONPATH": str(tmp_path / "nowhere")}
+
+    def run(command, run_env=env):
+        payload = json.dumps(_payload(tool_input={"command": command}, cwd=checkout)).encode()
+        return subprocess.run([sys.executable, "-I", str(link)], input=payload,
+                              capture_output=True, env=run_env, cwd=tmp_path, timeout=20)
+
+    assert _denied(run("gh repo delete me/demo")) == decision.REASON_DESK
+    proc = run("ls -la")
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
+    proc = run("gh repo delete me/demo", {"PATH": os.environ.get("PATH", "")})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
+
+
 def test_the_script_is_executable_and_checks_the_marker_before_any_other_import():
     assert os.access(GATE, os.X_OK)
+    assert GATE.read_text().splitlines()[0] == "#!/usr/bin/env python3"  # the installer rewrites it
     lines = [line for line in GATE.read_text().splitlines()
              if line.startswith(("import ", "from "))]
     assert lines[:2] == ["import os", "import sys"]
