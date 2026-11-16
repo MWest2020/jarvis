@@ -425,7 +425,8 @@ def test_i_a_remote_write_in_a_shape_the_gate_cannot_read_is_stopped_too(ctx, co
 
 def test_i_a_remote_read_still_runs(ctx):
     for command in ("ssh jumpy ls -la /srv", "ssh jumpy cat /etc/os-release", "ssh jumpy uptime",
-                    "ssh jumpy kubectl get pods -n web", "ssh jumpy git status", "ssh jumpy"):
+                    "ssh jumpy kubectl get pods -n web", "ssh jumpy kubectl config get-contexts",
+                    "ssh jumpy kubectl events -A --types=Warning", "ssh jumpy git status", "ssh jumpy"):
         assert not bash(command, ctx).gated, command
 
 

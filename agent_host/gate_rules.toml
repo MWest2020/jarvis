@@ -51,6 +51,12 @@ value_options = [
     "-n", "--namespace", "--context", "--kubeconfig", "-s", "--server",
     "--cluster", "--user", "--as", "--as-group", "--token", "--request-timeout",
 ]
+# kubectl's own reads (a voice turn asking "any errors in my cluster?" first
+# lists the contexts, and that was sent to the desk).
+read_verbs = [
+    "get-contexts", "current-context", "get-clusters", "get-users",
+    "api-resources", "api-versions", "events", "can-i", "whoami",
+]
 
 [programs.helm]
 groups = ["plugin", "repo", "dependency", "registry"]
