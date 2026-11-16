@@ -584,13 +584,14 @@ def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | N
     if ("root" in classes) != (len(roots) == 1) or len(roots) > 1 or len(hosts) > 1:
         return None
     inner_classes = classes - {"root"}
-    if not inner_classes:
-        return None  # `sudo systemctl ...`: the inner command must itself be nameable
     try:
         outcome = _name_inner(command.argv, ctx, config)
         if isinstance(outcome, Missing):
+            # Also for a call that is gated without a class yet (a bare
+            # `git push` nobody can place): say what to write out.
             return outcome
-        if not inner_classes <= outcome.covers:
+        # `sudo systemctl ...`: the inner command must itself be nameable.
+        if not inner_classes or not inner_classes <= outcome.covers:
             return None
         sentence = outcome.sentence
         if hosts:
