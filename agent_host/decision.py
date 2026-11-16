@@ -405,4 +405,9 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
             state.data["refused"] = {"call": call, "options": list(outcome.options),
                                      "words": outcome.words}
             return deny(reason_missing(outcome.parts), None)
+        hint = naming.desk_hint(verdict)
+        if hint is not None:
+            # Refused, with how it can be asked for so that it can be read back.
+            # No notice: the agent may ask again in that form.
+            return deny(hint, None)
         return deny(REASON_DESK, "needs_desk")

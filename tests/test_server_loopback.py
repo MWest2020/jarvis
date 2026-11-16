@@ -129,13 +129,22 @@ def test_silence_is_answered_without_an_agent_turn(running_server, monkeypatch):
 
 
 def test_a_second_turn_on_a_busy_project_gets_409(running_server):
-    lock = server._project_lock("demo")
-    lock.acquire()
+    assert server._try_project_lock("demo")
     try:
         response, _ = _post_turn(running_server)
         assert response.status == 409
     finally:
-        lock.release()
+        server._release_project_lock("demo")
+    assert "demo" not in server._project_locks        # dropped when not held
+
+
+def test_a_project_lock_lives_only_while_it_is_held():
+    assert server._try_project_lock("x")
+    assert not server._try_project_lock("x")
+    server._release_project_lock("x")
+    assert server._project_locks == {} or "x" not in server._project_locks
+    assert server._try_project_lock("x")
+    server._release_project_lock("x")
 
 
 # An early 4xx (bad token, unknown project) used to be sent before the body was

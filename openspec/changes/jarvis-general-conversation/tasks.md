@@ -63,6 +63,30 @@ still in those.
   keys, the order of updates (bridge first), review `project_exclusions` before updating.
 - [x] 4.4 `docs/reference/roadmap.yml`: the item for this change.
 
+## 4b. Review fixes (ultra review of #50, head b4b78c1)
+
+- [x] 4b.1 The reply's optional `project` field instead of the notices `project_ready` /
+  `project_not_ready`: on every reply of the turn (read-back, notice, error); the bridge
+  speaks it after the summary and sets `X-Jarvis-Projects-Changed` whenever ready; contract
+  test extended (D53).
+- [x] 4b.2 Clone: 45 s per attempt (at most 90), `--depth 1`, a pending-clone marker on
+  failure, retried by the next turn (under its lock) or list (after its answer, in the
+  background), three attempts in all; stale staging removed by a retry and by
+  `record.prune`; the process group killed on every way out; `renameat2(RENAME_NOREPLACE)`.
+- [x] 4b.3 An existing folder is ready only when its `origin` is exactly that repository,
+  else `name_taken`; a create behind `sudo` or ssh is not cloned; `--clone` / `-c` refused
+  with a reason to ask again without it.
+- [x] 4b.4 List: an unreadable root is `no_checkout`, an unreadable entry is skipped; the
+  bridge's list bound is 8 s; project locks live only while held.
+- [x] 4b.5 One definition of the name pattern and the list cap (`bridge/contract.py`);
+  duplicated sentences and parsing folded; the old-wrapper contract test runs a real
+  old-shape reply.
+- [x] 4b.6 App: General only when the home project is in the list; "only one project"
+  counts real projects; the refresh after playback, queued behind one in flight, keeping
+  the selection and a later error; typed lists say so in `X-Jarvis-Projects: typed`; the
+  list hints count real projects.
+- [x] 4b.7 `docs/index.md` names the change.
+
 ## 5. Rollout (not in this PR)
 
 - [ ] 5.1 Deploy the bridge image (cluster repository).

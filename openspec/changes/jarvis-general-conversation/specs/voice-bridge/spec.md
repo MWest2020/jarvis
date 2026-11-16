@@ -78,13 +78,13 @@ The bridge SHALL answer `GET /projects` with the names of the projects it serves
 - **THEN** the answer holds the agent host's names and `"source": "agent_host"`
 
 #### Scenario: The agent host cannot list
-- **WHEN** the agent host cannot be reached, has its kill switch set, or gives no readable list within 20 seconds
+- **WHEN** the agent host cannot be reached, has its kill switch set, cannot list its project root, or gives no readable list within 8 seconds
 - **THEN** the answer holds the bridge's own projects and `"source": "bridge"`
 
 ## ADDED Requirements
 
 ### Requirement: New repository becomes a project
-In `full` mode, after a confirming turn in which a confirmed creation of a repository with `gh repo create <owner>/<name>` ran, the wrapper SHALL itself clone that repository to `<name>` directly under the agent host's project root, with the turn's environment and within a bounded time, so that it is a project at the next turn. It SHALL do so only when the agent host resolves projects under a root, the owner is one of the agent host's own owners, the name is a valid project name that is not excluded, and nothing is at that place yet. A clone SHALL appear under its name only when it is complete. The agent SHALL NOT be given a way to write into the home directory for this. The spoken reply SHALL say that the project is ready, or that it needs the desk, after the agent's own summary, and the phone SHALL be told that the project list changed.
+In `full` mode, after a confirming turn in which a confirmed creation of a repository with a plain `gh repo create <owner>/<name>` ran, the wrapper SHALL itself clone that repository to `<name>` directly under the agent host's project root, with the turn's environment and within a bounded time per attempt, so that it is a project at the next turn. It SHALL do so only when the agent host resolves projects under a root, the owner is one of the agent host's own owners, the name is a valid project name that is not excluded, and nothing is at that place yet; a folder already there SHALL count as ready only when it is a checkout of exactly that repository. A clone SHALL appear under its name only when it is complete, and SHALL never replace anything. A failed attempt SHALL leave nothing under the root and SHALL be tried again by later requests, at most three attempts in all. A creation that asks to clone into the turn's checkout SHALL be refused with a way to ask again. The agent SHALL NOT be given a way to write into the home directory for this. What became of the repository SHALL reach the bridge with every reply of that turn, separately from the notices; the spoken reply SHALL say it after the agent's own summary, and the phone SHALL be told when the project list changed.
 
 #### Scenario: A repository created after a yes
 - **WHEN** Mark says yes to "Create the private repository birdsong." and the creation ran
@@ -96,7 +96,11 @@ In `full` mode, after a confirming turn in which a confirmed creation of a repos
 
 #### Scenario: The clone fails or takes too long
 - **WHEN** the clone exits with an error or exceeds its time bound
-- **THEN** nothing partial is left under the root, and the reply ends with "The repository was created, but I could not set it up as a project. That needs the desk."
+- **THEN** nothing partial is left under the root, the reply ends with "I'm still setting it up at the desk.", and the next request tries again
+
+#### Scenario: Three attempts
+- **WHEN** the third attempt fails as well
+- **THEN** no further attempt is made, and it is recorded as needing the desk
 
 #### Scenario: Another owner
 - **WHEN** the confirmed creation names an owner that is not one of the agent host's own owners
@@ -104,8 +108,20 @@ In `full` mode, after a confirming turn in which a confirmed creation of a repos
 
 #### Scenario: The name is already taken
 - **WHEN** a directory with the repository's name already exists under the root
-- **THEN** it is not touched; it counts as ready only when it is already a project
+- **THEN** it is not touched; it counts as ready only when it is a checkout of that repository, and otherwise the reply says that a different folder with that name exists
+
+#### Scenario: A creation with --clone
+- **WHEN** the agent asks for `gh repo create <owner>/<name> --clone`
+- **THEN** it is refused and not read back, and the agent is told to ask again without `--clone`
+
+#### Scenario: News and a notice in one reply
+- **WHEN** the reply of the confirming turn also carries a notice, a new read-back or an error
+- **THEN** both are spoken: the notice or error as before, and what became of the repository after the summary, or before the read-back's question
+
+#### Scenario: A phone with typed names
+- **WHEN** the phone says it shows project names typed in its settings
+- **THEN** a ready project is announced with "It's ready. Add it to your project list in the app."
 
 #### Scenario: A creation by another road
-- **WHEN** a repository is created with a connector tool, an API call, a fork, or without a confirming turn
+- **WHEN** a repository is created with a connector tool, an API call, a fork, through `sudo` or another host, or without a confirming turn
 - **THEN** nothing is cloned

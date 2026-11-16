@@ -364,11 +364,58 @@ def test_a_list_that_takes_too_long_is_stopped(bridge, monkeypatch):
     assert _get_projects(bridge)[1]["source"] == "bridge"
 
 
+READY = {"name": "birdsong", "ready": True, "reason": None}
+
+
 def test_a_new_project_is_announced_after_the_summary_and_in_a_header(bridge):
-    bridge.host.scenario(mode="wrapper", notice="project_ready",
+    bridge.host.scenario(mode="wrapper", project=READY, notice="new_session",
                          spoken="SPOKEN SUMMARY: I created birdsong.")
     response, said = bridge.say("yes")
-    assert said == "WAV:I created birdsong. It's ready. You can switch to it."
+    # The notice is not silenced by the project, and the project comes last.
+    assert said == ("WAV:I started a new session for this project. I created birdsong. "
+                    "It's ready. You can switch to it.")
+    assert response.getheader("X-Jarvis-Projects-Changed") == "1"
+
+
+def test_a_typed_list_hears_to_add_it(bridge):
+    bridge.host.scenario(mode="wrapper", project=READY, spoken="SPOKEN SUMMARY: Made it.")
+    conn = http.client.HTTPConnection("127.0.0.1", bridge.httpd.server_address[1], timeout=30)
+    bridge.heard = "yes"
+    conn.request("POST", "/turn?project=demo", body=b"audio",
+                 headers={"Authorization": "Bearer test-token", "X-Jarvis-Projects": "typed"})
+    response = conn.getresponse()
+    said = response.read().decode()
+    conn.close()
+    assert said == "WAV:Made it. It's ready. Add it to your project list in the app."
+    assert response.getheader("X-Jarvis-Projects-Changed") == "1"
+
+
+@pytest.mark.parametrize("reason,line", [
+    ("retrying", "I'm still setting it up at the desk."),
+    ("name_taken", "A different folder with that name exists. That needs the desk."),
+    ("needs_desk", "The repository was created, but I could not set it up as a project. "
+                   "That needs the desk."),
+])
+def test_a_project_that_is_not_ready_says_why_and_changes_no_list(bridge, reason, line):
+    bridge.host.scenario(mode="wrapper", spoken="SPOKEN SUMMARY: Made it.",
+                         project={"name": "birdsong", "ready": False, "reason": reason})
+    response, said = bridge.say("yes")
+    assert said == f"WAV:Made it. {line}"
+    assert response.getheader("X-Jarvis-Projects-Changed") is None
+
+
+def test_a_new_project_survives_a_read_back(bridge):
+    bridge.host.scenario(mode="wrapper", gate=True, project=READY)
+    response, said = bridge.say("make it and merge")
+    assert said == "WAV:It's ready. You can switch to it. " + READBACK
+    assert response.getheader("X-Jarvis-Needs-Confirmation") == "1"
+    assert response.getheader("X-Jarvis-Projects-Changed") == "1"
+
+
+def test_a_new_project_survives_a_failed_turn(bridge):
+    bridge.host.scenario(mode="wrapper", error="agent_failed", project=READY)
+    response, said = bridge.say("yes")
+    assert said.endswith("I did not run it again. It's ready. You can switch to it.")
     assert response.getheader("X-Jarvis-Projects-Changed") == "1"
 
 

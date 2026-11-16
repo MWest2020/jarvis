@@ -37,6 +37,8 @@ itself, and behaves as `scenario.json` next to itself says:
                                and the list is ["demo", "other"]
   "old_wrapper": true          a wrapper from before the list request: it
                                answers the list `bad_request`
+  "project": {...}             the optional `project` field, added to the reply
+                               of every agent turn, read-back and error included
 
 THE FAKE WRAPPER AND THE REAL ONE. The fake wrapper speaks version 1 of the
 contract (design D33): the same request rules as agent_host/request.py, the nine
@@ -85,11 +87,17 @@ def _log(entry):
         fh.write(json.dumps(entry) + "\n")
 
 
+PROJECT = {}
+
+
 def _reply(**fields):
-    """Version 1: always exactly these nine fields."""
+    """Version 1: always exactly these nine fields, and `project` when the
+    scenario has one (jarvis-general-conversation D53)."""
     reply = {"v": 1, "status": "ok", "error": None, "turn": None, "spoken": "",
              "pending": False, "readback": None, "confirm": None, "notice": None}
     reply.update(fields)
+    if "project" in PROJECT and reply.get("turn") is not None:
+        reply["project"] = PROJECT["project"]
     sys.stdout.write(json.dumps(reply))
     return 0
 
@@ -102,6 +110,8 @@ STARTED_ERRORS = ("timeout", "agent_failed")    # a turn ran: these carry its id
 
 
 def wrapper(raw: bytes, scenario: dict) -> int:
+    if "project" in scenario:
+        PROJECT["project"] = scenario["project"]
     state = _load("state.json", {"pending": {}, "turns": [], "n": 0})
     try:
         if len(raw) > MAX_BYTES:

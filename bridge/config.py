@@ -17,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bridge import contract
+
 # 1.3 (weekend slice): a fixed, read-only allow-list. No approval flow yet,
 # so nothing that writes or executes is ever on this list (D6).
 READ_ONLY_ALLOWED_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
@@ -182,7 +184,7 @@ MAX_AGENT_TIMEOUT_S = 175
 # The project names the agent host accepts (jarvis-full-agent D33). In `full` mode
 # the agent host decides which projects exist (jarvis-general-conversation D52);
 # the bridge only checks this shape, so a name is never a path.
-AGENT_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+AGENT_PROJECT_NAME = contract.PROJECT_NAME
 
 # What may stand in the ssh argv (D32). A host is a DNS name or an address, a user
 # a Unix login; neither can start with "-" and so neither can be read as an option.

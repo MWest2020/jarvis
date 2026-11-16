@@ -110,7 +110,7 @@ It also needs the OpenSSH client on `PATH`.
 D52):
 
 - `GET /projects` asks the agent host for its list (one ssh connection with the list
-  request `{"v":1,"list":true}`, at most 20 seconds, then ssh is stopped) and answers
+  request `{"v":1,"list":true}`, at most 8 seconds, then ssh is stopped) and answers
   `{"projects": [...], "source": "agent_host"}`. When the agent host cannot be reached,
   its kill switch is set, its wrapper is older than the list request, or the answer cannot
   be read, the bridge lists its own projects with `"source": "bridge"` and logs why.
@@ -130,11 +130,16 @@ D52):
 
 In `readonly` mode the bridge's own list decides, as before.
 
-**A new project.** When the agent host reports that a repository it just created is now a
-project (notice `project_ready`), the reply ends with "It's ready. You can switch to it."
-and carries the header `X-Jarvis-Projects-Changed: 1`; the app then fetches its list again.
-When it could not be made a project (`project_not_ready`), the reply ends with "The
-repository was created, but I could not set it up as a project. That needs the desk."
+**A new project.** When a turn created a repository, the agent host's reply carries a
+`project` field ([`agent-host.md`](agent-host.md#a-new-repository-becomes-a-project)), on
+every kind of reply. The bridge says what became of it after the summary (before a
+read-back, so the question stays last; after the error line of a failed turn): "It's ready.
+You can switch to it.", "I'm still setting it up at the desk.", "A different folder with
+that name exists. That needs the desk." or "The repository was created, but I could not
+set it up as a project. That needs the desk." When it is ready, the reply carries the
+header `X-Jarvis-Projects-Changed: 1` and the app fetches its list again. An app that
+shows typed project names sends `X-Jarvis-Projects: typed` with each turn and hears "It's
+ready. Add it to your project list in the app." instead.
 
 **The connection.** Exactly this, with no remote command (a test fixes it):
 
@@ -335,7 +340,7 @@ recorded audio as the body. Replies:
 | 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
 | 400 | No project, an unknown project (in `full` mode: a name the agent host would not accept by its shape), an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
-| 409 | That project is still busy with another turn (one turn per session at a time) |
+| 409 | That project is still busy with another turn (one turn per session at a time). The lock lives only while that turn runs, so names asked for in `full` mode leave nothing behind. |
 | 413 | Audio larger than 10 MB |
 | 502 | The Claude Code turn failed or timed out (details in the log) |
 | 408 | The request line and headers did not arrive within 10 seconds in total (any route, before the token is looked at). The connection is closed. |

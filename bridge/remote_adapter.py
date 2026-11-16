@@ -32,7 +32,9 @@ from bridge.agent import (
     AgentUnavailable,
     ConfirmAnswer,
     PendingConfirmation,
+    ProjectNews,
 )
+from bridge.contract import MAX_LISTED, PROJECT_FIELDS, PROJECT_REASONS
 from bridge.config import (
     AGENT_PROJECT_NAME,
     AgentHostConfig,
@@ -65,12 +67,16 @@ PROJECT_NAME = AGENT_PROJECT_NAME
 #   notice    null, or a code the bridge has a fixed sentence for
 REPLY_KEYS = frozenset({"v", "status", "error", "turn", "spoken", "pending", "readback",
                         "confirm", "notice"})
-# The answer to the list request {"v":1,"list":true} (jarvis-general-conversation
-# D51). A refusal of it comes in the shape above, with status "error".
+# jarvis-general-conversation D53: a reply may carry one more field, `project`,
+# what became of a repository the turn created (bridge.contract). Without it a
+# reply is exactly the fields above, as before.
+PROJECT_KEY = "project"
+# The answer to the list request {"v":1,"list":true} (D51). A refusal of it comes
+# in the shape above, with status "error".
 LIST_REPLY_KEYS = frozenset({"v", "status", "error", "projects"})
-MAX_LISTED = 500
-# A list reads directory names on the agent host; it is not left running.
-LIST_TIMEOUT_S = 20.0
+# A list reads directory names on the agent host; it is not left running. Well
+# under the phone's own wait for `GET /projects`.
+LIST_TIMEOUT_S = 8.0
 CONFIRM_KEYS = frozenset({"id", "sha256", "class", "expires_s"})
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -104,14 +110,7 @@ NOTICE_SENTENCES = {
     "new_session": "I started a new session for this project.",
     "target_changed": "The push target changed. That one needs the desk.",
     "out_of_budget": "The agent is out of budget for now.",
-    # After a confirmed `gh repo create` ran (jarvis-general-conversation D53).
-    "project_ready": "It's ready. You can switch to it.",
-    "project_not_ready": "The repository was created, but I could not set it up as a "
-                         "project. That needs the desk.",
 }
-# Said after the agent's own summary, not before it: the summary says what was
-# made, the notice what follows from it.
-TRAILING_NOTICES = frozenset({"project_ready", "project_not_ready"})
 
 # A read-back is fixed words plus shape-checked targets, built on the agent host.
 # It is spoken as given or not at all: never cleaned, never put through the summary
@@ -236,12 +235,8 @@ class ReplyError(ValueError):
     """The reply is not the agreed shape."""
 
 
-def parse_reply(raw: bytes) -> dict:
-    """One JSON object with exactly the fields of version 1, each of its own type.
-
-    Returns `error`, `turn`, `spoken`, `readback`, `notice` (strings, empty for
-    null), `confirmation` (a PendingConfirmation or None) and `expires_s`.
-    """
+def _load_object(raw: bytes) -> dict:
+    """One JSON object of at most 64 KB, no duplicate keys, no NaN or Infinity."""
     if len(raw) > MAX_MESSAGE_BYTES:
         raise ReplyError("larger than 64 KB")
     try:
@@ -251,9 +246,37 @@ def parse_reply(raw: bytes) -> dict:
         raise ReplyError(f"not one JSON object: {exc}") from exc
     if not isinstance(reply, dict):
         raise ReplyError("not a JSON object")
-    if set(reply) != REPLY_KEYS:
-        odd = sorted(set(reply) ^ REPLY_KEYS)
+    return reply
+
+
+def _parse_project(value: object) -> ProjectNews:
+    """The optional `project` field (D53): exactly name, ready, reason."""
+    if not isinstance(value, dict) or set(value) != PROJECT_FIELDS:
+        raise ReplyError("project is not exactly name, ready, reason")
+    name, ready, reason = value["name"], value["ready"], value["reason"]
+    if not isinstance(name, str) or not PROJECT_NAME.fullmatch(name):
+        raise ReplyError("project name is not a project name")
+    if type(ready) is not bool:
+        raise ReplyError("project ready is not true or false")
+    if (reason is not None) if ready else (reason not in PROJECT_REASONS):
+        raise ReplyError("project reason does not fit ready")
+    return ProjectNews(name=name, ready=ready, reason=reason)
+
+
+def parse_reply(raw: bytes) -> dict:
+    """One JSON object with exactly the fields of version 1, each of its own type,
+    and at most the optional `project` field besides.
+
+    Returns `error`, `turn`, `spoken`, `readback`, `notice` (strings, empty for
+    null), `confirmation` (a PendingConfirmation or None), `expires_s` and
+    `project` (a ProjectNews or None).
+    """
+    reply = _load_object(raw)
+    keys = set(reply) - {PROJECT_KEY}
+    if keys != REPLY_KEYS:
+        odd = sorted(keys ^ REPLY_KEYS)
         raise ReplyError(f"not exactly the fields of version 1 ({odd[0]!r})")
+    project = _parse_project(reply[PROJECT_KEY]) if PROJECT_KEY in reply else None
     if type(reply["v"]) is not int or reply["v"] != PROTOCOL_VERSION:
         raise ReplyError("not version 1")
 
@@ -273,7 +296,8 @@ def parse_reply(raw: bytes) -> dict:
     if notice is not None and (not isinstance(notice, str) or notice not in NOTICE_SENTENCES):
         raise ReplyError("a notice that is not on the closed list")
     parsed = {"error": "", "turn": turn or "", "spoken": spoken, "readback": "",
-              "notice": notice or "", "confirmation": None, "expires_s": 0.0}
+              "notice": notice or "", "confirmation": None, "expires_s": 0.0,
+              "project": project}
 
     if status == STATUS_ERROR:
         if not isinstance(error, str) or error not in ERROR_CODES:
@@ -331,16 +355,8 @@ def parse_list_reply(raw: bytes) -> list[str]:
     refuses; an older wrapper refuses the list as `bad_request`), which raises
     ListRefused. Anything else is a ReplyError.
     """
-    if len(raw) > MAX_MESSAGE_BYTES:
-        raise ReplyError("larger than 64 KB")
-    try:
-        reply = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys,
-                           parse_constant=_reject_constant)
-    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
-        raise ReplyError(f"not one JSON object: {exc}") from exc
-    if not isinstance(reply, dict):
-        raise ReplyError("not a JSON object")
-    if set(reply) == REPLY_KEYS:
+    reply = _load_object(raw)
+    if set(reply) - {PROJECT_KEY} == REPLY_KEYS:
         parsed = parse_reply(raw)
         if not parsed["error"]:
             raise ReplyError("a turn reply to a list request")
@@ -450,16 +466,18 @@ class RemoteAdapter:
                                       f"{code} with the turn id of a started turn", turn_id)
             if code in FALLBACK_CODES and confirm is None:
                 raise AgentUnavailable(code)
-            raise AgentTurnFailed(code, turn_id=turn_id, notice=reply["notice"])
+            raise AgentTurnFailed(code, turn_id=turn_id, notice=reply["notice"],
+                                  project=reply["project"])
 
         pending = reply["confirmation"]
+        news = reply["project"]
         if pending is None:
             return AgentTurn(spoken=_spoken(reply["notice"], reply["spoken"]), ref=turn_id,
-                             projects_changed=reply["notice"] == "project_ready")
+                             project=news)
         readback = speakable_readback(reply["readback"])
         if readback is not None:
             return AgentTurn(spoken=readback, ref=turn_id, confirmation=pending,
-                             expires_s=reply["expires_s"])
+                             expires_s=reply["expires_s"], project=news)
         # Nothing can be said, so nothing can be confirmed: the pending call is
         # cleared on the agent host with a no, and the driver hears the desk line.
         logger.warning("project=%s turn=%s: the read-back cannot be spoken; the pending "
@@ -472,7 +490,7 @@ class RemoteAdapter:
             # It then expires there by itself; this side keeps nothing to confirm.
             logger.warning("project=%s: the cancel did not reach the agent host (%s)",
                            project.name, exc.code)
-        return AgentTurn(spoken=NEEDS_THE_DESK, ref=turn_id)
+        return AgentTurn(spoken=NEEDS_THE_DESK, ref=turn_id, project=news)
 
     def list_projects(self) -> list[str]:
         """The agent host's projects (D51), sorted. One connection, at most
@@ -693,14 +711,11 @@ def _unlink(path: str) -> None:
 
 
 def _spoken(notice: str, marker_line: str) -> str:
-    """The notice's fixed sentence and the agent's summary when it gave one: the
-    sentence first, or after the summary for a trailing notice."""
+    """The notice's fixed sentence first, then the agent's summary when it gave one."""
     if not notice:
         return extract_summary(marker_line)
     sentence = NOTICE_SENTENCES[notice]
     if not marker_line.strip():
         return sentence
     summary = extract_summary(marker_line)
-    if summary == FALLBACK_SUMMARY:
-        return sentence
-    return f"{summary} {sentence}" if notice in TRAILING_NOTICES else f"{sentence} {summary}"
+    return sentence if summary == FALLBACK_SUMMARY else f"{sentence} {summary}"

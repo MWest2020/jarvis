@@ -24,11 +24,16 @@ One request is one of three things:
   starts.
 - **A list** (`{"v":1,"list":true}`, jarvis-general-conversation D51). The
   names of the projects a turn would accept, in a reply of its own shape
-  (`LIST_FIELDS`). No lock, no pending call touched, no agent, no record.
+  (`LIST_FIELDS`). No pending call touched, no agent, no record. A root that
+  cannot be listed is `no_checkout`. Pending clones are retried after the
+  answer, in the background, when the turn lock is free.
 
 After a confirming turn in which a confirmed `gh repo create <owner>/<name>`
 ran, the wrapper clones that repository into the project root, so that it
-is a project at the next turn (D53). The agent never writes there itself.
+is a project at the next turn (D53, agent_host.clones). The agent never
+writes there itself. What became of it travels in the reply's optional
+`project` field, on every way the reply can take, and never competes with
+the notices.
 
 Every request for a project clears its pending call first, whatever the
 request is: a pending call is single use and never survives the next
@@ -51,10 +56,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import subprocess
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -62,8 +65,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent_host import (
-    checkout_settings, classify, command, decision, gatehash, identity, naming, pending,
-    projects, prstatus, trusted,
+    checkout_settings, classify, clones, command, decision, gatehash, identity, naming,
+    pending, projects, prstatus, trusted,
 )
 from agent_host import record as record_mod
 from agent_host import request as request_mod
@@ -78,6 +81,11 @@ V1_FIELDS: tuple[str, ...] = (
 # The answer to a list request (D51). A refusal of one comes in the shape
 # above: the kill switch answers before it has read which request it is.
 LIST_FIELDS: tuple[str, ...] = ("v", "status", "error", "projects")
+# Added to the fields above only when there is something to say (D53): what
+# became of a repository a confirmed `gh repo create` made,
+# {"name", "ready", "reason"} (bridge.contract). Absent otherwise, so a bridge
+# from before it reads every other reply as before.
+PROJECT_FIELD = "project"
 
 # The closed error list of D33.
 ERROR_CODES = frozenset({
@@ -90,8 +98,6 @@ ERROR_CODES = frozenset({
 NOTICE_CODES = frozenset({
     "needs_desk", "run_alone", "settings_changed", "target_changed",
     "out_of_budget", "new_session",
-    # After a confirmed `gh repo create` ran (D53): cloned as a project, or not.
-    "project_ready", "project_not_ready",
 })
 
 
@@ -101,7 +107,7 @@ NOTICE_CODES = frozenset({
 # this call, go to the desk", last what is only good to know.
 NOTICE_ORDER: tuple[str, ...] = (
     "settings_changed", "target_changed", "needs_desk", "run_alone", "out_of_budget",
-    "project_not_ready", "project_ready", "new_session",
+    "new_session",
 )
 assert set(NOTICE_ORDER) == NOTICE_CODES
 
@@ -133,12 +139,12 @@ def load_runtime_config() -> AgentHostConfig:
 def _reply(
     *, status: str, error: str | None = None, turn: str | None = None, spoken: str = "",
     pending: bool = False, readback: str | None = None, confirm: dict | None = None,
-    notice: str | None = None,
+    notice: str | None = None, project: dict | None = None,
 ) -> dict:
     assert status in ("ok", "error")
     assert error is None or error in ERROR_CODES
     assert notice is None or notice in NOTICE_CODES
-    return {
+    reply = {
         "v": 1,
         "status": status,
         "error": error,
@@ -149,6 +155,9 @@ def _reply(
         "confirm": confirm,
         "notice": notice,
     }
+    if project is not None:
+        reply[PROJECT_FIELD] = project
+    return reply
 
 
 def disabled_reply() -> dict:
@@ -170,7 +179,16 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
         return _reply(status="error", error="bad_request")
 
     if isinstance(req, request_mod.ListRequest):
-        return list_reply(projects.list_projects(config))
+        try:
+            names = projects.list_projects(config)
+        except projects.ListError:
+            # No list is not an empty list: the bridge lists its own (D52).
+            return _reply(status="error", error="no_checkout")
+        if clones.pending(config):
+            # After the answer, never before it: the bridge waits 8 seconds
+            # for a list, and a clone may take longer (D53).
+            _in_background(lambda: _retry_clones_if_free(config))
+        return list_reply(names)
 
     try:
         working_dir = projects.resolve_project(config, req.project)
@@ -281,10 +299,14 @@ class _Confirmed:
 
 def _created_repository(derived: naming.Derived) -> str | None:
     """The repository a confirmed call creates, when it is exactly a
-    `gh repo create <owner>/<name>`: the class `create` and nothing else (no
-    `sudo`, no host in front of it), and the read-back's status names it."""
+    `gh repo create <owner>/<name>`: the class `create` and nothing else, no
+    wrapper in front of it (`sudo`, an ssh host: then it was made elsewhere or
+    as someone else), and the read-back's status names it."""
     named = derived.outcome
     if not isinstance(named, naming.Named) or set(derived.verdict.classes) != {"create"}:
+        return None
+    command_ = derived.verdict.command
+    if command_ is None or command_.wrappers or command_.env:
         return None
     status = named.status
     if not (isinstance(status, tuple) and len(status) == 2 and status[0] == "create"):
@@ -292,80 +314,47 @@ def _created_repository(derived: naming.Derived) -> str | None:
     return status[1] if isinstance(status[1], str) else None
 
 
-CLONE_DIR_PREFIX = ".jarvis-clone-"
-# Never handed to the clone: they belong to the agent turn that ended.
-_GRANT_VARIABLES = ("JARVIS_GRANT", "JARVIS_GRANT_BASE")
-
-
-def project_after_create(config: AgentHostConfig, repository: str,
-                         env: dict[str, str]) -> tuple[bool, str]:
-    """Make a repository that was just created a project (D53): clone it to
-    `<projects_root>/<name>`. Returns (ready, why).
-
-    Only with a project root, only for an own owner, only for a valid name
-    that is not excluded, and only where nothing is yet. The clone goes into
-    a fresh hidden directory under the root (hidden, so no list names it)
-    and is renamed into place only when it exited 0 and is a work tree;
-    whatever is left otherwise is removed. Run by the wrapper with the
-    turn's environment, never by the agent.
-    """
-    root = config.projects_root
-    if config.projects or root is None:
-        return False, "the agent host has an explicit project list"
-    owner, _, name = repository.partition("/")
-    if owner.lower() not in {o.lower() for o in config.own_owners}:
-        return False, "the owner is not one of own_owners"
-    if not projects.project_name_ok(name) or name in config.project_exclusions:
-        return False, "not a project name, or excluded"
-    target = root / name
-    if target.exists() or target.is_symlink():
-        try:
-            projects.resolve_project(config, name)
-        except projects.ProjectError:
-            return False, "something else is there already"
-        return True, "already a project"
+def _in_background(work) -> None:
+    """Run `work` in a child that outlives this request: its own session, no
+    stdin, stdout or stderr of ours (so the connection closes when we exit).
+    The child never returns here."""
     try:
-        staging = Path(tempfile.mkdtemp(prefix=CLONE_DIR_PREFIX, dir=root))
-    except OSError as exc:
-        return False, f"no directory for the clone: {exc.strerror or exc}"
+        pid = os.fork()
+    except OSError:
+        return
+    if pid:
+        return
     try:
-        destination = staging / name
-        child_env = {key: value for key, value in env.items() if key not in _GRANT_VARIABLES}
-        try:
-            proc = subprocess.Popen(
-                [*config.clone_command, repository, str(destination)], cwd=root,
-                env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            return False, f"the clone could not start: {exc}"
-        try:
-            proc.wait(timeout=config.clone_timeout_s)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-            return False, f"the clone took longer than {config.clone_timeout_s}s"
-        if proc.returncode != 0:
-            return False, f"the clone exited {proc.returncode}"
-        if destination.is_symlink() or not destination.is_dir() \
-                or not (destination / ".git").is_dir():
-            return False, "the clone is not a work tree"
-        if target.exists() or target.is_symlink():
-            return False, "something else appeared there during the clone"
-        try:
-            os.rename(destination, target)
-        except OSError as exc:
-            return False, f"the clone could not be moved into place: {exc.strerror or exc}"
-        try:
-            projects.resolve_project(config, name)
-        except projects.ProjectError as exc:
-            return False, f"not a project after the clone: {exc}"
-        return True, "cloned"
+        os.setsid()
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+        work()
+    except BaseException:  # noqa: BLE001 - nothing to report to
+        pass
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        os._exit(0)
+
+
+def _clone_env(config: AgentHostConfig) -> dict[str, str]:
+    """The environment of a turn, for a clone retried outside one."""
+    return identity.build_child_env(
+        config.environment_file,
+        identity_env_var=config.identity_env_var,
+        session_identity=config.session_identity,
+        turn_id=str(uuid.uuid4()),
+        config_path=config.config_path,
+        checkout=config.projects_root or config.state_dir,
+    )
+
+
+def _retry_clones_if_free(config: AgentHostConfig) -> None:
+    """Pending clones, retried under the turn lock, only when it is free."""
+    try:
+        with acquire_turn_lock(config.lock_path):
+            clones.retry_pending(config, _clone_env(config))
+    except Busy:
+        pass
 
 
 def confirming_prompt(sentence: str, call: dict) -> str:
@@ -529,11 +518,13 @@ def _write_record(
 def _after_turn(
     config: AgentHostConfig, project: str, turn_id: str, working_dir: Path,
     env: dict[str, str], confirmed: _Confirmed | None, *, changed: str | None, ok: bool,
-) -> tuple[list[dict], dict | None, str | None]:
+) -> tuple[list[dict], dict | None, str | None, dict | None]:
     """What the gate left behind in this turn: (the gated actions for the
-    record, the pending reply fields or None, the notice or None)."""
+    record, the pending reply fields or None, the notice or None, the reply's
+    `project` field or None)."""
     state = pending.read_turn_state(config.gate_dir, turn_id)
     actions = [dict(event) for event in state["events"] if isinstance(event, dict)]
+    project_field = None
     # More than one refusal in a turn: the most important notice, by the
     # fixed order, never just the last one.
     notice = most_important_notice(
@@ -553,13 +544,13 @@ def _after_turn(
         if confirmed.creates is not None and outcome == "ran":
             # A new repository: the wrapper makes it a project (D53). Only on
             # exactly "ran"; never on the agent's word.
+            name = confirmed.creates.partition("/")[2]
             try:
-                ready, why = project_after_create(config, confirmed.creates, env)
+                made = clones.make_project(config, confirmed.creates, env)
             except Exception as exc:  # noqa: BLE001 - whatever it was, not ready
-                ready, why = False, f"failed: {type(exc).__name__}"
-            action["project"] = "ready" if ready else f"not ready: {why}"
-            notice = most_important_notice(
-                [notice, "project_ready" if ready else "project_not_ready"])
+                made = clones.Outcome("needs_desk", f"failed: {type(exc).__name__}")
+            action["project"] = made.recorded()
+            project_field = made.field(name)
         actions.append(action)
 
     call = state["pending"]
@@ -568,9 +559,9 @@ def _after_turn(
         # is dropped, and the record says why.
         if call is not None:
             actions.append({"outcome": "dropped", "why": changed})
-        return actions, None, "settings_changed"
+        return actions, None, "settings_changed", project_field
     if call is None or not ok:
-        return actions, None, notice
+        return actions, None, notice, project_field
 
     derived, ctx = _derive(call, config, env)
     try:
@@ -581,7 +572,7 @@ def _after_turn(
         # No fallback sentence, ever: nothing is pending (D36, step 4).
         actions.append({"outcome": "refused", "code": "needs_desk",
                         "why": "the read-back could not be built"})
-        return actions, None, "needs_desk"
+        return actions, None, "needs_desk", project_field
     pending_id = str(uuid.uuid4())
     pending.store_pending(config.pending_dir, project, pending_id, call,
                           sha256=derived.hash, base_hash=derived.base_hash)
@@ -593,13 +584,18 @@ def _after_turn(
             "class": ", ".join(derived.verdict.classes), "expires_s": PENDING_SECONDS,
         },
     }
-    return actions, fields, None
+    return actions, fields, None, project_field
 
 
 def _run_turn(
     project: str, prompt: str, working_dir: Path, config: AgentHostConfig, *,
     turn_id: str, env: dict[str, str], confirmed: _Confirmed | None = None,
 ) -> dict:
+    # Pending clones first (D53): the turn lock is held here.
+    try:
+        clones.retry_pending(config, env)
+    except Exception:  # noqa: BLE001 - a retry never stops a turn
+        pass
     sessions = SessionStore(config.sessions_dir / "sessions.json")
     stored_id, discarded = sessions.get(project)
     rotated_id = _resolve_session_id(config, project, stored_id, now=datetime.now())
@@ -688,7 +684,7 @@ def _run_turn(
         except (json.JSONDecodeError, KeyError, TypeError):
             reply_text, new_session_id, outcome = stdout, stored_id, "agent_failed"
 
-    actions, pending_fields, notice = _after_turn(
+    actions, pending_fields, notice, project_field = _after_turn(
         config, project, turn_id, working_dir, env, confirmed,
         changed=changed, ok=outcome == "ok",
     )
@@ -700,13 +696,17 @@ def _run_turn(
         settings_changed=changed, gated_actions=actions,
     )
 
+    # What became of a new repository goes with every reply below (D53).
     if outcome != "ok":
-        return _reply(status="error", error=outcome, turn=turn_id, notice=notice)
+        return _reply(status="error", error=outcome, turn=turn_id, notice=notice,
+                      project=project_field)
     if pending_fields is not None:
         # While a confirmation is pending, the agent's own line is not sent.
         # A notice still is: that a new session started must not be lost.
         return _reply(status="ok", turn=turn_id, spoken="", pending=True,
-                      notice="new_session" if discarded else None, **pending_fields)
+                      notice="new_session" if discarded else None, project=project_field,
+                      **pending_fields)
     spoken = last_marker_line(reply_text)
     notice = most_important_notice([notice, "new_session" if discarded else None])
-    return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice)
+    return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice,
+                  project=project_field)

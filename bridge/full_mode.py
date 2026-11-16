@@ -22,6 +22,7 @@ from bridge.agent import (
     AgentUnavailable,
     ConfirmAnswer,
     PendingConfirmation,
+    ProjectNews,
 )
 from bridge.config import ProjectConfig, normalise_utterance
 from bridge.logging_setup import FILE_ONLY
@@ -68,15 +69,6 @@ FALLBACK_SENTENCES = {
         "This project's settings need the desk, so this answer is read-only.",
 }
 
-# D52 (jarvis-general-conversation): a fallback reason, for a project the bridge has
-# no copy of. Nothing can be answered read-only, so only what happened is said.
-NO_COPY_LINES = {
-    AgentUnavailable.UNREACHABLE: "The agent host is not reachable right now.",
-    AgentUnavailable.NO_CHECKOUT: "The agent host does not have this project.",
-    AgentUnavailable.DISABLED: "Full mode is switched off on the agent host.",
-    AgentUnavailable.UNSAFE_SETTINGS: "This project's settings need the desk.",
-}
-
 # Where the phone's project list came from (GET /projects in `full` mode, D52).
 SOURCE_AGENT_HOST = "agent_host"
 SOURCE_BRIDGE = "bridge"
@@ -93,6 +85,44 @@ NOT_STARTED_LINES = {
     AgentUnavailable.DISABLED: "Full mode is switched off on the agent host.",
     AgentUnavailable.UNSAFE_SETTINGS: "This project's settings need the desk.",
 }
+# D52 (jarvis-general-conversation): a fallback reason, for a project the bridge has
+# no copy of. Nothing can be answered read-only, so only what happened is said: the
+# same words as when nothing started, except for the connection.
+NO_COPY_LINES = {
+    **{reason: NOT_STARTED_LINES[reason] for reason in AgentUnavailable.REASONS},
+    AgentUnavailable.UNREACHABLE: "The agent host is not reachable right now.",
+}
+
+# D53: what became of a repository the turn created, said after the summary (and
+# before a read-back, whose question stays last). "Ready" has two forms: the app
+# fetches a list from the bridge and will show it, or it shows names typed in its
+# settings, where it has to be added by hand.
+PROJECT_READY = "It's ready. You can switch to it."
+PROJECT_READY_TYPED = "It's ready. Add it to your project list in the app."
+PROJECT_SENTENCES = {
+    "retrying": "I'm still setting it up at the desk.",
+    "needs_desk": "The repository was created, but I could not set it up as a project. "
+                  "That needs the desk.",
+    "name_taken": "A different folder with that name exists. That needs the desk.",
+}
+
+
+def project_sentence(news: ProjectNews, *, typed_list: bool) -> str:
+    if news.ready:
+        return PROJECT_READY_TYPED if typed_list else PROJECT_READY
+    return PROJECT_SENTENCES[news.reason]
+
+
+def _with_news(spoken: str, news: ProjectNews | None, *, typed_list: bool,
+               before: bool = False) -> str:
+    if news is None:
+        return spoken
+    sentence = project_sentence(news, typed_list=typed_list)
+    if not spoken:
+        return sentence
+    return f"{sentence} {spoken}" if before else f"{spoken} {sentence}"
+
+
 # A turn started, or may have: said together with the promise of D30.
 STARTED_LINES = {
     "timeout": "The agent took too long on the agent host and was stopped. "
@@ -188,8 +218,12 @@ class FullMode:
             return fallback(), SOURCE_BRIDGE
 
     def handle(self, project: ProjectConfig, transcript: str,
-               speech_seconds: Callable[[], float]) -> Outcome:
+               speech_seconds: Callable[[], float], *, typed_list: bool = False) -> Outcome:
         """One utterance of the driver for one project.
+
+        `typed_list`: the phone shows project names typed in its settings, not the
+        bridge's list (it says so in a header), so a new project is announced with
+        "add it to your list" (D53).
 
         `speech_seconds` measures the detected speech in the recording. Every
         utterance needs the minimum, not only a yes.
@@ -217,7 +251,7 @@ class FullMode:
         entry = self._pending.take_entry(project.name)
         if entry is None:
             # Nothing waiting, or 60 seconds gone: a "yes" is an ordinary utterance.
-            return self._turn(project, transcript)
+            return self._turn(project, transcript, typed_list=typed_list)
 
         pending, deadline = entry
         if said in self._no:
@@ -226,10 +260,11 @@ class FullMode:
         if said in self._yes:
             return self._turn(project, transcript,
                               ConfirmAnswer(pending.id, pending.sha256, ANSWER_YES),
-                              answered=entry)
+                              answered=entry, typed_list=typed_list)
         # Anything else is an ordinary request. It clears the pending call on the
         # agent host like every request, and the agent is told what happened.
-        return self._turn(project, f"{NOT_CONFIRMED_LINE}\n\n{transcript}", said=transcript)
+        return self._turn(project, f"{NOT_CONFIRMED_LINE}\n\n{transcript}", said=transcript,
+                          typed_list=typed_list)
 
     def _cancel(self, project: ProjectConfig, pending: PendingConfirmation) -> None:
         """Send the no: the agent host clears the call and starts no agent turn."""
@@ -261,7 +296,8 @@ class FullMode:
 
     def _turn(self, project: ProjectConfig, prompt: str,
               confirm: ConfirmAnswer | None = None, *, said: str | None = None,
-              answered: tuple[PendingConfirmation, float] | None = None) -> Outcome:
+              answered: tuple[PendingConfirmation, float] | None = None,
+              typed_list: bool = False) -> Outcome:
         """`said` is what the driver said, when `prompt` has a line in front of it.
         `answered` is the read-back a yes was given to, with its deadline."""
         try:
@@ -287,18 +323,25 @@ class FullMode:
                 # back as it was, same id, same deadline: the yes is not lost.
                 self._pending.put_until(project.name, *answered)
                 return Outcome(SAY_YES_AGAIN, needs_confirmation=True)
-            return Outcome(_failure_line(exc, confirmed=confirm is not None), exc.turn_id)
-        return self._outcome(project, turn)
+            news = exc.project
+            line = _failure_line(exc, confirmed=confirm is not None)
+            return Outcome(_with_news(line, news, typed_list=typed_list), exc.turn_id,
+                           projects_changed=news is not None and news.ready)
+        return self._outcome(project, turn, typed_list=typed_list)
 
-    def _outcome(self, project: ProjectConfig, turn: AgentTurn) -> Outcome:
+    def _outcome(self, project: ProjectConfig, turn: AgentTurn, *,
+                 typed_list: bool = False) -> Outcome:
         to_keep = None
         if turn.confirmation is not None:
             # Not pending yet: first it has to be spoken (delivered()).
             to_keep = (turn.confirmation, self._pending.deadline(turn.expires_s))
         logger.info("project=%s agent=full turn=%s outcome=%s", project.name, turn.ref or "-",
                     "needs_confirmation" if turn.confirmation is not None else "ok")
-        return Outcome(turn.spoken, turn.ref, turn.confirmation is not None, to_keep,
-                       projects_changed=turn.projects_changed)
+        news = turn.project
+        spoken = _with_news(turn.spoken, news, typed_list=typed_list,
+                            before=turn.confirmation is not None)
+        return Outcome(spoken, turn.ref, turn.confirmation is not None, to_keep,
+                       projects_changed=news is not None and news.ready)
 
     def _fallback(self, project: ProjectConfig, prompt: str, reason: str) -> Outcome:
         """The one turn answered read-only instead, saying so first (D30)."""

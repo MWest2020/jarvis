@@ -192,8 +192,8 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
-| `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name>` and the destination. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
-| `clone_timeout_s` | no (default `120`, at most `600`) | How long that clone may take before it is stopped and removed. |
+| `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name> <destination> -- --depth 1`. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
+| `clone_timeout_s` | no (default `45`, at most `90`) | How long one clone attempt may take before it is stopped and removed. |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
 directly under the root, and it must be a git repository with a work tree. **This list is
@@ -209,33 +209,58 @@ brings this change.
 Next to a turn, the wrapper answers one other request, `{"v":1,"list":true}` (exactly
 those two fields), with `{"v":1,"status":"ok","error":null,"projects":[...]}`: the names
 sorted, at most 500, each one a turn would accept (every candidate goes through the
-turn's own resolver). It takes no turn lock, touches no pending call, starts no agent and
-writes no record. With the kill switch set it is answered `disabled`, like a turn. An
-older wrapper answers it `bad_request`; the bridge then lists its own copies.
+turn's own resolver). An entry that cannot even be looked at (permissions) is left out
+and named on stderr; a `projects_root` that cannot be listed at all is answered
+`no_checkout`, never an empty list, so the bridge lists its own copies and logs why. A list
+touches no pending call, starts no agent and writes no record. With the kill switch set
+it is answered `disabled`, like a turn. An older wrapper answers it `bad_request`; the
+bridge then lists its own copies. When clones are pending (below), a list starts their
+retry in the background after it has answered, and only when no turn holds the lock.
 
 ### A new repository becomes a project
 
 After a confirming turn in which a confirmed `gh repo create <owner>/<name>` ran (the
 action log says `ran`), the wrapper (not the agent) clones the repository to
-`<projects_root>/<name>`, so it is a project at the next turn, and Jarvis says "It's
-ready. You can switch to it." after the agent's own summary. It does so only when:
+`<projects_root>/<name>`, so it is a project at the next turn. Only a plain
+`gh repo create`: not one behind `sudo` or an ssh host, not a fork, not a connector tool,
+not `gh api`, and not one that ran without a read-back (confirmation off, or `create` in
+`confirm_skip`). A `gh repo create ... --clone` (or `-c`) is refused with a reason that
+tells the agent to ask again without it: it would clone into the turn's checkout.
 
-- the host uses `projects_root` (with a `[projects]` table nothing is cloned);
-- the owner is in `own_owners`;
-- the name is a project name and not in `project_exclusions`;
-- nothing is at `<projects_root>/<name>` yet. A directory that is already a project
-  there counts as ready and is not touched; anything else there is not touched either.
+What became of it goes back to the bridge in the reply's optional `project` field,
+`{"name", "ready", "reason"}`, on every reply of that turn: with the agent's summary,
+with a new read-back, after a notice, and with an error. The bridge says it after the
+summary (before a read-back):
 
-The clone runs `clone_command` with the turn's environment (the grant variables removed),
-in the root, with stdin closed, into a fresh hidden directory `.jarvis-clone-<random>/`
-under the root. It is renamed into place only when it exited 0 and is a work tree, and
-whatever is left of it is removed, also after `clone_timeout_s`. In every other case
-Jarvis says "The repository was created, but I could not set it up as a project. That
-needs the desk." The turn record says which, in the confirmed action's `project` field
-(`ready`, or `not ready: <why>`). Nothing is cloned for a creation that ran without a
-read-back (confirmation off, or `create` in `confirm_skip`), through a connector tool,
-by `gh api`, or for a fork. The agent cannot clone into the home directory itself: that
-write is in the class `self`.
+| Outcome | `reason` | Jarvis says |
+|---|---|---|
+| Cloned, or already a checkout whose `origin` is exactly that repository | (ready) | "It's ready. You can switch to it." (or, when the app shows typed names, "It's ready. Add it to your project list in the app.") |
+| The clone failed or took longer than `clone_timeout_s` | `retrying` | "I'm still setting it up at the desk." |
+| A different folder with that name is already there | `name_taken` | "A different folder with that name exists. That needs the desk." |
+| A `[projects]` table, another owner than `own_owners`, an excluded or invalid name, or three attempts used up | `needs_desk` | "The repository was created, but I could not set it up as a project. That needs the desk." |
+
+The clone runs `clone_command <owner>/<name> <destination> -- --depth 1` (a new
+repository has one commit or none, and a shallow clone has a work tree like any other)
+with the turn's environment minus the grant variables, in the root, with stdin closed,
+into a fresh hidden directory `.jarvis-clone-<random>/` under the root. Its process group
+is killed at `clone_timeout_s` and on every other way out. It is moved into place only
+when it exited 0 and is a work tree, with a rename that never replaces anything
+(`renameat2` with `RENAME_NOREPLACE`; where the C library or the file system lacks it, a
+check right before a plain rename, which leaves a short window in which only an empty
+directory could be replaced). Whatever is left of an attempt is removed.
+
+A failed attempt leaves a marker in `state_dir/clones/<name>.json`. Every later wrapper
+request tries pending clones again: a turn first, under its lock, before the agent runs;
+a list after answering, in the background. Three attempts in all; the last failure
+clears the marker and is recorded as `needs_desk`. Each retry writes a record with
+outcome `clone`. Staging directories older than an hour are removed at the start of every
+retry, and by `record.prune` when it is given the root. The state directory is writable by
+the agent, so a marker is checked in full before it is used: the worst a planted one can
+do is have one of your own repositories cloned to an empty name under the root.
+
+The turn record says what happened in the confirmed action's `project` field (`ready`, or
+`not ready (<reason>): <why>`). The agent cannot clone into the home directory itself:
+that write is in the class `self`.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A
 turn starts from nothing but this file plus the turn variables: `JARVIS_TURN=1`,

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Project picker
-The app SHALL show the project names on the main screen, SHALL send each turn for the selected one, and SHALL remember the selection. The names are the ones typed in the settings, or, when the projects field is empty or `*`, the list the bridge returns on `GET /projects`, fetched with the same client and route rules as a turn when the app starts, when Mark asks for a refresh, and when a reply says the list changed. Unless the Home project setting is blank, the first entry SHALL be "General", which sends turns for the home project (default `jarvis-home`) and stands in for that name in the list. With nothing remembered and no Default project in the list, the app SHALL select General, and without General it SHALL select nothing unless there is only one entry.
+The app SHALL show the project names on the main screen, SHALL send each turn for the selected one, and SHALL remember the selection. The names are the ones typed in the settings, or, when the projects field is empty or `*`, the list the bridge returns on `GET /projects`, fetched with the same client and route rules as a turn when the app starts, when Mark asks for a refresh, and when a reply says the list changed. When the home project (setting Home project, default `jarvis-home`) is in the list, the first entry SHALL be "General", which sends turns for it and stands in for that name in the list. With nothing remembered and no Default project in the list, the app SHALL select General, and without General it SHALL select nothing unless there is only one project. A refresh SHALL NOT change the selection while the selected project is still in the list.
 
 #### Scenario: Switching project
 - **WHEN** Mark selects another project and asks a question
@@ -21,7 +21,7 @@ The app SHALL show the project names on the main screen, SHALL send each turn fo
 
 #### Scenario: Typed names
 - **WHEN** the projects field holds names
-- **THEN** the app shows exactly those names after General and does not ask the bridge
+- **THEN** the app shows exactly those names (the home project among them as General) and does not ask the bridge
 
 #### Scenario: Just talk
 - **WHEN** Mark opens the app for the first time with the default settings
@@ -36,9 +36,13 @@ The app SHALL show the project names on the main screen, SHALL send each turn fo
 - **THEN** that project is selected, not General
 
 #### Scenario: No General
-- **WHEN** the Home project setting is blank
+- **WHEN** the Home project setting is blank, or the list does not hold the home project
 - **THEN** there is no General entry and the picker works as without this setting
 
 #### Scenario: A new project is ready
 - **WHEN** a reply carries `X-Jarvis-Projects-Changed: 1` and the list comes from the bridge
-- **THEN** the app fetches the list again after the reply, and the selected project stays as it was
+- **THEN** the app fetches the list again once the reply has finished playing, the selected project stays as it was, and an error shown since is kept
+
+#### Scenario: Typed names and a new project
+- **WHEN** the projects field holds names
+- **THEN** each turn says so to the bridge in a header, so that Jarvis asks Mark to add a new project to the list

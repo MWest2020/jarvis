@@ -54,13 +54,23 @@ BUSY_SEND_TIMEOUT_S = 1.0
 HEAD_DEADLINE_S = 10.0
 HEAD_DEADLINE_ENV = "JARVIS_HEADER_DEADLINE_S"
 TIMEOUT_MESSAGE = b"the request did not arrive in time"
+# Held per project while its turn runs. In `full` mode any name of the agent host's
+# shape can be asked for (D52), so a lock lives only while it is held: taken and
+# dropped under one guard, so two turns can never hold two locks for one name.
 _project_locks: dict[str, threading.Lock] = {}
 _project_locks_guard = threading.Lock()
 
 
-def _project_lock(name: str) -> threading.Lock:
+def _try_project_lock(name: str) -> bool:
     with _project_locks_guard:
-        return _project_locks.setdefault(name, threading.Lock())
+        lock = _project_locks.setdefault(name, threading.Lock())
+        return lock.acquire(blocking=False)
+
+
+def _release_project_lock(name: str) -> None:
+    with _project_locks_guard:
+        lock = _project_locks.pop(name)
+        lock.release()
 
 
 def _parse_content_length(value: str | None) -> int | None:
@@ -282,8 +292,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         audio_bytes = self.rfile.read(length)
 
-        lock = _project_lock(project_name)
-        if not lock.acquire(blocking=False):
+        if not _try_project_lock(project_name):
             # Two turns on one session would race on its id (session continuity).
             self._respond_error(409, "this project is busy with another turn")
             return
@@ -300,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
             logger.exception("unexpected error handling turn for %s", project_name)
             self._respond_error(500, "internal error")
         finally:
-            lock.release()
+            _release_project_lock(project_name)
 
     def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes) -> None:
         project_name = project.name
@@ -319,8 +328,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.full is not None:
             # The pending confirmation, the fallback and the spoken errors of
             # `full` mode. A yes is only ever read from this transcript.
-            outcome = self.full.handle(project, transcript,
-                                       lambda: stt.speech_seconds(audio))
+            outcome = self.full.handle(
+                project, transcript, lambda: stt.speech_seconds(audio),
+                typed_list=self.headers.get("X-Jarvis-Projects", "") == "typed")
             logger.info("project=%s summary=%r", project_name, outcome.spoken)
             try:
                 audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)

@@ -35,8 +35,8 @@ DEFAULT_PR_STATUS_COMMAND = ("gh", "pr", "view")
 DEFAULT_RETENTION_DAYS = 90
 # After a confirmed `gh repo create` ran (jarvis-general-conversation D53).
 DEFAULT_CLONE_COMMAND = ("gh", "repo", "clone")
-DEFAULT_CLONE_TIMEOUT_S = 120
-MAX_CLONE_TIMEOUT_S = 600
+DEFAULT_CLONE_TIMEOUT_S = 45
+MAX_CLONE_TIMEOUT_S = 90
 PENDING_SECONDS = 60
 # The classes a confirmation can be switched off for. `self` is not one of
 # them: it stays desk-only whatever the switch says.
