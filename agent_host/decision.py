@@ -1,25 +1,42 @@
-"""What the gate answers to one tool call (1.7, 1.7b, 1.7d, 1.8a, D36).
+"""What the gate answers to one tool call (1.7 to 1.9, D36 "The flow").
 
 The logic behind `agent_host/gate`, kept in a module so that it can be
-tested without a process. Phase 1b1: the gate decides and refuses.
+tested without a process.
 
 - A call that no rule gates is let through in silence, so the user's allow
   rules, the classifier and the other hooks decide as for the coding
   session.
-- **Every gated call is denied.** There is no hash, no grant and no pending
-  call in this build; they are phase 1b2. Until then nothing is confirmable
-  by voice and every gated action is desk-only, which is the safe side.
-- The order of the refusals, for a gated call: first the checkout settings
-  rule (while a `.claude/settings*.json` of the turn's checkout or of the
-  call's own worktree carries `env`, `hooks` or `disableAllHooks`, every
-  gated call is denied, whatever else is true of it), then "run it alone"
-  for a compound command, then "needs the desk".
-- If anything here cannot be done (the rules cannot be read, the call
-  cannot be parsed, a crash), the caller denies: failing closed.
+- A gated call whose hash equals the grant in the environment is let
+  through in silence too, once. The grant is the hash the bridge sent with a
+  spoken yes; the wrapper put it in the environment of the `claude` process
+  before the agent existed. For a push the hash includes the push address
+  as git resolves it *now*: if that changed since the read-back, the call is
+  denied with `target_changed`.
+- Every other gated call is denied. What else happens depends on the call:
+  - nameable (agent_host.naming): it becomes the turn's **pending** call,
+    stored as tool name, input and real-path `cwd` and nothing derived, and
+    the agent is told to stop and end the turn. One per turn: every further
+    gated call is denied without becoming pending;
+  - nameable but for explicit targets that are missing: the denial lists
+    exactly those parts, nothing is pending, and the gate remembers the
+    call. The next gated call may be its **one repair** (the same words plus
+    only options from that list, the same `cwd`), which then becomes
+    pending. Anything else gated after such a refusal needs the desk;
+  - not nameable, or the class `self`: it needs the desk. Never pending.
+  - a compound command: "run it alone". Never pending.
+- The checkout settings rule comes before all of that: while a
+  `.claude/settings*.json` of the turn's checkout or of the call's own
+  worktree carries `env`, `hooks` or `disableAllHooks`, every gated call is
+  denied, **with or without a matching grant**.
+- `confirm = "off"`, or a call whose classes are all in `confirm_skip`:
+  the call is let through and noted as not confirmed. The class `self`
+  stays desk-only even then.
+- If anything here cannot be done (the rules or the state cannot be read,
+  the call cannot be parsed, a crash), the caller denies: failing closed.
 
 The reason of a denial is written for the agent and starts with a code in
-square brackets, one of the notice codes of D33, which 1b2's wrapper and
-the record will use.
+square brackets. Where it is a notice code of D33, the wrapper passes it on
+to the bridge when the turn ends with nothing pending.
 """
 from __future__ import annotations
 
@@ -28,7 +45,7 @@ import pwd
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent_host import checkout_settings, classify, rules as rules_mod
+from agent_host import checkout_settings, classify, naming, pending, rules as rules_mod
 from agent_host.config import AgentHostConfig
 
 _STOP = (
@@ -55,6 +72,36 @@ REASON_DESK = (
     "[needs_desk] That one needs the desk: it is an action that needs a spoken yes,"
     " and it cannot be confirmed by voice." + _STOP
 )
+REASON_PENDING = (
+    "[pending] This action needs a spoken yes. The driver will now hear exactly what"
+    " it does and be asked. Stop here and end your turn: do not run it another way, do"
+    " not ask the driver yourself, and do not start another action that needs a yes."
+)
+REASON_ONE_AT_A_TIME = (
+    "[pending] One confirmation at a time: an action of this turn is already waiting"
+    " for the driver's yes, so this one is refused and is not waiting. Stop here and"
+    " end your turn; it can be asked for again after the first is done."
+)
+REASON_TARGET_CHANGED = (
+    "[target_changed] The push target changed since it was read back to the driver,"
+    " so the confirmed push is refused. That one needs the desk." + _STOP
+)
+REASON_GRANT_USED = (
+    "[needs_desk] The driver's yes was for one run of this action, and it has been"
+    " used. That one needs the desk." + _STOP
+)
+
+
+def reason_missing(parts) -> str:
+    return (
+        "[missing] This action needs a spoken yes, and it can only be read back when"
+        " its targets stand in the call itself. Missing: " + "; ".join(parts) + "."
+        " Repeat the same command once, unchanged, with only that added, written"
+        " explicitly and never guessed from the surroundings. Anything else will need"
+        " the desk."
+    )
+
+
 REASON_ERROR = (
     "[needs_desk] The gate could not decide about this call, so it is refused. That"
     " one needs the desk." + _STOP
@@ -78,8 +125,34 @@ def user_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
+def build_context(config: AgentHostConfig, cwd: Path, *, home: Path | None = None,
+                  lib_dir: Path | None = None, git: classify.GitRunner = classify.run_git,
+                  environ=None) -> classify.Context:
+    """The classification context of one call. The gate and the wrapper both
+    build it here, so that they cannot judge by different surroundings."""
+    rules = rules_mod.load_rules(config.rules_dir)
+    return classify.context_for(
+        config, rules, cwd=cwd,
+        home=home if home is not None else user_home(),
+        lib_dir=lib_dir if lib_dir is not None else Path(__file__).resolve().parent,
+        # The turn's TMPDIR: the gate has it in its own environment, the
+        # wrapper passes the environment it built for the turn.
+        extra_temp_roots=((os.environ if environ is None else environ).get("TMPDIR", ""),),
+        git=git,
+    )
+
+
+def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> bool:
+    if "self" in verdict.classes:
+        return False
+    if config.confirm == "off":
+        return True
+    return bool(verdict.classes) and set(verdict.classes) <= config.confirm_skip
+
+
 def decide(
-    payload: object, config: AgentHostConfig, *, turn_checkout: Path,
+    payload: object, config: AgentHostConfig, *, turn_checkout: Path, turn_id: str,
+    grant: str | None = None, grant_base: str | None = None,
     home: Path | None = None, lib_dir: Path | None = None,
     git: classify.GitRunner = classify.run_git,
 ) -> Decision:
@@ -98,24 +171,78 @@ def decide(
         raise ValueError("the hook input has no absolute cwd")
     real_cwd = Path(os.path.realpath(cwd))
 
-    rules = rules_mod.load_rules(config.rules_dir)
-    ctx = classify.context_for(
-        config, rules, cwd=real_cwd,
-        home=home if home is not None else user_home(),
-        lib_dir=lib_dir if lib_dir is not None else Path(__file__).resolve().parent,
-        extra_temp_roots=(os.environ.get("TMPDIR", ""),),
-        git=git,
-    )
+    ctx = build_context(config, real_cwd, home=home, lib_dir=lib_dir, git=git)
     verdict = classify.classify(tool_name, tool_input, ctx)
     if not verdict.gated:
         return ALLOW
 
+    state = pending.TurnState.load(config.gate_dir, turn_id)
+
+    def deny(reason: str, code: str | None, sentence: str | None = None) -> Decision:
+        state.note("pending" if reason == REASON_PENDING else "refused",
+                   code=code, verdict=verdict, sentence=sentence)
+        state.save()
+        return Decision(False, reason, verdict)
+
     if checkout_settings.problem(
         turn_checkout, real_cwd, user_settings_path=config.user_settings_path,
     ) is not None:
-        return Decision(False, REASON_SETTINGS, verdict)
+        return deny(REASON_SETTINGS, "settings_changed")
     if verdict.desk_only:
-        return Decision(False, REASON_SELF, verdict)
+        return deny(REASON_SELF, "needs_desk")
+    if confirmation_off_for(verdict, config):
+        state.note("not_confirmed", code=None, verdict=verdict)
+        state.save()
+        return Decision(True, "", verdict)
     if verdict.run_alone:
-        return Decision(False, REASON_RUN_ALONE, verdict)
-    return Decision(False, REASON_DESK, verdict)
+        return deny(REASON_RUN_ALONE, "run_alone")
+
+    derived = naming.derive(tool_name, tool_input, ctx, config)
+    outcome = derived.outcome
+    sentence = outcome.sentence if isinstance(outcome, naming.Named) else None
+
+    if grant:
+        if derived.hash is not None and derived.hash == grant:
+            if state.data["grant_used"]:
+                return deny(REASON_GRANT_USED, "needs_desk", sentence)
+            state.data["grant_used"] = True
+            state.note("released", code=None, verdict=verdict, sentence=sentence)
+            state.save()
+            return Decision(True, "", verdict)
+        if grant_base and derived.base_hash == grant_base:
+            # The confirmed bytes in the confirmed directory, and yet another
+            # hash: the push address is no longer what was read back.
+            return deny(REASON_TARGET_CHANGED, "target_changed", sentence)
+
+    call = pending.make_call(tool_name, tool_input, str(real_cwd))
+    if state.data["pending"] is not None:
+        return deny(REASON_ONE_AT_A_TIME, None, sentence)
+    if state.data["desk"]:
+        return deny(REASON_DESK, "needs_desk")
+
+    refused = state.data["refused"]
+    if refused is not None:
+        is_the_repair = (
+            not state.data["repair_used"]
+            and isinstance(outcome, naming.Named)
+            and tool_name == "Bash" and refused["call"]["tool"] == "Bash"
+            and refused["call"]["cwd"] == str(real_cwd)
+            and naming.is_repair(refused["call"]["input"].get("command", ""),
+                                 tool_input.get("command", ""),
+                                 refused["options"], refused["words"])
+        )
+        state.data["repair_used"] = True
+        if not is_the_repair:
+            state.data["desk"] = True
+            return deny(REASON_DESK, "needs_desk")
+        state.data["pending"] = call
+        return deny(REASON_PENDING, None, sentence)
+
+    if isinstance(outcome, naming.Named):
+        state.data["pending"] = call
+        return deny(REASON_PENDING, None, sentence)
+    if isinstance(outcome, naming.Missing):
+        state.data["refused"] = {"call": call, "options": list(outcome.options),
+                                 "words": outcome.words}
+        return deny(reason_missing(outcome.parts), None)
+    return deny(REASON_DESK, "needs_desk")

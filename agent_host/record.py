@@ -1,17 +1,29 @@
-"""The per-turn audit record on the agent host (1.12a, D38).
+"""The audit trail on the agent host (1.12a, 1.12b, D38).
 
-One JSON file per turn under the state directory's `records/` (mode 0700 /
-0600 like the session store): time, project, session id, the prompt as
-received, the full reply, duration and outcome. Phase 1a has no gate yet, so
-`gated_actions` is always empty here; phase 1b appends to it. Redacted with
-the same pattern the bridge's log uses (bridge/logging_setup), should a
-reply ever quote something shaped like an Anthropic key.
+Under the wrapper's state directory, mode 0700, files 0600:
+
+- `records/<turn id>.json`: one record per turn. Time, project, session id,
+  the prompt as received, the full reply, duration and outcome, and every
+  gated action of the turn with its read-back and what became of it
+  (read back, confirmed, cancelled, refused, not confirmed because
+  confirmation is off).
+- `actions/<turn id>.jsonl`: one line per tool call that can change
+  something, written by the PostToolUse hook `agent_host/action-log`: the
+  tool, the command or target, the exit status.
+- kept for `retention_days` (90 by default). `prune()` removes what is
+  older; the timer that calls it is phase 4 (tasks 4.1, 4.2).
+
+Values shaped like secrets are redacted with the pattern the bridge's log
+uses (bridge/logging_setup). The records are written by the agent's own
+user: an account of what an agent that follows its rules did, not
+tamper-proof evidence (D38, D40).
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -61,3 +73,86 @@ def write_record(records_dir: Path, record: TurnRecord) -> Path:
     with os.fdopen(fd, "w") as fh:
         fh.write(body)
     return path
+
+
+# --- the action log (1.12b) ---------------------------------------------------------
+
+# The read-only file and search tools: everything else can change something.
+READ_ONLY_TOOLS = frozenset({
+    "Read", "Glob", "Grep", "LS", "NotebookRead", "TodoRead", "WebSearch", "WebFetch",
+    "ToolSearch", "ListMcpResourcesTool", "ReadMcpResourceTool",
+})
+_MAX_LOGGED_CHARS = 2000
+
+
+def action_line(payload: dict, now: str) -> dict | None:
+    """The log line for one PostToolUse hook input, or None for a tool that
+    only reads. Holds the tool, the command or target, and the exit status,
+    never the tool's output."""
+    tool = payload.get("tool_name")
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool, str) or not tool or tool in READ_ONLY_TOOLS:
+        return None
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == "Bash":
+        what = tool_input.get("command")
+    else:
+        what = (tool_input.get("file_path") or tool_input.get("notebook_path")
+                or tool_input.get("url") or tool_input.get("to"))
+    if not isinstance(what, str):
+        what = json.dumps(sorted(tool_input)) if tool_input else ""
+    response = payload.get("tool_response")
+    status: object = "ok"
+    if isinstance(response, dict):
+        for key in ("exit_code", "exitCode", "returncode"):
+            if isinstance(response.get(key), int):
+                status = response[key]
+                break
+        else:
+            if response.get("interrupted") is True:
+                status = "interrupted"
+            elif response.get("is_error") is True or response.get("error"):
+                status = "error"
+    return {
+        "time": now,
+        "tool": tool,
+        "what": redact(what)[:_MAX_LOGGED_CHARS],
+        "cwd": payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
+        "status": status,
+    }
+
+
+def append_action(actions_dir: Path, turn_id: str, line: dict) -> Path:
+    actions_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = actions_dir / f"{turn_id}.jsonl"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as fh:
+        fh.write(json.dumps(line) + "\n")
+    return path
+
+
+# --- retention (1.12b; the timer is 4.1 and 4.2) ---------------------------------------
+
+def prune(state_dir: Path, retention_days: int, now: float | None = None) -> list[Path]:
+    """Remove records, action logs and gate state older than
+    `retention_days`. Returns what was removed. Session ids, the lock and a
+    pending call are not touched."""
+    if retention_days < 1:
+        raise ValueError("retention_days must be at least 1")
+    cutoff = (time.time() if now is None else now) - retention_days * 86400
+    removed: list[Path] = []
+    for name in ("records", "actions", "gate"):
+        directory = state_dir / name
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                if path.is_file() and not path.is_symlink() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed.append(path)
+            except OSError:
+                continue
+    return removed

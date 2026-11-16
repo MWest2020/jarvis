@@ -1,18 +1,41 @@
-"""Orchestrates one turn (1.1-1.6, 1.7d, 1.12a, 1.13, D33/D34/D36/D37/D38).
+"""Orchestrates one turn (1.1-1.13, D33/D34/D36/D37/D38).
 
-Phase 1b1: the gate (agent_host/gate) decides and refuses. It denies every
-gated call and makes nothing pending, so `pending`, `readback` and `confirm`
-are still always the empty values of D33's table, and a `confirm` from the
-caller still always answers `expired` (nothing can be pending until 1b2
-adds the hash, the grant and the read-back).
+One request is one of three things:
 
-What this build adds here is the wrapper's half of the checkout settings
-rule (D36): a turn is refused with `unsafe_settings` when the checkout's own
-`.claude/settings.json` or `settings.local.json` carries `env`, `hooks` or
-`disableAllHooks`, and the two files are read again after the turn. If a key
-appeared during the turn the reply carries the notice `settings_changed`
-and the record says so; dropping a pending call at that point is 1b2's,
-when there is one to drop.
+- **A prompt.** The turn runs. If the gate made a call pending during it
+  (agent_host.decision), the wrapper derives everything about that call
+  again, from the call itself and with the same modules the gate used
+  (agent_host.naming): the classes, the targets, the hash, the sentence. It
+  completes the sentence with what only it can fetch (a merge's review and
+  check status), stores the call as the project's pending one, and answers
+  with `pending: true`, the read-back in `readback`, `confirm: {id, sha256,
+  class, expires_s}` and `spoken: ""`: the agent's own line is not sent at
+  all. If the read-back cannot be built, **nothing is pending** and the
+  notice is `needs_desk`; there is no fallback sentence, ever.
+- **A `confirm` with `yes`.** Accepted only when its id is the project's
+  pending call, not older than 60 seconds on this host, and its hash is the
+  hash of that call as derived now. Then a new turn starts with that hash
+  as the grant in the environment of the `claude` process and a fixed
+  prompt: what was confirmed, the directory, the exact call. Anything else
+  answers `expired` and nothing runs. After a confirmed call ran, the
+  wrapper (not the agent) runs the configured notify command with the
+  read-back.
+- **A `confirm` with `no`.** The pending call is cleared and no agent turn
+  starts.
+
+Every request for a project clears its pending call first, whatever the
+request is: a pending call is single use and never survives the next
+request.
+
+The checkout settings rule (D36) holds around every turn, the confirming
+one included: refused with `unsafe_settings` before it, and when a key
+appeared during it the pending call is dropped and the notice is
+`settings_changed`.
+
+The state directory is writable by the agent (D40). The wrapper therefore
+trusts nothing in it beyond the call itself: if the stored call was
+altered, the read-back describes the altered call and the hash releases the
+altered call. What is heard and what a yes releases are the same call.
 """
 from __future__ import annotations
 
@@ -22,13 +45,17 @@ import signal
 import subprocess
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from agent_host import checkout_settings, command, identity, projects
+from agent_host import (
+    checkout_settings, classify, command, decision, gatehash, identity, naming, pending,
+    projects, prstatus,
+)
 from agent_host import record as record_mod
 from agent_host import request as request_mod
-from agent_host.config import DEFAULT_CONFIG_PATH, AgentHostConfig, load_config
+from agent_host.config import DEFAULT_CONFIG_PATH, PENDING_SECONDS, AgentHostConfig, load_config
 from agent_host.sessions import KeyValueStore, SessionStore
 from agent_host.turnlock import Busy, acquire_turn_lock, available_memory_mb
 from bridge.summary import last_marker_line
@@ -43,8 +70,8 @@ ERROR_CODES = frozenset({
     "agent_failed", "disabled", "unsafe_settings", "expired",
 })
 
-# The closed notice list of D33. This build sets `new_session` and
-# `settings_changed`; the others arrive with the pending call (1b2).
+# The closed notice list of D33. `out_of_budget` is not set by any code yet
+# (tasks.md 2.6b).
 NOTICE_CODES = frozenset({
     "needs_desk", "run_alone", "settings_changed", "target_changed",
     "out_of_budget", "new_session",
@@ -95,29 +122,158 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
     except request_mod.RequestError:
         return _reply(status="error", error="bad_request")
 
-    if req.confirm is not None:
-        # No pending call can exist without a gate (phase 1b): any confirm
-        # answers that its call is gone, exactly as D33 defines `expired`.
-        return _reply(status="error", error="expired")
-
     try:
         working_dir = projects.resolve_project(config, req.project)
     except projects.ProjectError:
         return _reply(status="error", error="no_checkout")
 
+    # Every request for the project clears its pending call, whatever the
+    # request is (D36, step 4): read once here, gone afterwards.
+    stale = pending.take_pending(config.pending_dir, req.project)
+
+    turn_id = str(uuid.uuid4())
+    env = identity.build_child_env(
+        config.environment_file,
+        identity_env_var=config.identity_env_var,
+        session_identity=config.session_identity,
+        turn_id=turn_id,
+        config_path=config.config_path,
+        checkout=working_dir,
+    )
+
+    confirmed = None
+    prompt = req.prompt
+    if req.confirm is not None:
+        if req.confirm.answer == "no":
+            _record_cancelled(config, req.project, stale, env)
+            return _reply(status="ok")
+        if stale is None or stale.id != req.confirm.id or stale.expired():
+            return _reply(status="error", error="expired")
+
     if command.settings_default_to_bypass(config.user_settings_path):
         return _reply(status="error", error="unsafe_settings")
-    # The checkout settings rule, before the turn (D36, check 1).
+    # The checkout settings rule, before the turn, the confirming one
+    # included (D36, check 1).
     if _checkout_settings_problem(working_dir, config) is not None:
         return _reply(status="error", error="unsafe_settings")
+
+    if req.confirm is not None:
+        derived, _ = _derive(stale.call, config, env)
+        # The grant is the hash the bridge sent, and only when it equals the
+        # hash of the pending call as it is derived now.
+        if derived is None or not isinstance(derived.outcome, naming.Named) \
+                or derived.hash is None or derived.hash != req.confirm.sha256:
+            return _reply(status="error", error="expired")
+        confirmed = _Confirmed(req.confirm.sha256, derived.base_hash, derived.outcome.sentence)
+        prompt = confirming_prompt(confirmed.sentence, stale.call)
+        env["JARVIS_GRANT"] = confirmed.grant
+        env["JARVIS_GRANT_BASE"] = confirmed.base_hash
 
     try:
         with acquire_turn_lock(config.lock_path):
             if available_memory_mb() < config.memory_floor_mb:
                 return _reply(status="error", error="low_memory")
-            return _run_turn(req, working_dir, config)
+            return _run_turn(req.project, prompt, working_dir, config, turn_id=turn_id,
+                             env=env, confirmed=confirmed)
     except Busy:
         return _reply(status="error", error="busy")
+
+
+@dataclass(frozen=True)
+class _Confirmed:
+    grant: str        # the hash the bridge sent with the yes
+    base_hash: str    # the same call without its push address
+    sentence: str     # what was confirmed, as derived now
+
+
+def confirming_prompt(sentence: str, call: dict) -> str:
+    """The fixed prompt of a confirming turn (D36, step 5). The wrapper
+    writes it; a `confirm` request carries no prompt of its own."""
+    if call["tool"] == "Bash":
+        what = call["input"]["command"]
+    else:
+        what = (f"the tool {call['tool']} with exactly this input: "
+                f"{gatehash.call_text(call['tool'], call['input'])}")
+    return (
+        f"The driver confirmed: {sentence} Run exactly this now, in {call['cwd']}: {what}\n"
+        "Run it as one call, byte for byte, in that directory, and nothing else that"
+        " needs a yes. Then say in your spoken line whether it worked."
+    )
+
+
+def _derive(call: dict, config: AgentHostConfig, env: dict[str, str]):
+    """Everything about a stored call, from the call alone, with the gate's
+    own modules. (None, None) when that cannot be done."""
+    try:
+        if not pending.valid_call(call):
+            return None, None
+        ctx = decision.build_context(
+            config, Path(call["cwd"]), git=classify.git_runner(env), environ=env,
+        )
+        return naming.derive(call["tool"], call["input"], ctx, config), ctx
+    except Exception:  # noqa: BLE001 - whatever went wrong: no read-back, nothing pending
+        return None, None
+
+
+MAX_READBACK_CHARS = 500
+
+
+def build_readback(derived: naming.Derived, ctx, call: dict, config: AgentHostConfig,
+                   env: dict[str, str]) -> str | None:
+    """The sentence Mark hears: the template's words and shape-checked
+    targets, what the wrapper fetched about them, and the question. None
+    when it cannot be built; then nothing is pending."""
+    named = derived.outcome
+    if not isinstance(named, naming.Named) or derived.hash is None:
+        return None
+    parts = [named.sentence]
+    cwd = Path(call["cwd"])
+    if named.status is not None and named.status[0] == "merge":
+        _, number, repo, pin = named.status
+        parts.append(prstatus.merge_status(
+            number, repo, pin, command=config.pr_status_command, cwd=cwd, env=env))
+    elif named.status is not None and named.status[0] == "push" \
+            and "merge" in derived.verdict.classes:
+        _, remote, pairs = named.status
+        parts.append(prstatus.push_status(
+            remote, pairs, ctx.rules.default_branches, cwd=cwd, env=env))
+    parts.append(naming.SAY_YES)
+    text = " ".join(parts)
+    if len(text) > MAX_READBACK_CHARS or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None
+    return text
+
+
+def _record_cancelled(config: AgentHostConfig, project: str, stale, env: dict[str, str]) -> None:
+    """An exact no: nothing runs, and the record says what was cancelled."""
+    if stale is None:
+        return
+    derived, _ = _derive(stale.call, config, env)
+    sentence = derived.outcome.sentence if derived is not None \
+        and isinstance(derived.outcome, naming.Named) else None
+    rec = record_mod.TurnRecord(
+        turn_id=str(uuid.uuid4()), time=datetime.now(timezone.utc).isoformat(),
+        project=project, session_id=None, prompt="", reply="", duration_s=0.0,
+        outcome="cancelled",
+        gated_actions=[{"outcome": "cancelled", "readback": sentence}],
+    )
+    record_mod.write_record(config.records_dir, rec)
+
+
+def _notify(config: AgentHostConfig, sentence: str, cwd: Path, env: dict[str, str]) -> str:
+    """Run the configured notify command with the read-back (D36, step 7):
+    a confirmation Mark did not give is then visible outside the voice
+    channel. Run by the wrapper, never by the agent."""
+    if not config.notify_command:
+        return "not configured"
+    try:
+        proc = subprocess.run(
+            [*config.notify_command, sentence], cwd=cwd, env=env, capture_output=True,
+            timeout=30, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "failed"
+    return "sent" if proc.returncode == 0 else "failed"
 
 
 def _checkout_settings_problem(working_dir: Path, config: AgentHostConfig) -> str | None:
@@ -170,7 +326,7 @@ def _resolve_session_id(
 def _write_record(
     config: AgentHostConfig, *, turn_id: str, project: str, session_id: str | None,
     prompt: str, reply_text: str, duration_s: float, outcome: str,
-    settings_changed: str | None = None,
+    settings_changed: str | None = None, gated_actions: list[dict] | None = None,
 ) -> None:
     rec = record_mod.TurnRecord(
         turn_id=turn_id,
@@ -182,15 +338,71 @@ def _write_record(
         duration_s=duration_s,
         outcome=outcome,
         settings_changed=settings_changed,
+        gated_actions=gated_actions or [],
     )
     record_mod.write_record(config.records_dir, rec)
 
 
-def _run_turn(req: request_mod.Request, working_dir: Path, config: AgentHostConfig) -> dict:
-    turn_id = str(uuid.uuid4())
+def _after_turn(
+    config: AgentHostConfig, project: str, turn_id: str, working_dir: Path,
+    env: dict[str, str], confirmed: _Confirmed | None, *, changed: str | None, ok: bool,
+) -> tuple[list[dict], dict | None, str | None]:
+    """What the gate left behind in this turn: (the gated actions for the
+    record, the pending reply fields or None, the notice or None)."""
+    state = pending.read_turn_state(config.gate_dir, turn_id)
+    actions = [dict(event) for event in state["events"] if isinstance(event, dict)]
+    notice = None
+    for event in reversed(actions):
+        if event.get("code") in NOTICE_CODES:
+            notice = event["code"]
+            break
+
+    if confirmed is not None:
+        if state["grant_used"] is True:
+            actions.append({
+                "outcome": "confirmed", "readback": confirmed.sentence,
+                "notify": _notify(config, confirmed.sentence, working_dir, env),
+            })
+        else:
+            actions.append({"outcome": "confirmed, not run", "readback": confirmed.sentence})
+
+    call = state["pending"]
+    if changed is not None:
+        # D36, check 3: a key appeared during the turn. Whatever was pending
+        # is dropped, and the record says why.
+        if call is not None:
+            actions.append({"outcome": "dropped", "why": changed})
+        return actions, None, "settings_changed"
+    if call is None or not ok:
+        return actions, None, notice
+
+    derived, ctx = _derive(call, config, env)
+    readback = build_readback(derived, ctx, call, config, env) if derived is not None else None
+    if readback is None:
+        # No fallback sentence, ever: nothing is pending (D36, step 4).
+        actions.append({"outcome": "refused", "code": "needs_desk",
+                        "why": "the read-back could not be built"})
+        return actions, None, "needs_desk"
+    pending_id = str(uuid.uuid4())
+    pending.store_pending(config.pending_dir, project, pending_id, call)
+    actions.append({"outcome": "read back", "readback": readback})
+    fields = {
+        "readback": readback,
+        "confirm": {
+            "id": pending_id, "sha256": derived.hash,
+            "class": ", ".join(derived.verdict.classes), "expires_s": PENDING_SECONDS,
+        },
+    }
+    return actions, fields, None
+
+
+def _run_turn(
+    project: str, prompt: str, working_dir: Path, config: AgentHostConfig, *,
+    turn_id: str, env: dict[str, str], confirmed: _Confirmed | None = None,
+) -> dict:
     sessions = SessionStore(config.sessions_dir / "sessions.json")
-    stored_id, discarded = sessions.get(req.project)
-    rotated_id = _resolve_session_id(config, req.project, stored_id, now=datetime.now())
+    stored_id, discarded = sessions.get(project)
+    rotated_id = _resolve_session_id(config, project, stored_id, now=datetime.now())
     if rotated_id != stored_id:
         discarded = True
     stored_id = rotated_id
@@ -203,14 +415,6 @@ def _run_turn(req: request_mod.Request, working_dir: Path, config: AgentHostConf
         append_prompt_inline=inline,
         prompt_text=_prompt_text(config) if inline else "",
     )
-    env = identity.build_child_env(
-        config.environment_file,
-        identity_env_var=config.identity_env_var,
-        session_identity=config.session_identity,
-        turn_id=turn_id,
-        config_path=config.config_path,
-        checkout=working_dir,
-    )
 
     started = time.monotonic()
     # The prompt goes over stdin, never argv (as for the coding session's
@@ -220,58 +424,55 @@ def _run_turn(req: request_mod.Request, working_dir: Path, config: AgentHostConf
         argv, cwd=working_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
     )
+    timed_out = False
     try:
-        stdout, stderr = proc.communicate(req.prompt, timeout=config.timeout_s)
+        stdout, stderr = proc.communicate(prompt, timeout=config.timeout_s)
     except subprocess.TimeoutExpired:
+        timed_out = True
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         proc.communicate()
-        duration = time.monotonic() - started
-        changed = _checkout_settings_problem(working_dir, config)
-        _write_record(
-            config, turn_id=turn_id, project=req.project, session_id=stored_id,
-            prompt=req.prompt, reply_text="", duration_s=duration, outcome="timeout",
-            settings_changed=changed,
-        )
-        return _reply(status="error", error="timeout", turn=turn_id,
-                      notice="settings_changed" if changed else None)
+        stdout = stderr = ""
     duration = time.monotonic() - started
     # The checkout settings rule, after the turn (D36, check 3): the files
     # were safe when the turn started, so a problem now appeared during it.
     changed = _checkout_settings_problem(working_dir, config)
-    changed_notice = "settings_changed" if changed else None
 
-    if proc.returncode != 0:
-        _write_record(
-            config, turn_id=turn_id, project=req.project, session_id=stored_id,
-            prompt=req.prompt, reply_text=stderr, duration_s=duration, outcome="agent_failed",
-            settings_changed=changed,
-        )
-        return _reply(status="error", error="agent_failed", turn=turn_id, notice=changed_notice)
+    reply_text, new_session_id, outcome = "", stored_id, "ok"
+    if timed_out:
+        outcome = "timeout"
+    elif proc.returncode != 0:
+        reply_text, outcome = stderr, "agent_failed"
+    else:
+        try:
+            payload = json.loads(stdout)
+            reply_text = payload["result"]
+            new_session_id = payload["session_id"]
+            if not isinstance(reply_text, str) or not isinstance(new_session_id, str):
+                raise TypeError
+        except (json.JSONDecodeError, KeyError, TypeError):
+            reply_text, new_session_id, outcome = stdout, stored_id, "agent_failed"
 
-    try:
-        payload = json.loads(stdout)
-        reply_text = payload["result"]
-        new_session_id = payload["session_id"]
-        if not isinstance(reply_text, str) or not isinstance(new_session_id, str):
-            raise TypeError
-    except (json.JSONDecodeError, KeyError, TypeError):
-        _write_record(
-            config, turn_id=turn_id, project=req.project, session_id=stored_id,
-            prompt=req.prompt, reply_text=stdout, duration_s=duration, outcome="agent_failed",
-            settings_changed=changed,
-        )
-        return _reply(status="error", error="agent_failed", turn=turn_id, notice=changed_notice)
-
-    sessions.set(req.project, new_session_id)
+    actions, pending_fields, notice = _after_turn(
+        config, project, turn_id, working_dir, env, confirmed,
+        changed=changed, ok=outcome == "ok",
+    )
+    if outcome == "ok":
+        sessions.set(project, new_session_id)
     _write_record(
-        config, turn_id=turn_id, project=req.project, session_id=new_session_id,
-        prompt=req.prompt, reply_text=reply_text, duration_s=duration, outcome="ok",
-        settings_changed=changed,
+        config, turn_id=turn_id, project=project, session_id=new_session_id,
+        prompt=prompt, reply_text=reply_text, duration_s=duration, outcome=outcome,
+        settings_changed=changed, gated_actions=actions,
     )
 
+    if outcome != "ok":
+        return _reply(status="error", error=outcome, turn=turn_id, notice=notice)
+    if pending_fields is not None:
+        # While a confirmation is pending, the agent's own line is not sent.
+        return _reply(status="ok", turn=turn_id, spoken="", pending=True, **pending_fields)
     spoken = last_marker_line(reply_text)
-    notice = changed_notice or ("new_session" if discarded else None)
+    if notice is None and discarded:
+        notice = "new_session"
     return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice)

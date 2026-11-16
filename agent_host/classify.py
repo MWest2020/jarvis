@@ -98,18 +98,25 @@ UNGATED = Verdict()
 GitRunner = Callable[[list[str], Path], "str | None"]
 
 
-def run_git(args: list[str], cwd: Path) -> str | None:
+def run_git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str | None:
     """`git <args>` in `cwd`: its output, or None when it fails for any reason."""
     try:
         proc = subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
         return None
     return proc.stdout.strip()
+
+
+def git_runner(env: dict[str, str]) -> GitRunner:
+    """A `git` that runs in the given environment. The gate inherits the
+    turn's environment from Claude Code; the wrapper's own comes from sshd,
+    so it passes the turn's (agent_host.identity) to see what the gate saw."""
+    return lambda args, cwd: run_git(args, cwd, env)
 
 
 # --- the protected paths of the class `self` ------------------------------------
