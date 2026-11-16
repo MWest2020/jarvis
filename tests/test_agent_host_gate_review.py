@@ -201,8 +201,10 @@ def _worktree(tmp_path):
 ])
 def test_e_a_recursive_delete_the_gate_cannot_place_is_class_delete(tmp_path, command):
     _, ctx = _worktree(tmp_path)
-    # `delete`, or `self` when the tree it names holds Jarvis's own rules.
-    assert _stopped(ctx, command).classes in (("delete",), ("self",))
+    # `delete`; `self` when the tree it names holds Jarvis's own rules; or
+    # refused outright when the path is something the shell still expands.
+    verdict = _stopped(ctx, command)
+    assert verdict.classes in (("delete",), ("self",)) or verdict.run_alone
 
 
 @pytest.mark.parametrize("command", [

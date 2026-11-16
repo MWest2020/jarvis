@@ -280,6 +280,10 @@ temp_roots = ["/tmp", "/var/tmp"]
 words = [
     "send", "reply", "forward", "delete", "trash", "publish", "share", "post",
     "message", "comment", "upload", "invite",
+    # Connectors that change a forge or a tracker (review of #43):
+    # mcp__github__merge_pull_request, push_files, create_or_update_file ...
+    "merge", "push", "create", "update", "write", "fork", "transfer",
+    "approve", "dismiss", "close", "reopen", "assign",
 ]
 
 # --- built-in tools --------------------------------------------------------------
@@ -312,7 +316,13 @@ home_paths = [
     ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".config/fish/config.fish",
 ]
 # Relative to Claude Code's user directory (where the user settings are).
-claude_dir_paths = ["CLAUDE.md", "agents", "skills", "plugins", "settings.local.json"]
+claude_dir_paths = ["CLAUDE.md", "agents", "skills", "plugins", "hooks", "settings.local.json"]
+# Directories that are protected as a place: a write INTO one of them (a
+# copy, an unpack, a download, whatever the program) is a write to Jarvis's
+# own rules, and so is a command that is not a plain read run from inside
+# one. Relative to the home directory; "" is the home directory itself. The
+# Claude Code user directory and every checkout's `.claude` are added.
+home_dirs = ["", ".ssh"]
 # A shell command that names a protected path is a write unless every
 # program in it is one of these and nothing is redirected.
 read_programs = [

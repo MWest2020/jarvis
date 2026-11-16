@@ -28,7 +28,7 @@ def main() -> int:
 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from agent_host import record
-        from agent_host.config import load_config
+        from agent_host.config import hook_config_path, load_config
         from agent_host.sessions import is_canonical_uuid
 
         turn_id = os.environ["JARVIS_TURN_ID"]
@@ -40,7 +40,7 @@ def main() -> int:
         line = record.action_line(payload, datetime.now(timezone.utc).isoformat())
         if line is None:
             return 0
-        config = load_config(Path(os.environ["JARVIS_AGENT_CONFIG"]))
+        config = load_config(hook_config_path(os.environ, Path(__file__).resolve().parent))
         record.append_action(config.actions_dir, turn_id, line)
     except BaseException:  # noqa: BLE001 - this hook never fails a call
         pass

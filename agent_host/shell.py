@@ -47,6 +47,11 @@ _CUT_RE = re.compile(r"[\n\r;&|()<>`]")
 _NOT_A_PROGRAM_RE = re.compile(r"[({<>]|\d+[<>]")
 _QUOTE_RE = re.compile(r"[\"'{}$]")
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_ODD_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\]\+?=|\+=)")
+_GLOB_IN_WORD_RE = re.compile(r"[*?\[\]]")
+_VARIABLE_RE = re.compile(r"\$[A-Za-z_{]")
+_TILDE_USER_RE = re.compile(r"(?:^|[\s=:])~[A-Za-z_]")
+_BRACE_RE = re.compile(r"\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}")
 # Redirections that send nothing anywhere: `2>&1`, `>/dev/null`,
 # `2>/dev/null`, `&>/dev/null`, `</dev/null`. They are taken out before the
 # command is read, so `pytest -q 2>&1` is still one command.
@@ -133,6 +138,10 @@ class Analysis:
     # classifier lets a compound call through only when every piece is a
     # known-harmless read program.
     segments: tuple[tuple[str, ...], ...] = ()
+    # The program of the call cannot be told at all (a redirection, a
+    # subshell or a group in front of it, a pattern in the program word):
+    # refused whatever its pieces look like.
+    refuse: bool = False
     # One command, with a separator character inside a quoted argument
     # (`grep -E 'a|b' f`, `git commit -m 'a & b'`). It runs like any other
     # single command when no rule gates it; a gated one is refused with
@@ -234,6 +243,41 @@ def substitutes(command: str) -> bool:
     return any(mark in command for mark in _SUBSTITUTIONS)
 
 
+def has_expansion(command: str) -> bool:
+    """Something the shell would still expand into a word the gate does not
+    see: a variable (outside single quotes), or `~user` or a brace
+    expansion (outside all quotes). `$1`, `$?` and friends are not looked
+    at; the caller has put the home directory in place of `$HOME`."""
+    outside_single: list[str] = []
+    outside_all: list[str] = []
+    state = ""
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if state == "'":
+            if char == "'":
+                state = ""
+        elif state == '"':
+            if char == "\\" and index + 1 < len(command):
+                index += 1
+            elif char == '"':
+                state = ""
+            else:
+                outside_single.append(char)
+        elif char == "\\" and index + 1 < len(command):
+            index += 1
+        elif char in "'\"":
+            state = char
+            outside_single.append(" ")
+            outside_all.append(" ")
+        else:
+            outside_single.append(char)
+            outside_all.append(char)
+        index += 1
+    text, bare = "".join(outside_single), "".join(outside_all)
+    return bool(_VARIABLE_RE.search(text) or _TILDE_USER_RE.search(bare) or _BRACE_RE.search(bare))
+
+
 def lenient_segments(command: str) -> list[list[str]]:
     """The words of every piece between separators, quotes ignored."""
     segments = []
@@ -275,6 +319,8 @@ def _strip(argv: list[str]) -> tuple[list[str], bool, list[str]]:
     while words:
         word = words[0]
         name = program_name(word)
+        if _ODD_ASSIGNMENT_RE.match(word):
+            return words, False, names  # `A+=x`, `A[0]=x`: not followed
         if _ASSIGNMENT_RE.match(word):
             names.append(word.split("=", 1)[0])
             words = words[1:]
@@ -368,7 +414,7 @@ def analyse(
     command = without_benign_redirects(command)
     root_word = False
 
-    def compound(text: str, wrappers, everywhere: bool = False) -> Analysis:
+    def compound(text: str, wrappers, everywhere: bool = False, refuse: bool = False) -> Analysis:
         # Quotes mean nothing here, so a root program counts wherever the
         # word stands in the whole call.
         segments = lenient_segments(command)
@@ -379,6 +425,7 @@ def analyse(
                                  follow_all=follow_all, everywhere=everywhere),
             root_word=root_word or _has_root_word(all_words, root_programs),
             segments=tuple(tuple(segment) for segment in segments),
+            refuse=refuse,
         )
 
     quoted_separator = False
@@ -403,8 +450,8 @@ def analyse(
         if not argv:
             return Analysis(compound=False, commands=(), root_word=root_word,
                             quoted_separator=quoted_separator)
-        if _NOT_A_PROGRAM_RE.match(argv[0]):
-            return compound(text, wrappers, everywhere=True)
+        if _NOT_A_PROGRAM_RE.match(argv[0]) or _GLOB_IN_WORD_RE.search(argv[0]):
+            return compound(text, wrappers, everywhere=True, refuse=True)
         return unwrap(argv, text, wrappers, depth, tuple(names))
 
     def single(argv, wrappers, names, root=None) -> Analysis:
@@ -415,6 +462,8 @@ def analyse(
     def unwrap(argv: list[str], text: str, wrappers, depth: int, names) -> Analysis:
         name = program_name(argv[0])
 
+        if _NOT_A_PROGRAM_RE.match(argv[0]) or _GLOB_IN_WORD_RE.search(argv[0]):
+            return compound(text, wrappers, everywhere=True, refuse=True)
         if name in indirect:
             return compound(text, wrappers)
 
@@ -490,6 +539,21 @@ def _shell_c_string(args: list[str]) -> str | None:
             index += 2
             continue
         if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
-            return args[index + 1] if index + 1 < len(args) else None
+            # With -c the command string is the first argument that is not
+            # an option: `bash -c -x -- 'cmd'`, `bash -c -e 'cmd'`.
+            rest = args[index + 1:]
+            position = 0
+            while position < len(rest):
+                later = rest[position]
+                if later == "--":
+                    position += 1
+                    break
+                if later in _SHELL_VALUE_OPTIONS:
+                    position += 2
+                elif later.startswith(("-", "+")) and later not in ("-", "+"):
+                    position += 1
+                else:
+                    break
+            return rest[position] if position < len(rest) else None
         index += 1
     return None

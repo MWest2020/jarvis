@@ -589,15 +589,10 @@ def test_rm_r_outside_the_worktree_is_class_delete(tmp_path):
         "rm -rf ../*",
         "rm -rf build ../other",
         "rm -rf ~/projects",
-        "rm -rf $TARGET",
         "rm -rf -- -weird ../other",
         # What the shell would still expand, and every `..`, is not placed at all.
         "rm -rf sub/*",
         "rm -rf sub/../sub",
-        "rm -rf {sub,/etc}",
-        "rm -rf sub/{a,b}",
-        "rm -rf ~root/x",
-        "rm -rf ~other",
         "rm --r ../x",
         "rm --re ../x",
         "rm --rec -f ../x",
@@ -614,6 +609,16 @@ def test_rm_r_outside_the_worktree_is_class_delete(tmp_path):
         "rm --force --verbose ../file",
     ):
         _assert(ctx, command, False)
+
+
+def test_rm_r_of_something_the_shell_still_expands_is_refused(tmp_path):
+    work = tmp_path / "area" / "work"
+    git_init(work)
+    ctx = make_ctx(tmp_path, cwd=work)
+    for command in ("rm -rf $TARGET", "rm -rf {sub,/etc}", "rm -rf sub/{a,b}", "rm -rf ~root/x",
+                    "rm -rf ~other", "rm -rf ${DIR}/x"):
+        verdict = bash(command, ctx)
+        assert verdict.gated and verdict.run_alone, command
 
 
 def test_rm_r_through_a_symlink_out_of_the_worktree_is_gated(tmp_path):
@@ -705,8 +710,8 @@ def test_the_repository_rules_load_and_hold_the_programs_of_d36(tmp_path):
         assert verb in kubectl.read_verbs
     assert "read" in rules.programs["bao"].read_verbs
     assert "read" not in kubectl.read_verbs
-    assert set(rules.mcp_words) == {"send", "reply", "forward", "delete", "trash", "publish",
-                                    "share", "post", "message", "comment", "upload", "invite"}
+    assert {"send", "reply", "forward", "delete", "trash", "publish", "share", "post", "message",
+            "comment", "upload", "invite"} <= set(rules.mcp_words)
     assert rules.root_programs == {"sudo", "su", "pkexec", "doas"}
 
 

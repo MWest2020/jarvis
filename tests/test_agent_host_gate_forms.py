@@ -291,7 +291,7 @@ def test_a_here_document_into_a_gated_command_is_still_run_it_alone(env):
     # An unquoted here-document expands what is in it.
     "git commit -F - <<EOF\nfix $(gh repo delete x)\nEOF",
     "git commit -F - <<EOF\nfix `gh repo delete x`\nEOF",
-    "git commit -F - <<EOF\nfix $HOME\nEOF",
+    "git commit -F - <<EOF\nfix $USER\nEOF",
     # Something before, behind or after it.
     "git commit -F - <<'EOF'\nfix\nEOF\ngh repo delete x",
     "git commit -F - <<'EOF'\nfix\nEOF\n\nls",
