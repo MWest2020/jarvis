@@ -29,11 +29,12 @@ What is in it:
   first use.
 - Node and Claude Code, pinned (`CLAUDE_CODE_VERSION` build argument, 2.1.322 or newer:
   the bridge refuses to start without Claude Code's `--restricted` flag).
-- The faster-whisper `base` weights and Kokoro with the `af_heart` voice, fetched at build
+- The faster-whisper `base` weights and Kokoro with the `bm_george` (default, British male) and `af_heart` voices, fetched at build
   time at pinned Hugging Face commits (`deploy/fetch_models.py`), then checked by running
   the bridge's own warm-up offline. The container sets `HF_HUB_OFFLINE=1`, so a pod start
-  downloads nothing. Another voice means a rebuild with
-  `--build-arg KOKORO_VOICES="af_heart bf_emma"`; another Whisper size also needs its
+  downloads nothing. Switching between the two baked voices is an env change
+  (`JARVIS_KOKORO_VOICE=af_heart`); any other voice means a rebuild with
+  `--build-arg KOKORO_VOICES="bm_george af_heart bf_emma"`; another Whisper size also needs its
   commit added to `fetch_models.py`.
 - `jarvis-sync-projects` (the project sync below).
 - The OpenSSH client, for `full` mode only (below). Never started in `readonly` mode.

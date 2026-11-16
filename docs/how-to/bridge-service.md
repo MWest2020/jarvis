@@ -51,7 +51,7 @@ your process manager.
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |
 | `JARVIS_STATE_DIR` | no (default `~/.jarvis`) | Where the per-project session id and the log file are stored. Outside the repo, never in git. |
 | `JARVIS_WHISPER_MODEL` | no (default `base`) | faster-whisper model size; CPU-friendly sizes are `tiny`, `base`, `small`. |
-| `JARVIS_KOKORO_VOICE` | no (default `af_heart`) | A Kokoro voice name. Pick one by ear once the service runs (see below). |
+| `JARVIS_KOKORO_VOICE` | no (default `bm_george`) | A Kokoro voice name. The default is a British male voice; the image also carries `af_heart` (American female). Pick one by ear once the service runs (see below). |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
@@ -356,26 +356,33 @@ all: the reply goes out at once with `Connection: close`. The log and the sessio
 are created owner-only (`0600`, in a `0700` directory, rotated logs too): the log
 holds full replies, which can quote file contents.
 
-Only the summary is spoken, and only when it is short (300 characters at most)
-and contains nothing that looks like code or a path (backticks, slashes, file
+Only the summary is spoken, at most 160 characters of it (Claude Code is asked for
+one sentence, two at most, of about 100 to 150 characters, because speech is the slow
+part of a turn; a longer one is cut at its last sentence end within 160 characters,
+or else at a word, with "…"), and only when it contains nothing that looks like code or a path (backticks, slashes, file
 names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
 letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
 details."
 
 ## Picking a Kokoro voice
 
-Kokoro ships several voices. Try a few by setting `JARVIS_KOKORO_VOICE` and
-listening to a response, or render one directly:
+Jarvis speaks with `bm_george`, a British male voice, unless `JARVIS_KOKORO_VOICE`
+says otherwise. Kokoro ships several voices: the first letter of a name is the
+language (`a` American, `b` British English), the second `f` or `m`. A `b…` voice is
+pronounced as British English, every other voice as American English. Try a few by
+setting `JARVIS_KOKORO_VOICE` and listening to a response, or render one directly:
 
 ```sh
 uv run python -c "
 from bridge.tts import synthesize
-open('/tmp/voice-test.wav', 'wb').write(synthesize('This is a test.', voice='af_heart'))
+open('/tmp/voice-test.wav', 'wb').write(synthesize('This is a test.', voice='bm_george'))
 "
 ```
 
 Play `/tmp/voice-test.wav` and try other voice names (see the Kokoro project's
-voice list) until one sounds right for spoken replies in a car.
+voice list) until one sounds right for spoken replies in a car. In the cluster image
+only the baked voices work (`bm_george` and `af_heart`); see
+[`run-in-cluster.md`](run-in-cluster.md).
 
 ## Manual end-to-end check on the tailnet (task 4.1)
 

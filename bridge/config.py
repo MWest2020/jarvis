@@ -462,7 +462,7 @@ def load_config() -> BridgeConfig:
         session_store_path=state_dir / "sessions.json",
         log_path=state_dir / "bridge.log",
         whisper_model=os.environ.get("JARVIS_WHISPER_MODEL", "base"),
-        kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "af_heart"),
+        kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "bm_george"),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,
