@@ -333,18 +333,26 @@ def _judge(argv: tuple[str, ...], ctx: Context) -> Verdict:
         return _judge_http(program, args, ctx)
     if program in rules.programs:
         return _judge_default(rules.programs[program], args, ctx)
-    classes = _action_classes(program, (), args, ctx)
+    # A program that is not gated by default: an action rule is what gates
+    # it. Its words are its arguments up to the first option, its verb the
+    # first of them (`factory build jarvis`: path `build`).
+    words: list[str] = []
+    for arg in args:
+        if arg.startswith("-"):
+            break
+        words.append(arg)
+    classes = _action_classes(program, tuple(words), ctx, verb=words[0] if words else None)
     if classes:
         return Verdict(gated=True, classes=classes, rule=f"action:{program}")
     return UNGATED
 
 
 def _action_classes(
-    program: str, subpath: tuple[str, ...], args: list[str], ctx: Context,
+    program: str, subpath: tuple[str, ...], ctx: Context, *, verb: str | None = None,
 ) -> tuple[str, ...]:
     classes: list[str] = []
     for action in ctx.rules.actions:
-        if action.matches(program, subpath) and action.cls not in classes:
+        if action.matches(program, subpath, verb) and action.cls not in classes:
             classes.append(action.cls)
     return tuple(classes)
 
@@ -418,7 +426,7 @@ def _judge_default(program: Program, args: list[str], ctx: Context) -> Verdict:
     if _is_read_verb(program, subpath[-1]):
         return UNGATED
 
-    classes = list(_action_classes(name, subpath, args, ctx))
+    classes = list(_action_classes(name, subpath, ctx))
     for cls in _option_classes(name, args, ctx):
         if cls not in classes:
             classes.append(cls)

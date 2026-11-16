@@ -49,14 +49,18 @@ class Action:
     paths: tuple[tuple[str, ...], ...]
     verbs: frozenset[str]
 
-    def matches(self, program: str, subpath: tuple[str, ...]) -> bool:
+    def matches(self, program: str, subpath: tuple[str, ...], verb: str | None = None) -> bool:
+        """`subpath` is the call's words up to and including its verb;
+        `verb` is that verb, the last of them unless the caller says so."""
         if program not in self.programs:
             return False
         if not self.paths and not self.verbs:
             return True
         if any(subpath[:len(path)] == path for path in self.paths):
             return True
-        return bool(subpath) and subpath[-1] in self.verbs
+        if verb is None:
+            verb = subpath[-1] if subpath else None
+        return verb is not None and verb in self.verbs
 
 
 @dataclass(frozen=True)

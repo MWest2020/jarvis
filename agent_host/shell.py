@@ -9,12 +9,12 @@ are gated is `agent_host.classify`'s business.
   `bash -c` and `sh -c` are unwrapped, at any depth: the result is the
   innermost command plus the wrappers around it.
 - *More than one command, or one the gate cannot follow.* If the string
-  holds `;`, `&`, `|`, a parenthesis (so `$(` and `<(`), a redirection, a
-  backtick or a newline **anywhere, inside quotes included**, or uses
-  `eval`, `xargs`, `source` or another program that runs its arguments, it
-  is not read as one command. It is cut at every separator, quotes are
-  ignored, and every place where a command could start becomes a
-  *candidate*. If the classifier finds one candidate gated, the whole call
+  holds `;`, `&`, `|`, `$(`, `<(`, a backtick or a newline **anywhere,
+  inside quotes included**, or starts with a subshell, a group or a
+  redirection, or uses `eval`, `xargs`, `source` or another program that
+  runs its arguments, it is not read as one command. It is cut at every
+  separator, parenthesis and redirection, quotes are ignored, and every
+  place where a command could start becomes a *candidate*. If the classifier finds one candidate gated, the whole call
   is refused with "run it alone" and never becomes pending: a read-back of
   one sentence cannot cover two commands (D36). If no candidate is gated,
   the call is not the gate's business and runs (`ls | wc -l`).
@@ -30,9 +30,15 @@ import re
 import shlex
 from dataclasses import dataclass
 
-# `&` covers `&&`, `|` covers `||`, `(` covers `$(` and `<(`. Redirections
-# are in the set as well: `>file gh repo delete x` must not hide its program.
-_SEPARATOR_RE = re.compile(r"[\n\r;&|()<>`]")
+# D36's list: `;`, `&&`, `||`, `|`, `&`, `$(`, `<(`, a backtick, a newline.
+# `&` covers `&&` and `|` covers `||`.
+_SEPARATOR_RE = re.compile(r"[\n\r;&|`]|\$\(|<\(")
+# Where a candidate command can start in a string that is not one command:
+# after a separator, and also after a parenthesis or a redirection.
+_CUT_RE = re.compile(r"[\n\r;&|()<>`]")
+# A first word like `(gh`, `{`, `>out` or `2>out`: a subshell, a group or a
+# redirection in front of the program. Not one command the gate can follow.
+_NOT_A_PROGRAM_RE = re.compile(r"[({<>]|\d+[<>]")
 _QUOTE_RE = re.compile(r"[\"'{}$]")
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -91,7 +97,7 @@ def has_separator(command: str) -> bool:
 def lenient_segments(command: str) -> list[list[str]]:
     """The words of every piece between separators, quotes ignored."""
     segments = []
-    for piece in _SEPARATOR_RE.split(command):
+    for piece in _CUT_RE.split(command):
         words = _QUOTE_RE.sub(" ", piece.replace("\\", "")).split()
         if words:
             segments.append(words)
@@ -183,15 +189,17 @@ def analyse(
 ) -> Analysis:
     """Read one `Bash` command string. See the module docstring."""
     follow_all = shells | indirect | root_programs | {"ssh", "env"}
-    all_words = [word for segment in lenient_segments(command) for word in segment]
-    root_word = _has_root_word(all_words, root_programs)
+    root_word = False
 
     def compound(text: str, wrappers) -> Analysis:
+        # Quotes mean nothing here, so a root program counts wherever the
+        # word stands in the whole call.
+        all_words = [word for segment in lenient_segments(command) for word in segment]
         return Analysis(
             compound=True,
             commands=_candidates(text, wrappers, known_programs=known_programs,
                                  follow_all=follow_all),
-            root_word=root_word,
+            root_word=root_word or _has_root_word(all_words, root_programs),
         )
 
     def one(text: str, wrappers: tuple[tuple[str, str], ...], depth: int) -> Analysis:
@@ -208,6 +216,8 @@ def analyse(
             return compound(text, wrappers)
         if not argv:
             return Analysis(compound=False, commands=(), root_word=root_word)
+        if _NOT_A_PROGRAM_RE.match(argv[0]):
+            return compound(text, wrappers)
         return unwrap(argv, text, wrappers, depth)
 
     def unwrap(argv: list[str], text: str, wrappers, depth: int) -> Analysis:
