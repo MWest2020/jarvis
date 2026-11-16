@@ -218,3 +218,14 @@ def test_wildcard_rescans_after_the_cache_expires(tmp_path):
 def test_explicit_projects_are_listed_sorted(monkeypatch, tmp_path):
     _set_minimal_env(monkeypatch, tmp_path, JARVIS_PROJECTS=f"zed={tmp_path},abc={tmp_path}")
     assert load_config().project_names() == ["abc", "zed"]
+
+
+def test_the_default_voice_is_the_male_one(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("JARVIS_KOKORO_VOICE", raising=False)
+    assert load_config().kokoro_voice == "bm_george"
+
+
+def test_the_voice_can_be_switched_back_by_env(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_KOKORO_VOICE="af_heart")
+    assert load_config().kokoro_voice == "af_heart"

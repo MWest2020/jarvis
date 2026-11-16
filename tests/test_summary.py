@@ -65,3 +65,21 @@ def test_never_speaks_a_long_token_like_run():
 def test_still_speaks_ordinary_long_words():
     reply = f"{SUMMARY_MARKER} Internationalization and the counterrevolutionaries both pass."
     assert extract_summary(reply) == "Internationalization and the counterrevolutionaries both pass."
+
+
+def test_the_spoken_line_is_capped_at_160_characters():
+    from bridge.summary import MAX_SPOKEN_CHARS
+
+    assert MAX_SPOKEN_CHARS == 160
+    fits = ("word " * 32).strip()                # 159 characters
+    assert len(fits) <= MAX_SPOKEN_CHARS
+    assert extract_summary(f"{SUMMARY_MARKER} {fits}") == fits
+    too_long = ("word " * 33).strip()            # 164 characters
+    assert extract_summary(f"{SUMMARY_MARKER} {too_long}") == FALLBACK_SUMMARY
+
+
+def test_the_instruction_asks_for_one_short_sentence():
+    from bridge.summary import SYSTEM_PROMPT_ADDITION
+
+    assert "one sentence, two at most" in SYSTEM_PROMPT_ADDITION
+    assert "100 to 150 characters" in SYSTEM_PROMPT_ADDITION

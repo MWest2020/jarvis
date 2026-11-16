@@ -12,15 +12,17 @@ SUMMARY_MARKER = "SPOKEN SUMMARY:"
 
 SYSTEM_PROMPT_ADDITION = (
     "After your normal reply, add one final line starting with exactly "
-    f'"{SUMMARY_MARKER}" followed by a short, plain-language summary (one or '
-    "two sentences, no code, no file paths, no markdown) suitable for being "
-    "read aloud over the phone."
+    f'"{SUMMARY_MARKER}" followed by a short, plain-language summary suitable '
+    "for being read aloud over the phone: one sentence, two at most, about "
+    "100 to 150 characters, no code, no file paths, no markdown."
 )
 
 FALLBACK_SUMMARY = "Done. Check the log for details."
 
 
-MAX_SPOKEN_CHARS = 300
+# Speech is the slow part of a turn: Kokoro renders at about real time, some
+# 0.055 s per character (measured 2026-11-15), so 160 characters is under 9 s.
+MAX_SPOKEN_CHARS = 160
 
 # Anything that looks like code or a path is never spoken (Requirement: Spoken
 # output), whatever the model wrote after the marker.
