@@ -41,7 +41,7 @@ pull request is the approval point.
 - **A new repository becomes a project.** After a confirming turn in which a confirmed
   `gh repo create <owner>/<name>` ran (the action log says "ran"), the wrapper itself (not the
   agent) clones it into `<projects_root>/<name>` with the turn's environment and a bounded
-  time. Jarvis then says "It's ready; you can switch to it." and the app refreshes its list.
+  time. Jarvis then says "It's ready. You can switch to it." and the app refreshes its list.
   The agent never writes into the home directory; the class `self` is unchanged.
 - **The pod's sync stays as it is.** In `full` mode the agent host is the source of the list;
   the pod's copies only serve the read-only fallback, and a new repository reaches them at the

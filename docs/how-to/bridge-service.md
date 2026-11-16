@@ -105,13 +105,36 @@ missing, is not a regular file, gives any permission to group or others (so `040
 directory or under `JARVIS_PROJECTS_ROOT` (the read-only agent can read everything there).
 It also needs the OpenSSH client on `PATH`.
 
-**Which projects.** The bridge's own project list still decides what can be asked: `POST
-/turn` refuses a project it does not know before the agent host is contacted, and `GET
-/projects` lists the bridge's projects. In `full` mode a project must be on the bridge's
-list *and* on the agent host's. One that exists only on the agent host cannot be reached by
-voice; one that exists only at the bridge is answered read-only, and says so. A name the
-agent host would refuse by its shape (it accepts `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`) is
-never sent and is answered read-only too.
+**Which projects.** In `full` mode the agent host decides (change
+[`jarvis-general-conversation`](../../openspec/changes/jarvis-general-conversation/design.md),
+D52):
+
+- `GET /projects` asks the agent host for its list (one ssh connection with the list
+  request `{"v":1,"list":true}`, at most 20 seconds, then ssh is stopped) and answers
+  `{"projects": [...], "source": "agent_host"}`. When the agent host cannot be reached,
+  its kill switch is set, its wrapper is older than the list request, or the answer cannot
+  be read, the bridge lists its own projects with `"source": "bridge"` and logs why.
+- `POST /turn` accepts any name of the agent host's shape
+  (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), whether or not the bridge has a copy; another name
+  is a 400 and nothing is sent. The agent host refuses a name it does not have
+  (`no_checkout`).
+- The read-only fallback needs the bridge's own copy. Without one nothing runs and the
+  phone hears what happened: "The agent host is not reachable right now.", "The agent host
+  does not have this project.", "Full mode is switched off on the agent host." or "This
+  project's settings need the desk."
+- So a repository that is only on the agent host (for example one Jarvis just created and
+  cloned there, see [`agent-host.md`](agent-host.md#a-new-repository-becomes-a-project)) is
+  in the list and can be asked about at once. The pod's sync is unchanged and runs at pod
+  start: its copies only serve the fallback, and a new repository reaches them at the next
+  restart.
+
+In `readonly` mode the bridge's own list decides, as before.
+
+**A new project.** When the agent host reports that a repository it just created is now a
+project (notice `project_ready`), the reply ends with "It's ready. You can switch to it."
+and carries the header `X-Jarvis-Projects-Changed: 1`; the app then fetches its list again.
+When it could not be made a project (`project_not_ready`), the reply ends with "The
+repository was created, but I could not set it up as a project. That needs the desk."
 
 **The connection.** Exactly this, with no remote command (a test fixes it):
 
@@ -299,15 +322,18 @@ refused request (below).
 ```
 
 Names only, never paths. 401 without a valid token, 404 on any other path. The phone app
-uses it when its projects field is empty or `*` ([`android-app.md`](android-app.md)).
+uses it when its projects field is empty or `*` ([`android-app.md`](android-app.md)). In
+`full` mode the names come from the agent host and the answer has a second field,
+`"source": "agent_host"` or, when the agent host could not list, `"source": "bridge"` (see
+"Agent modes").
 
 `POST /turn?project=<name>` with `Authorization: Bearer <token>` and the
 recorded audio as the body. Replies:
 
 | Status | When |
 |---|---|
-| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host; see "Agent modes". |
-| 400 | No project, an unknown project, an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
+| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
+| 400 | No project, an unknown project (in `full` mode: a name the agent host would not accept by its shape), an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
 | 409 | That project is still busy with another turn (one turn per session at a time) |
 | 413 | Audio larger than 10 MB |

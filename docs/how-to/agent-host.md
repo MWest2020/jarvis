@@ -218,7 +218,7 @@ older wrapper answers it `bad_request`; the bridge then lists its own copies.
 After a confirming turn in which a confirmed `gh repo create <owner>/<name>` ran (the
 action log says `ran`), the wrapper (not the agent) clones the repository to
 `<projects_root>/<name>`, so it is a project at the next turn, and Jarvis says "It's
-ready; you can switch to it." after the agent's own summary. It does so only when:
+ready. You can switch to it." after the agent's own summary. It does so only when:
 
 - the host uses `projects_root` (with a `[projects]` table nothing is cloned);
 - the owner is in `own_owners`;

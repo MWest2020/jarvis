@@ -190,3 +190,62 @@ def test_both_sides_agree_on_the_length_of_a_read_back_and_the_60_seconds():
     from agent_host.config import PENDING_SECONDS
     assert wrapper.MAX_READBACK_CHARS == remote_adapter.MAX_READBACK_CHARS
     assert PENDING_SECONDS == remote_adapter.MAX_EXPIRES_S
+
+
+# --- jarvis-general-conversation: the list request and the new project (D51, D53) ----------
+
+from agent_host import projects as wrapper_projects  # noqa: E402
+from bridge.remote_adapter import (  # noqa: E402
+    ListRefused,
+    build_list_request,
+    parse_list_reply,
+)
+
+
+def test_the_wrapper_reads_the_bridges_list_request():
+    assert isinstance(wrapper_request.parse_request(build_list_request()),
+                      wrapper_request.ListRequest)
+
+
+def test_both_sides_agree_on_the_list_answer():
+    assert set(wrapper.LIST_FIELDS) == remote_adapter.LIST_REPLY_KEYS
+    assert wrapper_projects.MAX_LISTED == remote_adapter.MAX_LISTED
+    assert parse_list_reply(_wire(wrapper.list_reply(["b", "a"]))) == ["a", "b"]
+    assert parse_list_reply(_wire(wrapper.list_reply([]))) == []
+
+
+@pytest.mark.parametrize("reply,code", [
+    (wrapper.disabled_reply(), "disabled"),
+    (wrapper._reply(status="error", error="bad_request"), "bad_request"),
+])
+def test_the_bridge_reads_a_refused_list(reply, code):
+    with pytest.raises(ListRefused) as refused:
+        parse_list_reply(_wire(reply))
+    assert refused.value.code == code
+
+
+def test_the_real_wrapper_lists_for_the_bridge(host):
+    reply = wrapper.handle_request(build_list_request(), host.config)
+    assert parse_list_reply(_wire(reply)) == ["demo"]
+
+
+def test_an_old_wrapper_refuses_the_list_as_bad_request():
+    """What a wrapper from before D51 does with the list: an unknown field."""
+    old = {"v", "project", "prompt", "confirm"}
+    assert set(json.loads(build_list_request())) - old      # it is not a turn request
+
+
+def test_the_bridge_reads_the_real_wrappers_new_project(tmp_path, monkeypatch):
+    from tests.test_agent_host_general import CREATE, CloneHost
+    host = CloneHost(tmp_path)
+    host.agent(monkeypatch, [CREATE])
+    _, asked = _through_the_bridge(host, prompt="make a repo called birdsong")
+    pending = asked["confirmation"]
+    host.agent(monkeypatch, [CREATE], reply="made.\nSPOKEN SUMMARY: I created birdsong.")
+    _, parsed = _through_the_bridge(
+        host, prompt="", confirm=ConfirmAnswer(pending.id, pending.sha256, "yes"))
+    assert parsed["notice"] == "project_ready"
+    assert remote_adapter._spoken(parsed["notice"], parsed["spoken"]) == \
+        "I created birdsong. It's ready. You can switch to it."
+    listed = parse_list_reply(_wire(wrapper.handle_request(build_list_request(), host.config)))
+    assert "birdsong" in listed

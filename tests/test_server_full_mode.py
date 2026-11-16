@@ -2,6 +2,7 @@
 `ssh` with a fake wrapper behind it (jarvis-full-agent task 2.8): a read-back and
 a yes, end to end, without an agent host."""
 import http.client
+import json
 import threading
 import urllib.parse
 
@@ -282,10 +283,98 @@ def test_a_busy_agent_host_is_spoken(bridge):
     assert bridge.readonly_prompts == []
 
 
-def test_a_project_the_bridge_does_not_know_is_refused_before_the_agent_host(bridge):
-    response, _ = bridge.say("hello", project="only-on-the-agent-host")
+def test_a_project_only_on_the_agent_host_is_asked_there(bridge):
+    # jarvis-general-conversation D52: the agent host decides which projects exist.
+    response, said = bridge.say("hello", project="only-on-the-agent-host")
+    assert response.status == 200 and said == "WAV:Done on the agent host."
+    assert bridge.host.requests()[-1]["project"] == "only-on-the-agent-host"
+
+
+@pytest.mark.parametrize("name", ["..", ".hidden", "-rf", "a/b", "x" * 65])
+def test_a_name_the_agent_host_would_not_accept_is_refused_before_it(bridge, name):
+    response, _ = bridge.say("hello", project=name)
     assert response.status == 400
     assert bridge.host.calls() == []
+
+
+def test_a_project_the_agent_host_does_not_have_and_the_pod_does_not_either(bridge):
+    bridge.host.scenario(mode="wrapper", projects=["demo"])
+    response, said = bridge.say("hello", project="birdsong")
+    assert said == "WAV:The agent host does not have this project."
+    assert bridge.readonly_prompts == []
+
+
+def test_a_project_the_agent_host_does_not_have_falls_back_to_the_pods_copy(bridge):
+    bridge.host.scenario(mode="wrapper", projects=["demo"])
+    _, said = bridge.say("hello", project="other")
+    assert said == ("WAV:The agent host does not have this project, so this answer is "
+                    "read-only. It is a voice bridge.")
+    assert bridge.readonly_prompts == ["hello"]
+
+
+@pytest.mark.parametrize("scenario,line", [
+    ({"mode": "refused"}, "The agent host is not reachable right now."),
+    ({"mode": "wrapper", "error": "disabled"}, "Full mode is switched off on the agent host."),
+])
+def test_without_a_copy_in_the_pod_there_is_no_read_only_answer(bridge, scenario, line):
+    bridge.host.scenario(**scenario)
+    _, said = bridge.say("hello", project="only-on-the-agent-host")
+    assert said == "WAV:" + line
+    assert bridge.readonly_prompts == []
+
+
+def test_the_pods_copy_is_still_answered_read_only_when_unreachable(bridge):
+    bridge.host.scenario(mode="refused")
+    _, said = bridge.say("hello", project="demo")
+    assert said.startswith("WAV:The agent host could not be reached, so this answer is read-only.")
+
+
+def _get_projects(bridge):
+    conn = http.client.HTTPConnection("127.0.0.1", bridge.httpd.server_address[1], timeout=30)
+    conn.request("GET", "/projects", headers={"Authorization": "Bearer test-token"})
+    response = conn.getresponse()
+    body = response.read()
+    conn.close()
+    return response.status, json.loads(body)
+
+
+def test_the_list_comes_from_the_agent_host(bridge):
+    bridge.host.scenario(mode="wrapper", projects=["jarvis-home", "birdsong", "demo"])
+    assert _get_projects(bridge) == (
+        200, {"projects": ["birdsong", "demo", "jarvis-home"], "source": "agent_host"})
+    assert bridge.host.requests() == [{"v": 1, "list": True}]
+
+
+@pytest.mark.parametrize("scenario", [
+    {"mode": "refused"},
+    {"mode": "wrapper", "error": "disabled"},
+    {"mode": "wrapper", "old_wrapper": True},
+    {"mode": "raw", "stdout": "not json"},
+    {"mode": "host_key"},
+])
+def test_without_the_agent_hosts_list_the_pods_list_is_given(bridge, scenario):
+    bridge.host.scenario(**scenario)
+    assert _get_projects(bridge) == (200, {"projects": ["demo", "other"], "source": "bridge"})
+
+
+def test_a_list_that_takes_too_long_is_stopped(bridge, monkeypatch):
+    from bridge import remote_adapter
+    monkeypatch.setattr(remote_adapter, "LIST_TIMEOUT_S", 0.5)
+    bridge.host.scenario(mode="hang")
+    assert _get_projects(bridge)[1]["source"] == "bridge"
+
+
+def test_a_new_project_is_announced_after_the_summary_and_in_a_header(bridge):
+    bridge.host.scenario(mode="wrapper", notice="project_ready",
+                         spoken="SPOKEN SUMMARY: I created birdsong.")
+    response, said = bridge.say("yes")
+    assert said == "WAV:I created birdsong. It's ready. You can switch to it."
+    assert response.getheader("X-Jarvis-Projects-Changed") == "1"
+
+
+def test_no_header_without_a_new_project(bridge):
+    response, _ = bridge.say("what is open?")
+    assert response.getheader("X-Jarvis-Projects-Changed") is None
 
 
 def test_silence_leaves_a_read_back_waiting(bridge):

@@ -218,12 +218,18 @@ class Handler(BaseHTTPRequestHandler):
         keep_alive = length == 0 or (length is not None and length <= MAX_AUDIO_BYTES
                                      and self._drain(length))
         try:
-            names = self.config.project_names()
+            if self.full is not None:
+                # `full` mode: the agent host's list, or the bridge's own when it
+                # cannot give one, and which it is (jarvis-general-conversation D52).
+                names, source = self.full.project_names(self.config.project_names)
+                listing = {"projects": names, "source": source}
+            else:
+                listing = {"projects": self.config.project_names()}
         except Exception:  # noqa: BLE001 - the list is best effort, never a traceback to the phone
             logger.exception("listing the projects failed")
             self._respond_error(500, "internal error", close=not keep_alive)
             return
-        body = json.dumps({"projects": names}).encode("utf-8")
+        body = json.dumps(listing).encode("utf-8")
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -258,7 +264,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            project = self.config.project(project_name)
+            # In `full` mode the agent host decides which projects exist (D52).
+            project = self.config.project_for_turn(project_name)
         except ConfigError as exc:
             self._reject(400, str(exc))
             return
@@ -318,7 +325,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
                 self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
-                                    needs_confirmation=outcome.needs_confirmation)
+                                    needs_confirmation=outcome.needs_confirmation,
+                                    projects_changed=outcome.projects_changed)
             except BaseException:
                 # A read-back that was not spoken, or did not reach the phone, was
                 # not heard: nothing stays pending, here or on the agent host.
@@ -335,7 +343,8 @@ class Handler(BaseHTTPRequestHandler):
         self._respond_audio(audio_reply, summary, turn.ref)
 
     def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
-                       needs_confirmation: bool = False) -> None:
+                       needs_confirmation: bool = False,
+                       projects_changed: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(audio_reply)))
@@ -344,6 +353,10 @@ class Handler(BaseHTTPRequestHandler):
         if needs_confirmation:
             # D36: this reply is a read-back; the next utterance is the answer.
             self.send_header("X-Jarvis-Needs-Confirmation", "1")
+        if projects_changed:
+            # jarvis-general-conversation D56: a new project is ready; the phone
+            # fetches GET /projects again.
+            self.send_header("X-Jarvis-Projects-Changed", "1")
         self.end_headers()
         self.wfile.write(audio_reply)
 

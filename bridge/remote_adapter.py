@@ -33,7 +33,13 @@ from bridge.agent import (
     ConfirmAnswer,
     PendingConfirmation,
 )
-from bridge.config import AgentHostConfig, ConfigError, ProjectConfig, check_private_file
+from bridge.config import (
+    AGENT_PROJECT_NAME,
+    AgentHostConfig,
+    ConfigError,
+    ProjectConfig,
+    check_private_file,
+)
 from bridge.logging_setup import FILE_ONLY
 from bridge.summary import FALLBACK_SUMMARY, extract_summary
 
@@ -43,7 +49,7 @@ PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 64 * 1024   # D33, for the request; the reply is held to the same
 
 # D33: the wrapper accepts no other project name, so no other is ever sent.
-PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+PROJECT_NAME = AGENT_PROJECT_NAME
 
 # The reply, version 1 (D33): one JSON object, always with exactly these fields.
 #   v         1
@@ -59,6 +65,12 @@ PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 #   notice    null, or a code the bridge has a fixed sentence for
 REPLY_KEYS = frozenset({"v", "status", "error", "turn", "spoken", "pending", "readback",
                         "confirm", "notice"})
+# The answer to the list request {"v":1,"list":true} (jarvis-general-conversation
+# D51). A refusal of it comes in the shape above, with status "error".
+LIST_REPLY_KEYS = frozenset({"v", "status", "error", "projects"})
+MAX_LISTED = 500
+# A list reads directory names on the agent host; it is not left running.
+LIST_TIMEOUT_S = 20.0
 CONFIRM_KEYS = frozenset({"id", "sha256", "class", "expires_s"})
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
@@ -93,7 +105,7 @@ NOTICE_SENTENCES = {
     "target_changed": "The push target changed. That one needs the desk.",
     "out_of_budget": "The agent is out of budget for now.",
     # After a confirmed `gh repo create` ran (jarvis-general-conversation D53).
-    "project_ready": "It's ready; you can switch to it.",
+    "project_ready": "It's ready. You can switch to it.",
     "project_not_ready": "The repository was created, but I could not set it up as a "
                          "project. That needs the desk.",
 }
@@ -202,6 +214,11 @@ def build_request(*, project: str, prompt: str, confirm: ConfirmAnswer | None) -
     return body
 
 
+def build_list_request() -> bytes:
+    """The list request: exactly `{"v":1,"list":true}` (D51)."""
+    return json.dumps({"v": PROTOCOL_VERSION, "list": True}, separators=(",", ":")).encode()
+
+
 def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
     found: dict = {}
     for key, value in pairs:
@@ -296,6 +313,50 @@ def parse_reply(raw: bytes) -> dict:
     # The agent's own line is never spoken while a call is pending (D36, step 4).
     return parsed | {"spoken": "", "readback": readback, "expires_s": float(expires_s),
                      "confirmation": PendingConfirmation(id=ident, sha256=digest)}
+
+
+class ListRefused(Exception):
+    """The agent host answered the list request with an error code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def parse_list_reply(raw: bytes) -> list[str]:
+    """The names from the answer to a list request, sorted (D51).
+
+    Exactly one of two shapes: the list shape, or a turn-shaped reply with
+    status "error" (the kill switch answers before it knows which request it
+    refuses; an older wrapper refuses the list as `bad_request`), which raises
+    ListRefused. Anything else is a ReplyError.
+    """
+    if len(raw) > MAX_MESSAGE_BYTES:
+        raise ReplyError("larger than 64 KB")
+    try:
+        reply = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys,
+                           parse_constant=_reject_constant)
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ReplyError(f"not one JSON object: {exc}") from exc
+    if not isinstance(reply, dict):
+        raise ReplyError("not a JSON object")
+    if set(reply) == REPLY_KEYS:
+        parsed = parse_reply(raw)
+        if not parsed["error"]:
+            raise ReplyError("a turn reply to a list request")
+        raise ListRefused(parsed["error"])
+    if set(reply) != LIST_REPLY_KEYS:
+        raise ReplyError("not the fields of a list answer")
+    if type(reply["v"]) is not int or reply["v"] != PROTOCOL_VERSION:
+        raise ReplyError("not version 1")
+    if reply["status"] != STATUS_OK or reply["error"] is not None:
+        raise ReplyError("a list answer that is not ok")
+    names = reply["projects"]
+    if not isinstance(names, list) or len(names) > MAX_LISTED:
+        raise ReplyError("projects is not a list of at most 500 names")
+    if not all(isinstance(name, str) and PROJECT_NAME.fullmatch(name) for name in names):
+        raise ReplyError("a project name the agent host would not accept")
+    return sorted(set(names))
 
 
 def speakable_readback(readback: str) -> str | None:
@@ -393,7 +454,8 @@ class RemoteAdapter:
 
         pending = reply["confirmation"]
         if pending is None:
-            return AgentTurn(spoken=_spoken(reply["notice"], reply["spoken"]), ref=turn_id)
+            return AgentTurn(spoken=_spoken(reply["notice"], reply["spoken"]), ref=turn_id,
+                             projects_changed=reply["notice"] == "project_ready")
         readback = speakable_readback(reply["readback"])
         if readback is not None:
             return AgentTurn(spoken=readback, ref=turn_id, confirmation=pending,
@@ -411,6 +473,29 @@ class RemoteAdapter:
             logger.warning("project=%s: the cancel did not reach the agent host (%s)",
                            project.name, exc.code)
         return AgentTurn(spoken=NEEDS_THE_DESK, ref=turn_id)
+
+    def list_projects(self) -> list[str]:
+        """The agent host's projects (D51), sorted. One connection, at most
+        LIST_TIMEOUT_S; ssh is stopped then, nothing runs there that must be left
+        alone. Raises AgentUnavailable or AgentTurnFailed when there is no list."""
+        self._check_files()
+        returncode, stdout, ssh_log, remote_stderr = self._exchange(
+            build_list_request(), timeout_s=min(LIST_TIMEOUT_S, self._agent.timeout_s),
+            hand_over=False)
+        if not stdout.strip():
+            why = classify_no_reply(returncode, ssh_log, remote_stderr)
+            detail = f"ssh exited {returncode} without a list"
+            if why == AgentUnavailable.UNREACHABLE:
+                raise AgentUnavailable(why, detail)
+            raise AgentTurnFailed(why, detail)
+        try:
+            return parse_list_reply(stdout)
+        except ListRefused as exc:
+            if exc.code in FALLBACK_CODES:
+                raise AgentUnavailable(exc.code) from exc
+            raise AgentTurnFailed(exc.code) from exc
+        except ReplyError as exc:
+            raise AgentTurnFailed(AgentTurnFailed.PROTOCOL, str(exc)) from exc
 
     def _check_files(self) -> None:
         """Before every turn, not only at start: the key and the pinned host key
@@ -444,13 +529,16 @@ class RemoteAdapter:
         except ReplyError as exc:
             raise AgentTurnFailed(AgentTurnFailed.PROTOCOL, str(exc)) from exc
 
-    def _exchange(self, request: bytes) -> tuple[int, bytes, str, str]:
+    def _exchange(self, request: bytes, *, timeout_s: float | None = None,
+                  hand_over: bool = True) -> tuple[int, bytes, str, str]:
         """Run ssh once. Returns its exit status, stdout, its own log, the remote stderr.
 
         Both streams are read as they come and never kept beyond the cap; more than
         that is not a reply, and ssh is stopped. When the wait is over and ssh is
         still there, the bridge stops waiting and does nothing else: the connection
-        stays, the turn on the agent host goes on and is recorded there (D34).
+        stays, the turn on the agent host goes on and is recorded there (D34). With
+        `hand_over=False` (a list: nothing runs there that must be left alone) ssh
+        is stopped instead.
         """
         # ssh gets a path and a home, nothing else: not the phone's token, not the
         # Claude credentials, no agent socket. With -F /dev/null it forwards no
@@ -483,7 +571,8 @@ class RemoteAdapter:
             for thread in threads:
                 thread.start()
 
-            deadline = time.monotonic() + self._agent.timeout_s
+            wait_s = self._agent.timeout_s if timeout_s is None else timeout_s
+            deadline = time.monotonic() + wait_s
             while True:
                 try:
                     proc.wait(timeout=WAIT_STEP_S)
@@ -493,13 +582,20 @@ class RemoteAdapter:
                 if overflow.is_set():
                     _kill(proc)
                     break
+                if time.monotonic() >= deadline and not hand_over:
+                    _kill(proc)
+                    for thread in threads:
+                        thread.join(timeout=JOIN_S)
+                    raise AgentTurnFailed(
+                        AgentTurnFailed.PROTOCOL,
+                        f"no answer from the agent host within {wait_s}s; ssh was stopped")
                 if time.monotonic() >= deadline:
                     handed_over = True
                     threading.Thread(target=self._reap, args=(proc, threads, log_file),
                                      daemon=True).start()
                     raise AgentTurnFailed(
                         AgentTurnFailed.STILL_RUNNING,
-                        f"no reply from the agent host within {self._agent.timeout_s}s; "
+                        f"no reply from the agent host within {wait_s}s; "
                         f"the bridge stopped waiting, the turn goes on there")
             for thread in (out, err):
                 thread.join(timeout=JOIN_S)

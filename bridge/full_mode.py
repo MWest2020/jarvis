@@ -68,6 +68,19 @@ FALLBACK_SENTENCES = {
         "This project's settings need the desk, so this answer is read-only.",
 }
 
+# D52 (jarvis-general-conversation): a fallback reason, for a project the bridge has
+# no copy of. Nothing can be answered read-only, so only what happened is said.
+NO_COPY_LINES = {
+    AgentUnavailable.UNREACHABLE: "The agent host is not reachable right now.",
+    AgentUnavailable.NO_CHECKOUT: "The agent host does not have this project.",
+    AgentUnavailable.DISABLED: "Full mode is switched off on the agent host.",
+    AgentUnavailable.UNSAFE_SETTINGS: "This project's settings need the desk.",
+}
+
+# Where the phone's project list came from (GET /projects in `full` mode, D52).
+SOURCE_AGENT_HOST = "agent_host"
+SOURCE_BRIDGE = "bridge"
+
 # No turn was started on the agent host: these can simply be said.
 NOT_STARTED_LINES = {
     BUSY: "The agent host is busy. Try again in a moment.",
@@ -105,6 +118,8 @@ class Outcome:
     ref: str = ""
     needs_confirmation: bool = False
     to_keep: tuple[PendingConfirmation, float] | None = None   # with its deadline
+    # A new project is ready on the agent host: the phone fetches its list again.
+    projects_changed: bool = False
 
 
 class PendingStore:
@@ -159,6 +174,18 @@ class FullMode:
         self._no = frozenset(confirm_no)
         self._min_speech_s = min_speech_s
         self._pending = pending if pending is not None else PendingStore()
+
+    def project_names(self, fallback: Callable[[], list[str]]) -> tuple[list[str], str]:
+        """The phone's project list in `full` mode (D52): the agent host's, or, when
+        it cannot give one, the bridge's own (`fallback`). With where it came from."""
+        try:
+            return self._remote.list_projects(), SOURCE_AGENT_HOST
+        except (AgentUnavailable, AgentTurnFailed) as exc:
+            logger.warning("agent=full: the agent host gave no project list (%s); the "
+                           "bridge's own projects are listed", exc.code)
+            logger.warning("project list from the agent host failed: %s", exc,
+                           extra=FILE_ONLY)
+            return fallback(), SOURCE_BRIDGE
 
     def handle(self, project: ProjectConfig, transcript: str,
                speech_seconds: Callable[[], float]) -> Outcome:
@@ -246,6 +273,9 @@ class FullMode:
             if confirm is not None:
                 # An answer is never turned into a read-only question.
                 return Outcome(f"{NOT_STARTED_LINES[exc.reason]} {NOTHING_CONFIRMED}")
+            if project.working_dir is None:
+                # Only the agent host has this project: nothing to answer from here.
+                return Outcome(NO_COPY_LINES[exc.reason])
             return self._fallback(project, prompt if said is None else said, exc.reason)
         except AgentTurnFailed as exc:
             logger.error("project=%s agent=full turn=%s outcome=%s", project.name,
@@ -267,7 +297,8 @@ class FullMode:
             to_keep = (turn.confirmation, self._pending.deadline(turn.expires_s))
         logger.info("project=%s agent=full turn=%s outcome=%s", project.name, turn.ref or "-",
                     "needs_confirmation" if turn.confirmation is not None else "ok")
-        return Outcome(turn.spoken, turn.ref, turn.confirmation is not None, to_keep)
+        return Outcome(turn.spoken, turn.ref, turn.confirmation is not None, to_keep,
+                       projects_changed=turn.projects_changed)
 
     def _fallback(self, project: ProjectConfig, prompt: str, reason: str) -> Outcome:
         """The one turn answered read-only instead, saying so first (D30)."""

@@ -117,7 +117,7 @@ checkouts; Jarvis is its equal (D40).
   that is renamed to `<projects_root>/<name>` only when the clone exited 0 and is a work tree.
   Whatever is left of a failed or timed-out clone is removed. The rename fails if the name
   appeared in the meantime; then the clone is removed and the existing directory is left.
-- *What is said.* A new notice: `project_ready`, sentence "It's ready; you can switch to it.",
+- *What is said.* A new notice: `project_ready`, sentence "It's ready. You can switch to it.",
   or `project_not_ready`, sentence "The repository was created, but I could not set it up as a
   project. That needs the desk." Both come after the agent's own summary, not before it (the
   summary says what was made; the notice says what follows). The bridge adds the response

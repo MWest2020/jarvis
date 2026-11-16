@@ -54,6 +54,9 @@ class AgentTurn:
     confirmation: PendingConfirmation | None = None
     # With a confirmation: how long the agent host keeps the call, when it said so.
     expires_s: float | None = None
+    # A new project is ready on the agent host (jarvis-general-conversation D53):
+    # the phone is told that its project list changed.
+    projects_changed: bool = False
 
 
 class AgentUnavailable(Exception):
@@ -114,4 +117,11 @@ class AgentAdapter(Protocol):
 
     def run_turn(self, *, project: ProjectConfig, prompt: str,
                  confirm: ConfirmAnswer | None = None) -> AgentTurn:
+        ...
+
+
+class ProjectLister(Protocol):
+    """The agent host's list of projects (`full` mode, jarvis-general-conversation D51)."""
+
+    def list_projects(self) -> list[str]:
         ...

@@ -88,7 +88,7 @@ In `full` mode, after a confirming turn in which a confirmed creation of a repos
 
 #### Scenario: A repository created after a yes
 - **WHEN** Mark says yes to "Create the private repository birdsong." and the creation ran
-- **THEN** the wrapper clones it to `birdsong` under the project root, the reply ends with "It's ready; you can switch to it.", and the app's list shows `birdsong`
+- **THEN** the wrapper clones it to `birdsong` under the project root, the reply ends with "It's ready. You can switch to it.", and the app's list shows `birdsong`
 
 #### Scenario: The creation did not run
 - **WHEN** the confirming turn ends without the confirmed creation having run, or it ran and failed
