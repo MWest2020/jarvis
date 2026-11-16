@@ -55,3 +55,18 @@ session_rotation_fallback = false
 # (the class `self` stays desk-only); confirm_skip does that per class.
 confirm = "on"
 confirm_skip = []
+# The root-owned `confirm on|off [class]` program, the one way to change the two above by voice.
+confirm_program = "/usr/local/lib/jarvis-agent/confirm"
+
+# Host-local gate rules, read next to the rules of the repository.
+rules_dir = "/etc/jarvis-agent/rules.d"
+# Claude Code's managed settings on this host: a write to it is in the class `self`.
+managed_settings_path = "/etc/claude-code/managed-settings.json"
+# Owner names on the forge host whose repositories are your own (spoken as "name", not "name of owner").
+own_owners = []
+# Run by the wrapper after a confirmed call ran: a list of words, the read-back is appended as the last. Empty: no notification.
+notify_command = []
+# Asked for a merge's review decision and checks; the wrapper adds the number, --repo and --json.
+pr_status_command = ["gh", "pr", "view"]
+# Days that records and action logs are kept.
+retention_days = 90

@@ -12,15 +12,17 @@ SUMMARY_MARKER = "SPOKEN SUMMARY:"
 
 SYSTEM_PROMPT_ADDITION = (
     "After your normal reply, add one final line starting with exactly "
-    f'"{SUMMARY_MARKER}" followed by a short, plain-language summary (one or '
-    "two sentences, no code, no file paths, no markdown) suitable for being "
-    "read aloud over the phone."
+    f'"{SUMMARY_MARKER}" followed by a short, plain-language summary suitable '
+    "for being read aloud over the phone: one sentence, two at most, about "
+    "100 to 150 characters, no code, no file paths, no markdown."
 )
 
 FALLBACK_SUMMARY = "Done. Check the log for details."
 
 
-MAX_SPOKEN_CHARS = 300
+# Speech is the slow part of a turn: Kokoro renders at about real time, some
+# 0.055 s per character (measured 2026-11-15), so 160 characters is under 9 s.
+MAX_SPOKEN_CHARS = 160
 
 # Anything that looks like code or a path is never spoken (Requirement: Spoken
 # output), whatever the model wrote after the marker.
@@ -66,10 +68,28 @@ def extract_summary(reply_text: str) -> str:
             # The marker on its own line, the summary on the next one.
             rest = [ln for ln in lines[i + 1:] if ln.strip()]
             summary = _clean(rest[0]) if rest else ""
-        if (summary and len(summary) <= MAX_SPOKEN_CHARS
-                and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary)):
-            return summary
+        # The filters see the whole summary, also the part a cut would drop.
+        if summary and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary):
+            return shorten(summary)
         break
-    # No marker, or a summary with code, paths or too long: a short, safe line
-    # instead of reading it aloud. The full reply is in the log.
+    # No marker, or a summary with code, paths or a credential: a short, safe
+    # line instead of reading it aloud. The full reply is in the log.
     return FALLBACK_SUMMARY
+
+
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+
+def shorten(summary: str, limit: int = MAX_SPOKEN_CHARS) -> str:
+    """`summary` within `limit` characters: as it is when it fits, otherwise up to
+    the last sentence end within the limit, otherwise up to the last whole word
+    with "…" after it."""
+    if len(summary) <= limit:
+        return summary
+    ends = [m.end() for m in _SENTENCE_END.finditer(summary) if m.end() <= limit]
+    if ends:
+        return summary[:ends[-1]]
+    head = summary[:limit - 1]
+    if not summary[limit - 1].isspace() and " " in head:
+        head = head[:head.rindex(" ")]
+    return head.rstrip(" ,;:-") + "…"

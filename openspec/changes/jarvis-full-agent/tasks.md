@@ -251,19 +251,19 @@ This build carries the change's guarantees and is reviewed on its own.
 
 ## 2. Bridge side
 
-- [ ] 2.1 The agent adapter interface (D8): run a turn for a project, get the marker line
+- [x] 2.1 The agent adapter interface (D8): run a turn for a project, get the marker line
   for `bridge/summary.extract_summary` (unchanged), or a read-back with its confirmation
   ids, a turn id, and an error or notice code. The existing code becomes the
   `readonly` adapter, unchanged in behaviour; a fake adapter for tests
-- [ ] 2.2 `JARVIS_AGENT_MODE` (`readonly` default, `full`), and for `full`: host, port, user,
+- [x] 2.2 `JARVIS_AGENT_MODE` (`readonly` default, `full`), and for `full`: host, port, user,
   key file, known-hosts file, timeout. Start is refused when `full` is set and a file is
   missing, is readable by others, or lies inside a project directory (D30, D32)
-- [ ] 2.3 The remote adapter: the ssh argv of D32 fixed by a test, the request on stdin, the
+- [x] 2.3 The remote adapter: the ssh argv of D32 fixed by a test, the request on stdin, the
   reply parsed strictly; a fake `ssh` in tests
-- [ ] 2.4 Fallback to `readonly` for one turn on "could not connect", `no_checkout`,
+- [x] 2.4 Fallback to `readonly` for one turn on "could not connect", `no_checkout`,
   `disabled` and `unsafe_settings`, with
   the spoken first sentence; never a second run after the turn started (D30)
-- [ ] 2.5 The pending confirmation per project, in memory, 60 s; the closed affirmation and
+- [x] 2.5 The pending confirmation per project, in memory, 60 s; the closed affirmation and
   refusal lists matched on the whole normalised transcript; the minimum of detected speech
   for an affirmation (default 0.3 s); only the read-back is spoken while one is pending,
   taken from the `readback` field and sent to text-to-speech as built, without the
@@ -272,21 +272,21 @@ This build carries the change's guarantees and is reviewed on its own.
   `confirm` sent with the next request; on an exact no: `confirm` with answer `no` sent to the agent host, "Cancelled" spoken, no
   agent turn; the header
   `X-Jarvis-Needs-Confirmation` (D36)
-- [ ] 2.5b The project list in `full` mode: `POST /turn` and `GET /projects` keep using the
+- [x] 2.5b The project list in `full` mode: `POST /turn` and `GET /projects` keep using the
   bridge's own list (the pod's copies); a project not on it is refused before the agent
   host is contacted. Stated in `bridge-service.md` and `run-in-cluster.md`: a project that
   exists only on the agent host cannot be reached by voice
-- [ ] 2.6 Spoken errors for `busy`, `low_memory`, `timeout`, `agent_failed`, and for
+- [x] 2.6 Spoken errors for `busy`, `low_memory`, `timeout`, `agent_failed`, and for
   `expired` its own sentence ("That took too long. Ask again."); fixed sentences for the
   notices `needs_desk`, `run_alone`, `settings_changed`, `target_changed`, `out_of_budget`,
   `new_session`; the bridge log
   gets the turn id of the agent host, never the key or the request body on stdout
-- [ ] 2.7 `deploy/Dockerfile`: the ssh client; the CI smoke test still passes offline in
+- [x] 2.7 `deploy/Dockerfile`: the ssh client; the CI smoke test still passes offline in
   `readonly` mode
-- [ ] 2.8 Tests: yes, no, something else, a late yes, a yes with nothing pending, a yes for
+- [x] 2.8 Tests: yes, no, something else, a late yes, a yes with nothing pending, a yes for
   another project, an agent reply that contains "yes", a restart between read-back and yes,
   a short noise transcribed as "yes"
-- [ ] 2.9 Docs: `bridge-service.md` (the mode and its settings), `run-in-cluster.md` (the
+- [x] 2.9 Docs: `bridge-service.md` (the mode and its settings), `run-in-cluster.md` (the
   Secret as files, the egress rule that changes D2 of
   `run-bridge-in-cluster`: DNS, HTTPS and ssh to the agent host's one address; that `from=`
   names the pod's node and why the pod stays there (D32); what a reader of that

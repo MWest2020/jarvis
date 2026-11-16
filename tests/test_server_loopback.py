@@ -24,7 +24,7 @@ def running_server(tmp_path, monkeypatch):
         session_store_path=tmp_path / "sessions.json",
         log_path=tmp_path / "bridge.log",
         whisper_model="base",
-        kokoro_voice="af_heart",
+        kokoro_voice="bm_george",
         claude_timeout_s=30,
     )
 
@@ -429,7 +429,7 @@ def test_lists_the_projects_as_sorted_names(tmp_path):
             "alpha": ProjectConfig(name="alpha", working_dir=tmp_path / "a"),
         },
         allowed_tools=("Read",), session_store_path=tmp_path / "s.json",
-        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="af_heart",
+        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="bm_george",
         claude_timeout_s=30,
     )
     httpd = server.make_server(config)
@@ -514,7 +514,7 @@ def test_the_project_list_follows_the_root_with_a_wildcard(tmp_path):
     config = BridgeConfig(
         bind_host="127.0.0.1", port=0, token="test-token", projects={},
         allowed_tools=("Read",), session_store_path=tmp_path / "s.json",
-        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="af_heart",
+        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="bm_george",
         claude_timeout_s=30,
         project_scanner=ProjectScanner(root, ttl_s=10, clock=lambda: clock[0]),
     )

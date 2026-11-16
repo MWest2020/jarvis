@@ -152,7 +152,7 @@ is refused. sshd enforces all three options before any of this repository's code
 | `projects_root` | one of the two | Every directory directly under it is a project, named after the directory. |
 | `project_exclusions` | no | Names under `projects_root` that are not projects (a bare repository, another agent's checkout). |
 | `[projects]` | one of the two | An explicit `name = "/path"` table instead of a root. |
-| `state_dir` | yes | The wrapper's state, created 0700 with files 0600: `sessions/`, `records/`, `turn.lock`. |
+| `state_dir` | yes | The wrapper's and the gate's state, created 0700 with files 0600: `sessions/`, `records/`, `actions/`, `gate/`, `pending/`, `turn.lock`. |
 | `environment_file` | yes | `/etc/jarvis-agent/environment`. |
 | `turn_settings` | yes | `/usr/local/lib/jarvis-agent/turn-settings.json`. |
 | `prompt_file` | yes | `/usr/local/lib/jarvis-agent/prompt.md`. |
@@ -165,18 +165,57 @@ is refused. sshd enforces all three options before any of this repository's code
 | `timeout_s` | no (default `600`) | A turn's process group is killed after this long (`timeout`). |
 | `append_system_prompt_fallback` | no (default `false`) | Set only when a host check shows `--append-system-prompt-file` is missing. |
 | `session_rotation_fallback` | no (default `false`) | Set only when a host check shows `--system-prompt-snapshot off` does not work: a new session per project at the first turn after 04:00. |
-| `confirm` | no (default `"on"`) | `"off"` lets gated calls through without a yes. Read by the gate (phase 1b). |
-| `confirm_skip` | no | A list of classes that need no yes. Read by the gate (phase 1b). |
+| `confirm` | no (default `"on"`) | `"off"` lets gated calls through without a yes. |
+| `confirm_skip` | no | A list of classes that need no yes: `merge`, `deploy`, `delete`, `force`, `api`, `account`, `message`, `create`, `outward`, `root`. Never `self`. |
+| `confirm_program` | no (default `/usr/local/lib/jarvis-agent/confirm`) | The root-owned `confirm on\|off [class]` program: the one way to change the two keys above by voice. |
+| `rules_dir` | no (default `/etc/jarvis-agent/rules.d`) | Host-local gate rules. |
+| `managed_settings_path` | no (default `/etc/claude-code/managed-settings.json`) | Where Claude Code's managed settings are on this host. A write to it is in the class `self`. Never written by Jarvis or by `install.sh`. |
+| `own_owners` | no (default none) | Owner names on the forge host whose repositories are your own. A read-back says "name" for these and "name of owner" for all others. |
+| `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
+| `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
+| `retention_days` | no (default `90`) | How long records and action logs are kept. |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
 directly under the root, and it must be a git repository with a work tree. A project must
 also be on the bridge's own list to be reachable by voice.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A
-turn starts from nothing but this file plus the turn variables (`JARVIS_TURN=1`,
-`JARVIS_TURN_ID`, the identity variable). Give it the coding session user's `HOME` and a
+turn starts from nothing but this file plus the turn variables: `JARVIS_TURN=1`,
+`JARVIS_TURN_ID`, the identity variable, `JARVIS_AGENT_CONFIG` (the configuration file,
+so the gate reads the same one as the wrapper), `JARVIS_TURN_CHECKOUT` (the checkout the
+turn runs in), and in a confirming turn only `JARVIS_GRANT` and `JARVIS_GRANT_BASE` (the
+grant for the one call that was read back). Do not set any of these in the file. Give it the coding session user's `HOME` and a
 `PATH` on which `claude`, `git` and `gh` are found. Nothing the ssh client sends and
 nothing a shell rc file sets reaches the turn.
+
+## Checkouts that get read-only turns
+
+A project's own `.claude/settings.json` and `.claude/settings.local.json` are loaded by
+Claude Code, and they arrive without anyone editing them: a `git pull` or a
+`gh pr checkout` brings them. So the wrapper reads both before every turn and again after
+it, and the gate reads them on every call. A checkout whose settings could run something
+or widen something gets no `full` turn: the wrapper answers `unsafe_settings`, and the
+bridge answers that turn read-only and says so.
+
+The rule is an allow-list. A settings file is safe only when every top-level key is one
+of:
+
+- `$schema`, `model`, `includeCoAuthoredBy`, `cleanupPeriodDays`, `outputStyle`;
+- `permissions`, and then only with `allow`, `deny` and `ask` in it.
+
+Everything else makes the checkout unsafe. In particular:
+
+- project MCP servers: `enabledMcpjsonServers`, `enableAllProjectMcpServers`,
+  `mcpServers`;
+- `hooks`, `env`, `disableAllHooks`, and the helper keys that run a command
+  (`apiKeyHelper`, `statusLine`, `awsAuthRefresh`, `otelHeadersHelper`);
+- `permissions.defaultMode` and `permissions.additionalDirectories`;
+- any key not on the list above, and a settings file that is a symbolic link, is not a
+  regular file, is too large or is not a JSON object.
+
+A file that does not exist is safe. To use such a checkout by voice, take the key out of
+the project's settings (your user settings are the place for hooks and MCP servers), or
+work on it at the desk.
 
 ## The kill switch
 
@@ -222,6 +261,15 @@ In `state_dir`, owned by the coding session's user, 0700 with files 0600:
   confirmed, cancelled or refused gated action with its read-back. The bridge's log
   carries the same turn id.
 - `sessions/sessions.json`: the Claude Code session id per project.
+- `actions/<turn id>.jsonl`: the action log, one line per tool call that can change
+  something, with the tool, the command or target and the exit status.
+- `gate/`: what the gate noted per turn (a refused call, the one permitted repair).
+- `pending/`: the one call per project that waits for a yes, between the read-back and
+  the answer. It expires after 60 seconds.
+
+`records/`, `actions/` and `gate/` are cleaned after `retention_days`. The agent can
+write all of this, so the wrapper trusts none of it: it derives the read-back and the
+hash again from the stored call.
 
 ```sh
 ls -t ~/.local/state/jarvis-agent/records | head          # newest first
