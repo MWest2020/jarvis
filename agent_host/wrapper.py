@@ -28,7 +28,7 @@ from pathlib import Path
 from agent_host import checkout_settings, command, identity, projects
 from agent_host import record as record_mod
 from agent_host import request as request_mod
-from agent_host.config import DEFAULT_CONFIG_PATH, AgentHostConfig, load_config
+from agent_host.config import AgentHostConfig, hook_config_path, load_config
 from agent_host.sessions import KeyValueStore, SessionStore
 from agent_host.turnlock import Busy, acquire_turn_lock, available_memory_mb
 from bridge.summary import last_marker_line
@@ -76,10 +76,13 @@ def load_runtime_config() -> AgentHostConfig:
     `claude` sees) is never built from this process's environment, whatever
     it is (agent_host.identity).
     """
-    path = Path(os.environ.get("JARVIS_AGENT_CONFIG", str(DEFAULT_CONFIG_PATH)))
-    # Made absolute here: the gate is told this path through the turn's
-    # environment and runs in another directory (the checkout, a worktree),
-    # where a relative path would name another file, one the agent can write.
+    # Installed, the configuration is one fixed path; the variable counts in
+    # a source checkout only (agent_host.config.hook_config_path), where a
+    # relative path is made absolute here: the gate runs in another
+    # directory, where a relative path would name another file.
+    given = os.environ.get("JARVIS_AGENT_CONFIG")
+    environ = {"JARVIS_AGENT_CONFIG": os.path.abspath(given)} if given else {}
+    path = hook_config_path(environ, Path(__file__).resolve().parent)
     return load_config(Path(os.path.abspath(path)))
 
 
@@ -129,12 +132,15 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
 
     if command.settings_default_to_bypass(config.user_settings_path):
         return _reply(status="error", error="unsafe_settings")
-    # The checkout settings rule, before the turn (D36, check 1).
-    if _checkout_settings_problem(working_dir, config) is not None:
-        return _reply(status="error", error="unsafe_settings")
 
     try:
         with acquire_turn_lock(config.lock_path):
+            # The checkout settings rule, before the turn (D36, check 1),
+            # inside the lock: another turn that is still running in this
+            # checkout could otherwise bring the file in between the check
+            # and the start.
+            if _checkout_settings_problem(working_dir, config) is not None:
+                return _reply(status="error", error="unsafe_settings")
             if available_memory_mb() < config.memory_floor_mb:
                 return _reply(status="error", error="low_memory")
             return _run_turn(req, working_dir, config)

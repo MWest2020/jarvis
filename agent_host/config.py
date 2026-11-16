@@ -6,6 +6,7 @@ path, name and identity is a configuration value (AGENTS.md).
 """
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +68,29 @@ class AgentHostConfig:
     @property
     def records_dir(self) -> Path:
         return self.state_dir / "records"
+
+
+def hook_config_path(environ, package_dir: Path) -> Path:
+    """Where the gate and the action log read their configuration.
+
+    Installed, that is one fixed path, `DEFAULT_CONFIG_PATH`: a constant of
+    the installation, never something the turn's environment can say. A
+    hook is started by Claude Code with an environment that project
+    settings could have touched, so `JARVIS_AGENT_CONFIG` is **ignored**.
+
+    The one exception is a source checkout, where the tests run: there the
+    variable is honoured, and "a source checkout" means that the test kit
+    (`tests/gatekit.py`) lies next to the package. The installer copies the
+    package and never the tests, into a root-owned directory, so an
+    installed hook cannot be switched to this by anything a turn can do.
+    """
+    if (package_dir.parent / "tests" / "gatekit.py").is_file():
+        given = environ.get("JARVIS_AGENT_CONFIG")
+        if given:
+            if not os.path.isabs(given):
+                raise ConfigError("JARVIS_AGENT_CONFIG is not an absolute path")
+            return Path(given)
+    return DEFAULT_CONFIG_PATH
 
 
 def _require(data: dict, key: str) -> object:

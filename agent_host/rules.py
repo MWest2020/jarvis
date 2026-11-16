@@ -115,6 +115,7 @@ class Rules:
     mcp_words: tuple[str, ...]
     self_home_paths: tuple[str, ...]
     self_claude_dir_paths: tuple[str, ...]
+    self_home_dirs: tuple[str, ...]
     self_read_programs: frozenset[str]
     self_tree_programs: frozenset[str]
 
@@ -324,7 +325,10 @@ def rules_from_dict(data: dict) -> Rules:
     _known_keys(mcp, {"words"}, "mcp")
     self_ = _table(data, "self", "")
     _known_keys(self_, {"home_paths", "claude_dir_paths", "read_programs",
-                        "tree_programs"}, "self")
+                        "tree_programs", "home_dirs"}, "self")
+    home_dirs = self_.get("home_dirs", [])
+    if not isinstance(home_dirs, list) or not all(isinstance(x, str) for x in home_dirs):
+        raise RulesError("self.home_dirs must be a list of strings")
 
     root_programs = _strings(root, "programs", "root.")
     if not root_programs:
@@ -366,6 +370,7 @@ def rules_from_dict(data: dict) -> Rules:
         mcp_words=tuple(word.lower() for word in mcp_words),
         self_home_paths=_strings(self_, "home_paths", "self."),
         self_claude_dir_paths=_strings(self_, "claude_dir_paths", "self."),
+        self_home_dirs=tuple(home_dirs),
         self_read_programs=frozenset(_strings(self_, "read_programs", "self.")),
         self_tree_programs=frozenset(_strings(self_, "tree_programs", "self.")),
     )

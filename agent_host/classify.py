@@ -121,6 +121,15 @@ class Protected:
     a symlink that stands where a protected file should be.
     """
     paths: frozenset[str]
+    # Directories protected as a place: a write into one, or a command that
+    # is not a plain read run from inside one, is a write to `self`.
+    dirs: frozenset[str] = frozenset()
+
+    def is_protected_dir(self, path: str | os.PathLike) -> bool:
+        for form in self._forms(path):
+            if form in self.dirs or os.path.basename(form) == ".claude":
+                return True
+        return False
 
     @staticmethod
     def _forms(path: str | os.PathLike) -> tuple[str, str]:
@@ -225,7 +234,9 @@ def protected_paths(
     for settings in (config.user_settings_path, claude_dir / "settings.local.json",
                      config.managed_settings_path, config.turn_settings_path):
         real |= hook_files(settings, home)
-    return Protected(frozenset(real))
+    dirs = {home / rel if rel else home for rel in rules.self_home_dirs} | {claude_dir}
+    both = {os.path.realpath(d) for d in dirs} | {os.path.normpath(os.path.abspath(d)) for d in dirs}
+    return Protected(frozenset(real), frozenset(both))
 
 
 def _expand_home(word: str, home: Path) -> str:
@@ -321,7 +332,9 @@ def is_harmless(words, ctx: Context) -> bool:
         return True
     program = words[0]
     if program in rules.harmless:
-        return True
+        # A reader that can be told to run a program is no reader then.
+        return not any(word.startswith(_RUNS_A_PROGRAM.get(program, ())) for word in words[1:]) \
+            if program in _RUNS_A_PROGRAM else True
     return program == "git" and len(words) > 1 and words[1] in rules.harmless_git
 
 
@@ -335,6 +348,11 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
         return everyday
 
     analysis = _analyse(command, ctx)
+
+    if analysis.refuse:
+        return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
+    if not analysis.compound and _expands_in_a_write(command, analysis, ctx):
+        return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
 
     if analysis.compound:
         # Not one command the gate can follow. A gated candidate decides
@@ -352,6 +370,10 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
         # piece that is a read of a default-gated program (`kubectl get
         # pods | grep web`) is as well understood as `ls`. With one of
         # them, only the harmless list counts: its arguments are data.
+        # A redirection that is left after the harmless ones were taken out
+        # puts a file name where a program name would be read: `ls; >cat rm x`.
+        if re.search(r"[<>]", shell.without_benign_redirects(command)):
+            return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
         plain = not _NOT_PLAIN_RE.search(command)
         for segment in analysis.segments:
             if is_harmless(segment, ctx):
@@ -363,6 +385,19 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
         return UNGATED
 
     return _single_verdict(analysis, ctx)
+
+
+def _expands_in_a_write(command: str, analysis: shell.Analysis, ctx: Context) -> bool:
+    """One command that is not a plain reader and holds something the shell
+    still expands (a variable, `~user`, a brace expansion): which path or
+    which word it then acts on is not in the call. Written out, it is read."""
+    if not analysis.commands:
+        return False
+    program = analysis.commands[0].program
+    if program in ctx.rules.harmless or program in ctx.rules.self_read_programs:
+        return False
+    text = command.replace("${HOME}", str(ctx.home)).replace("$HOME", str(ctx.home))
+    return shell.has_expansion(text)
 
 
 def _analyse(command: str, ctx: Context) -> shell.Analysis:
@@ -430,8 +465,10 @@ def _one_command(text: str, ctx: Context) -> Verdict | None:
     if _shell_writes_protected(text, ctx):
         return Verdict(gated=True, classes=("self",), rule="self:shell")
     analysis = _analyse(text, ctx)
-    if analysis.compound:
+    if analysis.compound or analysis.refuse:
         return None
+    if _expands_in_a_write(text, analysis, ctx):
+        return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     return _single_verdict(analysis, ctx)
 
 
@@ -515,6 +552,8 @@ def _filter_form(pieces: list[str], ctx: Context) -> Verdict | None:
             return None
         if any(">" in word or "<" in word for word in words):
             return None
+        if any(word.startswith(_RUNS_A_PROGRAM.get(words[0], ("\0",))) for word in words[1:]):
+            return None  # `rg --pre`, `sort --compress-program`: no filter any more
         if words[0] == "tee":
             targets = [word for word in words[1:] if not word.startswith("-")]
             if any(_outside_roots(target, ctx) for target in targets):
@@ -528,8 +567,14 @@ def _heredoc_form(text: str, ctx: Context) -> Verdict | None:
     or a wrapper (`git commit -F - <<'EOF'`), and exactly
     `git commit ... "$(cat <<'EOF' ... EOF)" ...`: the text is data for one
     program, and that one command is judged."""
+    if "<<<" in text:
+        return None  # a here-string is never a here-document
     cat = _CAT_HEREDOC_RE.fullmatch(text.rstrip("\n"))
     if cat is not None:
+        # The here-document ends at the FIRST line that is the delimiter: a
+        # body that holds such a line ended there, and the rest is commands.
+        if cat.group("word") in cat.group("body").split("\n"):
+            return None
         reduced = cat.group("before") + '"x"' + cat.group("after")
         if shell.substitutes(reduced) or shell.has_separator(reduced):
             return None
@@ -571,6 +616,29 @@ def _remote_read(command: shell.Command, ctx: Context) -> bool:
     if any(">" in arg or "<" in arg for arg in command.argv):
         return False  # a redirection on the other host writes there
     return is_harmless(command.argv, ctx) or command.program in ctx.rules.programs
+
+
+# Options with which a program that otherwise only reads runs another one.
+_RUNS_A_PROGRAM = {"rg": ("--pre",), "sort": ("--compress-program",)}
+_AWK = frozenset({"awk", "gawk", "mawk", "nawk"})
+_AWK_REACHES_OUT = ("system(", "getline", "|", ">")
+# A sed script with the `e` command (run a command) or `w` / `r` (write or
+# read a file): after an address or a separator, or as a flag of `s///`.
+_SED_REACHES_OUT_RE = re.compile(
+    r"(?:^|[;{}\s]|\d|\$|/)\s*[erwRW](?:\s|$)|s(.).*\1.*\1[a-zA-Z0-9]*[ew]")
+
+
+def _script_reaches_out(program: str, args: list[str]) -> bool:
+    """`awk` and `sed` are little interpreters: a script that runs a
+    command or writes a file is inline code."""
+    scripts = [arg for arg in args if not arg.startswith("-")]
+    if program in _AWK:
+        return any(mark in script for script in scripts for mark in _AWK_REACHES_OUT) \
+            or any(arg in ("-f", "--file", "-i", "--include", "-l", "--load") for arg in args)
+    if program == "sed":
+        return any(_SED_REACHES_OUT_RE.search(script) for script in scripts) \
+            or any(arg in ("-f", "--file") or arg.startswith("--file=") for arg in args)
+    return False
 
 
 def _is_interpreter(program: str, ctx: Context) -> bool:
@@ -619,6 +687,17 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
         if _inline_code(args, ctx):
             return Verdict(gated=True, rule=f"interpreter:{program}")
         return UNGATED
+    if _script_reaches_out(program, args):
+        return Verdict(gated=True, rule=f"interpreter:{program}")
+    if program in _RUNS_A_PROGRAM and any(arg.startswith(_RUNS_A_PROGRAM[program]) for arg in args):
+        return Verdict(gated=True, rule=f"interpreter:{program}")
+    if any(name.startswith("GIT_CONFIG") for name in command.env):
+        # Configuration for git through the environment: an alias, a
+        # command git runs or another address, set where no option shows it.
+        return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
+    if program.startswith("git-") and program != "git-lfs":
+        # `git-push`, `/usr/lib/git-core/git-push`: git by another name.
+        return _judge_git([program[len("git-"):], *args], ctx)
     if program == "git":
         return _judge_git(args, ctx)
     if program in ("rm", "find") and remote:
@@ -645,7 +724,10 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
     if classes:
         return Verdict(gated=True, classes=classes, rule=f"action:{program}")
     if program not in rules.harmless and any(
-        shell.program_name(arg) in rules.known_programs | rules.shells for arg in args
+        shell.program_name(arg) in rules.known_programs | rules.shells
+        or _is_interpreter(shell.program_name(arg), ctx)
+        or shell.program_name(arg) in _AWK | {"sed"}
+        for arg in args
     ):
         # A program no rule knows, with a program the rules do know among
         # its arguments (`watchdog sudo ...`, `runner gh repo delete x`): it
@@ -787,7 +869,8 @@ def _judge_gh(
     rule = f"default:gh:{' '.join(subpath)}"
 
     if subpath == ("api",):
-        if _gh_api_writes(rest, ctx):
+        # Flags may stand before the subcommand too (`gh --method=DELETE api x`).
+        if _gh_api_writes([arg for arg in args if arg != "api"], ctx):
             return Verdict(gated=True, classes=("api",), rule="gh-api:write")
         return UNGATED
 
@@ -880,6 +963,8 @@ def _judge_http(program: str, args: list[str], ctx: Context, env: tuple[str, ...
     for word in args:
         if word.startswith("--") and len(word) > 2:
             name = word.split("=", 1)[0]
+            if name.startswith("--expand-"):
+                name = "--" + name[len("--expand-"):]  # curl: the option, with variables
             if _long_option_matches(name, client.long_options):
                 return gated
             if extra is not None and _long_option_matches(name, extra["long"]):
@@ -929,8 +1014,18 @@ def remote_hosts(program: str, args: list[str], ctx: Context) -> list[str]:
 
 
 def _judge_transfer(program: str, args: list[str], ctx: Context) -> Verdict:
+    deletes = program == "rsync" and any(arg.startswith("--del") or arg == "--remove-source-files"
+                                         for arg in args)
     if remote_hosts(program, args, ctx):
-        return Verdict(gated=True, classes=("outward",), rule=f"transfer:{program}")
+        classes = ("outward", "delete") if deletes else ("outward",)
+        return Verdict(gated=True, classes=classes, rule=f"transfer:{program}")
+    if deletes:
+        # A local rsync that deletes: a recursive delete of its destination.
+        positional = [arg for arg in args if not arg.startswith("-")]
+        if not positional or _outside_roots(positional[-1], ctx) or (
+                "--remove-source-files" in args and any(
+                    _outside_roots(source, ctx) for source in positional[:-1])):
+            return Verdict(gated=True, classes=("delete",), rule="rsync:delete-outside")
     return UNGATED  # both ends local: the path rule of `self` has already looked
 
 
@@ -990,6 +1085,18 @@ def _judge_find(args: list[str], ctx: Context) -> Verdict:
     recursive delete of the places it starts from."""
     if any(arg in _FIND_RUNS for arg in args):
         return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
+    # `find [-H] [-L] [-P] [-D debugopts] [-Olevel] [start...] [expression]`
+    index = 0
+    while index < len(args):
+        if args[index] in ("-H", "-L", "-P"):
+            index += 1
+        elif args[index] == "-D":
+            index += 2
+        elif re.fullmatch(r"-O\d*", args[index]):
+            index += 1
+        else:
+            break
+    args = args[index:]
     if "-delete" in args:
         starts: list[str] = []
         for arg in args:
@@ -1162,6 +1269,31 @@ def push_destinations(push: Push) -> list[str] | None:
     return out
 
 
+_GIT_SUBCOMMAND_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_GIT_CONFIG_READS = frozenset({
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool",
+    "--list", "-l", "--show-origin", "--show-scope", "--name-only",
+})
+_GIT_CONFIG_WRITES = frozenset({
+    "--add", "--replace-all", "--unset", "--unset-all", "--rename-section", "--remove-section",
+    "--edit", "-e", "set", "unset", "edit", "rename-section", "remove-section",
+})
+
+
+def _git_config_writes(args: list[str]) -> bool:
+    """`git config` changes something: anything but a plain read. A read is
+    `--get`, `--list` and their kin, the `get` and `list` subcommands, or a
+    single name with nothing behind it."""
+    if any(arg in _GIT_CONFIG_WRITES for arg in args):
+        return True
+    if any(arg.split("=", 1)[0] in _GIT_CONFIG_READS for arg in args):
+        return False
+    positional = [arg for arg in args if not arg.startswith("-")]
+    if positional and positional[0] in ("get", "list"):
+        return False
+    return len(positional) != 1
+
+
 def _is_default_destination(destination: str, defaults: set[str]) -> bool:
     """A destination that is, or can resolve to, a default branch. git
     completes a short name itself: `main`, `heads/main` and
@@ -1189,7 +1321,21 @@ def _judge_git(args: list[str], ctx: Context) -> Verdict:
     rest = list(call.args)
     if call.subcommand == "subtree" and "push" in rest:
         return Verdict(gated=True, rule="push:subtree")
+    if call.subcommand in ("send-pack", "receive-pack", "http-push"):
+        return Verdict(gated=True, rule="push:plumbing")  # a push by its plumbing
+    if call.subcommand == "config" and _git_config_writes(rest):
+        # Git's configuration decides where a push goes and which commands
+        # git runs; a write to it has no sentence. Desk-only.
+        return Verdict(gated=True, rule="git:config-write")
     if call.subcommand != "push":
+        # A subcommand that is an alias in this repository's configuration
+        # is a command of somebody's choosing under another name.
+        if call.subcommand and _GIT_SUBCOMMAND_RE.fullmatch(call.subcommand):
+            where_alias = ctx.cwd
+            if call.directory is not None and os.path.isdir(_resolve(call.directory, ctx)):
+                where_alias = Path(_resolve(call.directory, ctx))
+            if ctx.git(["config", "--get", f"alias.{call.subcommand}"], where_alias):
+                return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
         return UNGATED
 
     push = parse_push(rest)
@@ -1224,6 +1370,17 @@ def _judge_git(args: list[str], ctx: Context) -> Verdict:
         destinations = push_destinations(push)
         if destinations is None:
             return Verdict(gated=True, classes=tuple(classes), rule="push:refspec-unreadable")
+
+    # A refspec without a colon names the source only. Where it lands is
+    # then the same name, unless the configuration maps it somewhere else
+    # (`remote.<name>.push`, `push.default = upstream`): not guessed at.
+    if push.refspecs and any(":" not in refspec for refspec in push.refspecs):
+        mapped = None
+        if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
+            mapped = ctx.git(["config", "--get-all", f"remote.{remote}.push"], where)
+        default = ctx.git(["config", "--get", "push.default"], where) or ""
+        if mapped or default in ("upstream", "tracking"):
+            return Verdict(gated=True, classes=tuple(classes), rule="push:mapped")
 
     defaults = set(ctx.rules.default_branches)
     if remote is not None and _REMOTE_NAME_RE.fullmatch(remote):
@@ -1281,47 +1438,66 @@ def _bare_push_landing(remote: str | None, ctx: Context) -> tuple[str, str] | No
 
 # --- shell writes to the class `self` -------------------------------------------------------
 
+def _only_reads(command: str, segments, ctx: Context) -> bool:
+    """Every program of the command is on the short list of programs that
+    only read, and nothing is redirected or substituted."""
+    if any(mark in command for mark in (">", "$(", "`", "<(")):
+        return False
+    for words in segments:
+        stripped, ok = shell.strip_prefixes(words)
+        if not ok:
+            return False
+        if stripped and stripped[0] not in ctx.rules.self_read_programs:
+            return False
+    return True
+
+
 def _shell_writes_protected(command: str, ctx: Context) -> bool:
     """A shell command that writes, or may write, to one of Jarvis's own rules.
 
-    The command is not parsed for what it does. If it names a protected
-    path, it is a write unless every program in it is on the short list of
-    programs that only read and nothing is redirected or substituted.
+    The command is not parsed for what it does. It is a write to `self`
+    when it is not made of plain readers only and
+
+    - it names a protected path, or a path inside a protected tree;
+    - it names a protected *directory* itself (the home directory, the
+      Claude Code user directory, `~/.ssh`, any `.claude`): whatever the
+      program, that directory is then where something may land (`cp x ~/`,
+      `tar -C ~ -x`, `unzip -d ~/.claude`, `curl --output-dir ~`,
+      `wget -P ~/.ssh`, `git checkout other -- .claude`);
+    - or it is run from inside a protected directory, where a destination
+      that the call does not name is that directory (`curl -O`, `git apply`).
+
+    Words are compared with their quotes ignored and with their quotes
+    removed (`~/.claude/"settings.json"`, `"$HOME"/.bashrc`).
     """
     rules = ctx.rules
     text = command.replace("${HOME}", str(ctx.home)).replace("$HOME", str(ctx.home))
     segments = shell.lenient_segments(text)
+    dequoted = shell.lenient_segments(re.sub(r"[\"'\\\\]", "", text))
 
     mentioned = False
-    for words in segments:
-        stripped, _ = shell.strip_prefixes(words)
-        program = shell.program_name(stripped[0]) if stripped else ""
-        for word in words:
-            for part in re.split(r"[=,]", word):
-                if not part or part.startswith("-"):
-                    continue
-                glob = _GLOB_RE.search(part)
-                if glob:
-                    literal = part[:glob.start()]
-                    directory = literal if literal.endswith("/") else os.path.dirname(literal)
-                    resolved = _resolve(directory or ".", ctx)
-                    if ctx.protected.covers(resolved) or ctx.protected.parent_of_one(resolved):
+    for variant in (segments, dequoted):
+        for words in variant:
+            stripped, _ = shell.strip_prefixes(words)
+            program = shell.program_name(stripped[0]) if stripped else ""
+            for word in words:
+                for part in re.split(r"[=,]", word):
+                    if not part or part.startswith("-") and not part.startswith("-/"):
+                        continue
+                    glob = _GLOB_RE.search(part)
+                    if glob:
+                        literal = part[:glob.start()]
+                        directory = literal if literal.endswith("/") else os.path.dirname(literal)
+                        resolved = _resolve(directory or ".", ctx)
+                        if ctx.protected.covers(resolved) or ctx.protected.parent_of_one(resolved) \
+                                or ctx.protected.is_protected_dir(resolved):
+                            mentioned = True
+                        continue
+                    resolved = _resolve(part, ctx)
+                    if ctx.protected.covers(resolved) or ctx.protected.is_protected_dir(resolved):
                         mentioned = True
-                    continue
-                resolved = _resolve(part, ctx)
-                if ctx.protected.covers(resolved):
-                    mentioned = True
-                elif program in rules.self_tree_programs and ctx.protected.holds(resolved):
-                    return True
-    if not mentioned:
+                    elif program in rules.self_tree_programs and ctx.protected.holds(resolved):
+                        return True
+    if not mentioned and not ctx.protected.is_protected_dir(ctx.cwd):
         return False
-
-    if any(mark in command for mark in (">", "$(", "`", "<(")):
-        return True
-    for words in segments:
-        stripped, ok = shell.strip_prefixes(words)
-        if not ok:
-            return True
-        if stripped and shell.program_name(stripped[0]) not in rules.self_read_programs:
-            return True
-    return False
+    return not _only_reads(command, segments, ctx)
