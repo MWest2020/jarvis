@@ -297,7 +297,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes) -> None:
         project_name = project.name
-        transcript = stt.transcribe(audio_bytes, model_size=self.config.whisper_model)
+        audio = audio_bytes
+        if self.full is not None:
+            # Decoded once: `full` mode needs the samples for the transcript and
+            # again for the detected speech.
+            audio = stt.decode(audio_bytes)
+        transcript = stt.transcribe(audio, model_size=self.config.whisper_model)
         logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
         if not transcript.strip():
             # Silence: no agent turn, just say so.
@@ -308,7 +313,7 @@ class Handler(BaseHTTPRequestHandler):
             # The pending confirmation, the fallback and the spoken errors of
             # `full` mode. A yes is only ever read from this transcript.
             outcome = self.full.handle(project, transcript,
-                                       lambda: stt.speech_seconds(audio_bytes))
+                                       lambda: stt.speech_seconds(audio))
             logger.info("project=%s summary=%r", project_name, outcome.spoken)
             try:
                 audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)

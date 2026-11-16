@@ -21,8 +21,25 @@ class Bridge:
         self.heard = "what is open?"
         self.speech = 0.6
         self.readonly_prompts = []
-        monkeypatch.setattr(stt, "transcribe", lambda audio_bytes, model_size: self.heard)
-        monkeypatch.setattr(stt, "speech_seconds", lambda audio_bytes: self.speech)
+        # No speech model in these tests: decoding, transcript and detector are stubs.
+        self.decoded = []
+        samples = object()                               # stands for the decoded array
+
+        def decode(audio_bytes):
+            self.decoded.append(audio_bytes)
+            return samples
+
+        def transcribe(audio, model_size):
+            self.transcribed_from = audio
+            return self.heard
+
+        def speech_seconds(audio):
+            self.measured_from = audio
+            return self.speech
+        self.samples = samples
+        monkeypatch.setattr(stt, "decode", decode)
+        monkeypatch.setattr(stt, "transcribe", transcribe)
+        monkeypatch.setattr(stt, "speech_seconds", speech_seconds)
         monkeypatch.setattr(tts, "synthesize", lambda text, voice: b"WAV:" + text.encode())
 
         def readonly_turn(**kwargs):
@@ -83,6 +100,12 @@ def test_a_full_turn_is_spoken_and_carries_the_agent_hosts_turn_id(bridge):
     assert bridge.readonly_prompts == []
     assert bridge.host.requests() == [
         {"v": 1, "project": "demo", "prompt": "what is open?", "confirm": None}]
+
+
+def test_the_recording_is_decoded_once_for_transcript_and_detector(bridge):
+    bridge.say("what is open?")
+    assert bridge.decoded == [b"audio"]
+    assert bridge.transcribed_from is bridge.samples and bridge.measured_from is bridge.samples
 
 
 def test_yes_after_a_read_back_runs_the_call_once(bridge):
@@ -289,6 +312,7 @@ def test_readonly_mode_never_connects_and_has_no_new_header(tmp_path, monkeypatc
     try:
         response, said = b.say("yes")
         assert said == "WAV:It is a voice bridge."
+        assert b.decoded == [] and b.transcribed_from == b"audio"   # the bytes, as before
         assert response.getheader("X-Jarvis-Needs-Confirmation") is None
         assert [k for k, _ in response.getheaders()] == [
             "Server", "Date", "Content-Type", "Content-Length", "X-Jarvis-Session-Id",

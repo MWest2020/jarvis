@@ -36,6 +36,16 @@ def test_both_sides_have_the_same_fields_errors_and_notices():
     assert wrapper.NOTICE_CODES == set(remote_adapter.NOTICE_SENTENCES)
 
 
+def test_both_sides_accept_the_same_project_names():
+    from agent_host import projects
+    assert projects._PROJECT_NAME.pattern == remote_adapter.PROJECT_NAME.pattern
+    assert projects._PROJECT_NAME.flags == remote_adapter.PROJECT_NAME.flags
+
+
+def test_both_sides_cap_a_message_at_the_same_size():
+    assert wrapper_request.MAX_REQUEST_BYTES == remote_adapter.MAX_MESSAGE_BYTES
+
+
 def _wire(reply: dict) -> bytes:
     return json.dumps(reply).encode()
 

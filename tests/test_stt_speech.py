@@ -31,3 +31,10 @@ def test_a_click_is_not_three_tenths_of_a_second_of_speech():
 def test_a_steady_tone_is_not_speech():
     tone = [int(8000 * math.sin(2 * math.pi * 440 * n / 16000)) for n in range(32000)]
     assert stt.speech_seconds(_wav(tone)) < 0.3
+
+
+def test_the_detector_takes_the_decoded_samples_as_well_as_the_bytes():
+    click = _wav([0] * 16000 + [20000, -20000] * 80 + [0] * 16000)
+    samples = stt.decode(click)
+    assert len(samples) == 32160
+    assert stt.speech_seconds(samples) == stt.speech_seconds(click)
