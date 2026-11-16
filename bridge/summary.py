@@ -68,10 +68,28 @@ def extract_summary(reply_text: str) -> str:
             # The marker on its own line, the summary on the next one.
             rest = [ln for ln in lines[i + 1:] if ln.strip()]
             summary = _clean(rest[0]) if rest else ""
-        if (summary and len(summary) <= MAX_SPOKEN_CHARS
-                and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary)):
-            return summary
+        # The filters see the whole summary, also the part a cut would drop.
+        if summary and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary):
+            return shorten(summary)
         break
-    # No marker, or a summary with code, paths or too long: a short, safe line
-    # instead of reading it aloud. The full reply is in the log.
+    # No marker, or a summary with code, paths or a credential: a short, safe
+    # line instead of reading it aloud. The full reply is in the log.
     return FALLBACK_SUMMARY
+
+
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+
+def shorten(summary: str, limit: int = MAX_SPOKEN_CHARS) -> str:
+    """`summary` within `limit` characters: as it is when it fits, otherwise up to
+    the last sentence end within the limit, otherwise up to the last whole word
+    with "…" after it."""
+    if len(summary) <= limit:
+        return summary
+    ends = [m.end() for m in _SENTENCE_END.finditer(summary) if m.end() <= limit]
+    if ends:
+        return summary[:ends[-1]]
+    head = summary[:limit - 1]
+    if not summary[limit - 1].isspace() and " " in head:
+        head = head[:head.rindex(" ")]
+    return head.rstrip(" ,;:-") + "…"

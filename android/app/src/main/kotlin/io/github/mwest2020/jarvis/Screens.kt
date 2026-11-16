@@ -282,7 +282,7 @@ fun SettingsScreen(
         )
         Text(
             "The app remembers the project you picked last. Until you have picked one it " +
-                "selects this project, or none: it never takes the first of the list.",
+                "selects this project, or none: it never takes the first of a longer list.",
             color = Color(0xFF9FB0C0),
         )
 

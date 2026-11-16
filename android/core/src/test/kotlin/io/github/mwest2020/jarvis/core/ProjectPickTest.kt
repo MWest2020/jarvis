@@ -14,8 +14,11 @@ class ProjectPickTest {
     }
 
     @Test
-    fun aSingleProjectIsNotPickedEither() {
-        assertEquals("", ProjectPick.choose(listOf("only"), remembered = "", default = ""))
+    fun aListOfExactlyOneProjectIsSelected() {
+        assertEquals("only", ProjectPick.choose(listOf("only"), remembered = "", default = ""))
+        assertEquals("only", ProjectPick.choose(listOf("only"), remembered = "gone", default = "other"))
+        assertEquals("", ProjectPick.choose(listOf("only", "second"), remembered = "", default = ""))
+        assertEquals("", ProjectPick.choose(emptyList(), remembered = "", default = ""))
     }
 
     @Test

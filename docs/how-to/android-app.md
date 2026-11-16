@@ -74,7 +74,8 @@ settings again. A release key fixes this; see "The signing key" below.
 
 ### Which project is selected
 
-The app never takes the first project of the list by itself. In this order:
+A list of exactly one project (typed or from the bridge) is selected: there is nothing to
+choose. With more than one, the app never takes the first of the list by itself. In this order:
 
 1. **The project you tapped last.** It is remembered across restarts and refreshes. If it is
    missing from the bridge's list for a while, it is selected again once it is back.

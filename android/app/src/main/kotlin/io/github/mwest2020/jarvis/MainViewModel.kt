@@ -36,7 +36,7 @@ import java.security.ProviderException
 data class UiState(
     val phase: Phase = Phase.IDLE,
     val projects: List<String> = emptyList(),
-    /** The selected project; empty until one is picked (it is never the first of the list by itself). */
+    /** The selected project; empty until one is picked (never the first of a longer list by itself; a list of one is selected). */
     val project: String = "",
     /** The "Default project" setting, used when no pick is remembered. */
     val defaultProject: String = "",

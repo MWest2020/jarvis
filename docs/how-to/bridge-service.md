@@ -164,8 +164,10 @@ all: the reply goes out at once with `Connection: close`. The log and the sessio
 are created owner-only (`0600`, in a `0700` directory, rotated logs too): the log
 holds full replies, which can quote file contents.
 
-Only the summary is spoken, and only when it is short (160 characters at most; Claude Code is asked for one sentence, two at most, of about 100 to 150 characters, because speech is the slow part of a turn)
-and contains nothing that looks like code or a path (backticks, slashes, file
+Only the summary is spoken, at most 160 characters of it (Claude Code is asked for
+one sentence, two at most, of about 100 to 150 characters, because speech is the slow
+part of a turn; a longer one is cut at its last sentence end within 160 characters,
+or else at a word, with "…"), and only when it contains nothing that looks like code or a path (backticks, slashes, file
 names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
 letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
 details."
