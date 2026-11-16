@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-15
+last_reviewed: 2026-11-16
 ---
 # Jarvis docs
 
@@ -18,9 +18,10 @@ Start here. Agents: read this page and follow the links; there is no need to sca
 | Running the bridge in a Kubernetes cluster (image, tailnet-only Service, NetworkPolicy) | [`how-to/run-in-cluster.md`](how-to/run-in-cluster.md) |
 | Change in progress: run the bridge in a cluster | [`openspec/changes/run-bridge-in-cluster/`](../openspec/changes/run-bridge-in-cluster/) |
 | Change in progress: every project (`GET /projects`, `JARVIS_PROJECTS=*`, sync of all of one owner's repositories) | [`openspec/changes/add-project-list/`](../openspec/changes/add-project-list/) |
+| The agent host of `full` mode: install, configuration, kill switch, the `authorized_keys` line, records, update runbook and host checks, what it trusts | [`how-to/agent-host.md`](how-to/agent-host.md) |
 | The Android app: install, first run, errors, how it differs from HTTP Shortcuts | [`how-to/android-app.md`](how-to/android-app.md) |
 | Change in progress: the first Android app (code in [`android/`](../android/)) | [`openspec/changes/add-android-client/`](../openspec/changes/add-android-client/) |
-| Change in progress: Jarvis as a full agent. The turn runs on the coding session's host with the same rules, a spoken yes for irreversible actions, an audit record. Supersedes the read-only handoffs of `add-drive-mode` (#9). Phases 1a (the wrapper and one turn), 1b1 (the gate: rules as data in [`agent_host/gate_rules.toml`](../agent_host/gate_rules.toml), what is gated and what is refused) and 1b2 (a gated call is read back in a sentence built from the call by rules and released once by a grant, in CI with a fake `claude`; the action log and the `confirm on|off` switch) are built in [`agent_host/`](../agent_host/). Nothing is installed yet, and `full` mode stays off everywhere until phase 1c and its host checks (task 1.17) pass | [`openspec/changes/jarvis-full-agent/proposal.md`](../openspec/changes/jarvis-full-agent/proposal.md), with [`design.md`](../openspec/changes/jarvis-full-agent/design.md) (D30 to D40) and [`tasks.md`](../openspec/changes/jarvis-full-agent/tasks.md) (four phases) |
+| Change in progress: Jarvis as a full agent. The turn runs on the coding session's host with the same rules, a spoken yes for irreversible actions, an audit record. Supersedes the read-only handoffs of `add-drive-mode` (#9). Phases 1a (the wrapper and one turn), 1b1 (the gate: rules as data in [`agent_host/gate_rules.toml`](../agent_host/gate_rules.toml), what is gated and what is refused) and 1b2 (a gated call is read back in a sentence built from the call by rules and released once by a grant, in CI with a fake `claude`; the action log and the `confirm on|off` switch) and 1c (the installer and [the how-to](how-to/agent-host.md)) are built in [`agent_host/`](../agent_host/), and phase 2 (the bridge side) in [`bridge/`](../bridge/). `full` mode stays off everywhere until the host checks of phase 1 (task 1.17) have passed on the agent host | [`openspec/changes/jarvis-full-agent/proposal.md`](../openspec/changes/jarvis-full-agent/proposal.md), with [`design.md`](../openspec/changes/jarvis-full-agent/design.md) (D30 to D40) and [`tasks.md`](../openspec/changes/jarvis-full-agent/tasks.md) (four phases) |
 | Agent modes: `readonly` (default) and `full`, the settings of `full`, the read-back and the spoken yes, the contract with the agent host | [`how-to/bridge-service.md`](how-to/bridge-service.md#agent-modes); in a cluster: [`how-to/run-in-cluster.md`](how-to/run-in-cluster.md#full-mode-the-road-to-the-agent-host) |
 
 ## Rule

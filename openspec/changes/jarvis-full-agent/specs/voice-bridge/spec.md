@@ -75,15 +75,19 @@ In `full` mode the bridge SHALL run each turn through one ssh connection to the 
 - **THEN** no turn is started and the spoken reply says the agent host is busy
 
 ### Requirement: Agent host path
-The connection from the bridge to the agent host SHALL go over the private network only, SHALL be authenticated in both directions (the bridge's key, accepted only from the bridge's own address, and a host key pinned in the bridge's configuration), and SHALL NOT be usable for anything but the wrapper: no shell, no other command, no forwarding, no file transfer. The wrapper SHALL take nothing from the connection except one request of a fixed shape, SHALL refuse a request with an unknown field, SHALL accept no path, command, option, tool list, permission mode, settings or session id from the bridge, and SHALL build the agent's environment from a fixed, root-owned source. The settings the wrapper adds to a turn SHALL be a fixed file that the agent's user cannot write without privilege, never generated per turn. The bridge's key and the pinned host key SHALL NOT be in git or in the bridge's environment variables. This limits what the connection can ask for to one turn of the agent; it does not limit what that agent may do, which is the coding session's reach.
+The connection from the bridge to the agent host SHALL go over the private network only, SHALL be authenticated in both directions (the bridge's key, accepted only from the one address the bridge's connections come from, and a host key pinned in the bridge's configuration), and SHALL NOT be usable for anything but the wrapper: no shell, no other command, no forwarding, no file transfer. The wrapper SHALL take nothing from the connection except one request of a fixed shape, SHALL refuse a request with an unknown field, SHALL accept no path, command, option, tool list, permission mode, settings or session id from the bridge, and SHALL build the agent's environment from a fixed, root-owned source. The settings the wrapper adds to a turn SHALL be a fixed file that the agent's user cannot write without privilege, never generated per turn. The bridge's key and the pinned host key SHALL NOT be in git or in the bridge's environment variables. That one address SHALL be a single address, never a network or a name. When the bridge runs in a cluster it is the address of the node the bridge's pod runs on, which every pod on that node and the node itself share: the key is then bound to that node, not to the bridge's pod alone, and the documentation SHALL say so. This limits what the connection can ask for to one turn of the agent; it does not limit what that agent may do, which is the coding session's reach.
 
 #### Scenario: The key is used for a shell
 - **WHEN** someone holding the bridge's key asks the agent host for a shell, another command or a port forward
 - **THEN** the agent host runs only the wrapper, which refuses the input, and nothing else happens
 
 #### Scenario: The key is used from another address
-- **WHEN** the bridge's key is offered from any address other than the bridge's own, on or off the private network
+- **WHEN** the bridge's key is offered from any address other than the one the key is bound to (in a cluster: the address of the bridge's node), on or off the private network
 - **THEN** the agent host refuses the login
+
+#### Scenario: The key is bound to a network or a name
+- **WHEN** the installer is asked for the key's line with a network, a host name, a pattern or a list as the source address
+- **THEN** it refuses and prints no line
 
 #### Scenario: A changed host key
 - **WHEN** the agent host presents a key other than the pinned one

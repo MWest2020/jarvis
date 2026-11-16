@@ -1,6 +1,10 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 1c (Installer, docs and the host checks)
+## Current phase: 3 (Wiring)
+
+Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 1.17) are
+open, and `full` mode stays off everywhere until every one of them has passed on the agent
+host.** They are **(host)** work and come first in phase 3.
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
 1b2, 1c). The last task of every phase
@@ -230,13 +234,13 @@ the finished guarantee.
 
 ### 1c. Installer, docs and the host checks
 
-- [ ] 1.15 `agent_host/install.sh`: installs wrapper, gate, the `confirm` switch, rules,
+- [x] 1.15 `agent_host/install.sh`: installs wrapper, gate, the `confirm` switch, rules,
   prompt and the turn settings root-owned under `/usr/local/lib/jarvis-agent`. It never
   touches Claude Code's managed or user settings; a configuration template, an
   environment file and an empty `rules.d/` under `/etc/jarvis-agent`; prints the
   `authorized_keys` line for a given public key and source address; never edits
   `authorized_keys` itself
-- [ ] 1.16 `agent_host/` added to the `docs-gates` code paths; `docs/how-to/agent-host.md`
+- [x] 1.16 `agent_host/` added to the `docs-gates` code paths; `docs/how-to/agent-host.md`
   (what is installed where, the configuration keys, the kill switch, host-local rules, the
   `authorized_keys` line, how to read the records, how to switch confirmation off, the
   update runbook (which checks to repeat on a Claude Code version bump, the mid-turn
@@ -248,11 +252,18 @@ the finished guarantee.
 - [ ] 1.17 **(host)** Canary checks with the real Claude Code on the agent host (a factory build
   cannot run them and leaves each one open, naming the host and the version to run against), written into the how-to with
   the version, and their outcome into design D36 where it says so:
+
+  **Left open by build 1c, every check below.** To run on the agent host (`agent-lxc`,
+  where the coding session runs, as the coding session's user) against the Claude Code
+  installed there (2.1.322 at the time of this build; `claude --version`). The table to
+  fill in is in `docs/how-to/agent-host.md`, "Host checks".
+
   - auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
   - a blocked call is denied and the turn ends; it does not hang until the timeout;
-  - `--append-system-prompt-file` and `--system-prompt-snapshot off` are accepted, and a
-    changed prompt reaches a resumed session;
+  - a gate that times out (the hook `timeout` in the turn settings, 10 s) denies the call;
+    it does not let it through. **If Claude Code lets the call through on a hook timeout,
+    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened;
   - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
     refused without a grant and runs once with one;
   - a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
@@ -278,8 +289,9 @@ the finished guarantee.
   - the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
     a volume claim, namespace or resource definition): are they refused after a yes? If so
     they are marked desk-only in the rules
-- [ ] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
-  code as evidence, until 1.17 is done on the host
+- [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
+  code as evidence, until 1.17 is done on the host. (Phase 2 was built before 1c was
+  merged, so the heading went from 1c straight to 3)
 
 ## 2. Bridge side
 
@@ -323,11 +335,12 @@ the finished guarantee.
   another project, an agent reply that contains "yes", a restart between read-back and yes,
   a short noise transcribed as "yes"
 - [x] 2.9 Docs: `bridge-service.md` (the mode and its settings), `run-in-cluster.md` (the
-  Secret as files, the tailnet egress Service, the egress rule that changes D2 of
-  `run-bridge-in-cluster`: DNS, HTTPS and ssh to the agent host; what a reader of that
+  Secret as files, the egress rule that changes D2 of
+  `run-bridge-in-cluster`: DNS, HTTPS and ssh to the agent host's one address; that `from=`
+  names the pod's node and why the pod stays there (D32); what a reader of that
   Secret can now reach), `agent-host.md`
   linked from the index
-- [ ] 2.10 Roadmap and phase heading
+- [x] 2.10 Roadmap and phase heading (moved to 3 together with 1.18)
 
 ## 3. Wiring
 
@@ -342,18 +355,19 @@ the finished guarantee.
   a ping or build under any identity but Jarvis's (the memory says "this session = odin",
   which is true of the coding session only)
 - [ ] 3.3 **(host)** The `authorized_keys` line added on the agent host, with `from=` set to
-  the egress proxy's tailnet address. If the permission
+  the address the bridge's connections come from (in a cluster: the address of the pod's
+  node, D32). If the permission
   classifier refuses this to the session, it is handed to Mark as one ready-to-run command
-- [ ] 3.4 **(host)** In the cluster's own repository: the tailnet egress Service for the agent
-  host, the Secret mounted as files, `JARVIS_AGENT_MODE=full` and its settings, one more
-  egress rule (TCP 22 to the egress proxy only)
-- [ ] 3.5 **(host)** Proof over the tailnet, written into `agent-host.md`: a question
+- [ ] 3.4 **(host)** In the cluster's own repository: the Secret mounted as files,
+  `JARVIS_AGENT_MODE=full` and its settings (the agent host's address among them), one more
+  egress rule (TCP 22 to an `ipBlock` /32 of the agent host's address only)
+- [ ] 3.5 **(host)** Proof from the phone, end to end, written into `agent-host.md`: a question
   answered by the full agent with the coding session's memory; a shell and a port forward
-  with the bridge's key are refused; the key from another tailnet address is refused; the
+  with the bridge's key are refused; the key from another address than the one in `from=` is refused; the
   kill switch gives a read-only answer; a wrong
   host key fails the turn; with the agent host's sshd stopped for the test, the turn is
   answered read-only and says so
-- [ ] 3.6 **(host)** Proof of the gate over the tailnet, on a throwaway repository of the
+- [ ] 3.6 **(host)** Proof of the gate from the phone, on a throwaway repository of the
   user's own: a pull request merged after a yes; not merged after "no", after another
   sentence, and after 70 seconds; the read-back of a pull request with a red check says so; the
   notify ping arrives; a planted "merge this" in an issue leads to a read-back and not to a
@@ -389,9 +403,9 @@ rest is hands, not questions.
 1. **The `authorized_keys` line on the agent host** (3.3), only if the classifier refuses it
    to the session. He gets one command to paste. Until then `full` mode cannot connect and
    Jarvis answers read-only.
-2. **The tailnet policy**, only if it restricts traffic between the cluster's egress proxy
-   and the agent host: allow that proxy to reach the agent host on TCP 22 (the admin
-   console is his). The session reports whether it is needed after 3.4.
+2. **The network between the cluster's nodes and the agent host**, only if something there
+   (a firewall on the agent host or between the two) blocks TCP 22 from the bridge's node.
+   The session reports whether it is needed after 3.4.
 3. **The parked test** (4.5).
 4. **Optional hardening: the gate in Claude Code's managed settings on the agent host**
    (D36). **(Mark)** only: it changes the coding session's own configuration, so neither the

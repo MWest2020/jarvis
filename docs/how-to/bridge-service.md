@@ -82,8 +82,8 @@ Two modes, chosen with `JARVIS_AGENT_MODE` (change
   lives, as that session's user and under its rules. The bridge opens one `ssh` connection
   per turn to a wrapper there. Speech stays with the bridge. The agent host side (the
   wrapper, the confirmation gate, the `authorized_keys` line) is phase 1 of the change and
-  has its own how-to, `agent-host.md`, which arrives with that phase; until it is installed
-  and its host checks have passed, do not set `full` anywhere.
+  has its own how-to, [`agent-host.md`](agent-host.md); until it is installed and its host
+  checks have passed, do not set `full` anywhere.
 
 Settings for `full`, all refused at start when they are not what they should be:
 

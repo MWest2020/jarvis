@@ -219,7 +219,7 @@ above. The pieces belong in your own cluster repository, like the rest.
 mode it is DNS, HTTPS and ssh to the one address of the agent host, and nothing else.
 
 **The road is the private network the cluster's nodes and the agent host share, straight
-to the agent host's sshd.** There is no Tailscale egress Service in it. Design D32 describes
+to the agent host's sshd.** There is no Tailscale egress Service in it. Design D32 first described
 one (an `ExternalName` Service that the Tailscale operator fills in); it was dropped when
 this was wired (2026-11-16), because the operator rewrites that Service after it is applied,
 which a GitOps tool then reports as drift unless it is told to ignore the difference. What
@@ -227,8 +227,9 @@ D32 asks of the connection holds without it: ssh encrypts and authenticates both
 bridge's key, the pinned host key), the key's `authorized_keys` line forces the wrapper and
 names the one source address, and the NetworkPolicy allows the one destination. What is
 different: the packets cross the local network, not a WireGuard tunnel, and the source
-address the agent host sees is a **node's**, not the bridge's own (below). The design text
-of D32 still describes the tailnet road and needs a follow-up.
+address the agent host sees is a **node's**, not the bridge's own (below). D32 now describes
+this road, and keeps the egress Service as the alternative for a cluster that shares no
+network with the agent host.
 
 1. **No Service.** `JARVIS_AGENT_HOST` is the agent host's address on that network, and
    `JARVIS_AGENT_PORT` its sshd port (22).
