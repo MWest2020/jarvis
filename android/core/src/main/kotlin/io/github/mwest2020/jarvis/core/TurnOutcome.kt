@@ -29,7 +29,13 @@ enum class FailureKind {
 data class TurnFailure(val kind: FailureKind, val message: String)
 
 sealed interface TurnOutcome {
-    class Reply(val wav: ByteArray, val summary: String, val sessionId: String?) : TurnOutcome
+    /** [projectsChanged]: the bridge says a new project is ready (`X-Jarvis-Projects-Changed: 1`). */
+    class Reply(
+        val wav: ByteArray,
+        val summary: String,
+        val sessionId: String?,
+        val projectsChanged: Boolean = false,
+    ) : TurnOutcome
     data class Failed(val failure: TurnFailure) : TurnOutcome
 }
 

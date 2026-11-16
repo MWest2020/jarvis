@@ -12,7 +12,9 @@ import io.github.mwest2020.jarvis.core.Built
 import io.github.mwest2020.jarvis.core.ListOutcome
 import io.github.mwest2020.jarvis.core.ListRequest
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.ProjectEntry
 import io.github.mwest2020.jarvis.core.ProjectList
+import io.github.mwest2020.jarvis.core.ProjectMenu
 import io.github.mwest2020.jarvis.core.ProjectPick
 import io.github.mwest2020.jarvis.core.ProjectSetting
 import io.github.mwest2020.jarvis.core.TalkAction
@@ -40,6 +42,8 @@ data class UiState(
     val project: String = "",
     /** The "Default project" setting, used when no pick is remembered. */
     val defaultProject: String = "",
+    /** The "Home project" setting: what General talks to; blank means no General entry. */
+    val homeProject: String = "",
     val summary: String = "",
     val error: String? = null,
     val bridgeUrl: String = "",
@@ -53,6 +57,9 @@ data class UiState(
     val loaded: Boolean = false,
 ) {
     val configured: Boolean get() = bridgeUrl.isNotBlank() && hasToken && (projects.isNotEmpty() || projectsFromBridge)
+
+    /** What the picker shows: General first (for the home project), then the projects. */
+    val entries: List<ProjectEntry> get() = ProjectMenu.entries(projects, homeProject)
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -88,11 +95,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 is ProjectSetting.Named -> setting.names
             }
             val default = settings.defaultProject
+            val home = settings.homeProject
             UiState(
                 projects = projects,
                 projectsFromBridge = setting == ProjectSetting.FromBridge,
-                project = ProjectPick.choose(projects, settings.pickedProject, default),
+                project = ProjectPick.choose(projects, settings.pickedProject, default, home),
                 defaultProject = default,
+                homeProject = home,
                 bridgeUrl = settings.bridgeUrl,
                 hasToken = tokens.hasToken(),
                 loaded = true,
@@ -127,7 +136,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // is missing from one answer is selected again when it is back.
                     val pick = withContext(Dispatchers.IO) {
                         settings.fetchedProjects = names
-                        ProjectPick.choose(names, settings.pickedProject, settings.defaultProject)
+                        ProjectPick.choose(names, settings.pickedProject, settings.defaultProject, settings.homeProject)
                     }
                     _state.update {
                         it.copy(
@@ -135,7 +144,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             projects = names,
                             // A turn in flight keeps its project; the pick changes only when idle.
                             project = if (it.phase == Phase.IDLE) pick else it.project,
-                            error = if (names.isEmpty()) "The bridge lists no projects." else null,
+                            error = if (names.isEmpty() && it.homeProject.isBlank()) "The bridge lists no projects." else null,
                         )
                     }
                 }
@@ -217,6 +226,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 is TurnOutcome.Failed -> fail(outcome.failure.message)
                 is TurnOutcome.Reply -> {
                     _state.update { it.copy(phase = Phase.PLAYING, summary = outcome.summary, error = null) }
+                    // A new project is ready on the agent host (jarvis-general-conversation D56):
+                    // fetch the list again. The selection is not changed while a reply plays.
+                    if (outcome.projectsChanged) refreshProjects()
                     player.play(outcome.wav) { played ->
                         _state.update {
                             when {
@@ -274,6 +286,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         newToken: String,
         projectsText: String,
         defaultProject: String,
+        homeProject: String,
         onResult: (String?) -> Unit,
     ) {
         val url = when (val checked = BridgeUrl.validate(bridgeUrl)) {
@@ -292,6 +305,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     settings.bridgeUrl = url
                     settings.projectSetting = setting
                     settings.defaultProject = defaultProject
+                    settings.homeProject = homeProject
                     null
                 } catch (_: GeneralSecurityException) {
                     KEYSTORE_REFUSED
