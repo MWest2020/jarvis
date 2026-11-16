@@ -21,7 +21,8 @@ done_means:
   - {item: "Android app builds in CI: unit tests, lint, dependency check, debug APK artifact", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/12/checks"}
   - {item: "Change add-android-client approved by Mark: waits on Mark: #13 (default: built as proposed, CI keeps a debug-signed APK)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/12"}
   - {item: "Android app: a spoken round trip on Mark's phone, recorded in the how-to", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/android-app.md#test-record"}
-  - {item: "Android app: release-signed APK from CI (needs Mark's signing key as GitHub secrets: #13)", status: open, evidence: "https://github.com/MWest2020/jarvis/issues/13"}
+  - {item: "Android app: main APKs signed with one stable key, so an update installs over the app (key and secrets 2026-11-16, #54)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/54"}
+  - {item: "Android app: a release build attached to a GitHub release by CI (task 4.3)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-android-client/tasks.md"}
   - {item: "Change add-drive-mode (the next phase) proposed (#9); approval waits on Mark: #10 (default: nothing is built until the PR is merged)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/9"}
   - {item: "Change jarvis-full-agent proposed (proposal, design, tasks, spec delta); Mark decided 2026-11-15, nothing is built until the PR is reviewed and merged", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/20"}
   - {item: "Full agent, agent host side: the wrapper and per-turn record are built (1a, #34)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/agent_host"}

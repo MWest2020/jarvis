@@ -21,15 +21,22 @@ android {
     }
 
     // One key that stays the same (jarvis#13), so an update installs over the old app.
-    // CI writes it from the repository secrets; without them (a fork, a local build) the
-    // build falls back to the usual per-machine debug key.
-    val keystore = providers.environmentVariable("ANDROID_KEYSTORE_FILE").orNull
-    val stable = if (keystore != null && file(keystore).exists()) {
+    // CI writes it from the repository secrets on a push to main; without
+    // JARVIS_KEYSTORE_FILE (pull requests, forks, local builds) the build keeps the usual
+    // per-machine debug key. A partial setup fails here, naming what is missing.
+    fun signingEnv(name: String): String {
+        val value = providers.environmentVariable(name).orNull
+        if (value.isNullOrEmpty()) throw GradleException("JARVIS_KEYSTORE_FILE is set but $name is empty")
+        return value
+    }
+    val keystore = providers.environmentVariable("JARVIS_KEYSTORE_FILE").orNull?.takeIf { it.isNotEmpty() }
+    val stable = if (keystore != null) {
+        if (!file(keystore).exists()) throw GradleException("JARVIS_KEYSTORE_FILE $keystore does not exist")
         signingConfigs.create("stable") {
             storeFile = file(keystore)
-            storePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").get()
-            keyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").get()
-            keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").get()
+            storePassword = signingEnv("JARVIS_KEYSTORE_PASSWORD")
+            keyAlias = signingEnv("JARVIS_KEY_ALIAS")
+            keyPassword = signingEnv("JARVIS_KEY_PASSWORD")
         }
     } else null
 

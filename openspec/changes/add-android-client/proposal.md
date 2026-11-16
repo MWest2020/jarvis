@@ -73,6 +73,10 @@ Each has a default. If you merge this without answering, the default is what hap
    runner and differs per build, so installing a newer build means uninstalling the old one
    and entering the settings again. Wiring the release build to the secrets is task 4.3 and
    stays open until you say the secrets are there.*
+   *Decided 2026-11-16: Mark asked that updates install over the app ("can we solve the
+   update having to install the app again!"); the key was made on agent-lxc, Mark had the
+   secrets set, and main builds are signed with it (jarvis#54).*
+
 2. **The application id** is `io.github.mwest2020.jarvis`. Android treats another id as
    another app, so changing it later means a fresh install.
    *Default: keep it.*

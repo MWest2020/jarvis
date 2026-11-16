@@ -38,8 +38,10 @@ Tasks marked **(Mark)** need Mark's phone, ears or GitHub account. A build leave
 - [x] 3.3 `docs/how-to/android-app.md`, the how-to index, `docs/index.md`, the roadmap
 
 ## 4. Signing
-- [ ] 4.1 **(Mark)** Create the release key and the four GitHub secrets (open question 1)
-- [ ] 4.2 **(Mark)** Say so on the `waiting-on-mark` issue
+- [x] 4.1 Create the signing key and the four GitHub secrets (open question 1). Mark asked on
+  2026-11-16 that updates install over the app; the key was made on agent-lxc and Mark had the
+  secrets set (jarvis#54)
+- [x] 4.2 Say so on the `waiting-on-mark` issue (#13)
 - [ ] 4.3 Release build signed from the secrets in CI; the APK attached to a release of the
   private repository; the how-to's "Updating" section rewritten
 

@@ -48,11 +48,15 @@ The app is not in any store. CI builds the APK.
 
 ### Updating
 
-Since 16 Nov 2026 CI signs every APK with one key that stays the same (repository secrets,
-jarvis#13), so a new APK installs over the old one and keeps the settings. The first APK
+Since 16 Nov 2026 every APK built on main is signed with one key that stays the same
+(jarvis#13), so a new APK installs over the old one and keeps the settings. The first APK
 with that key is the exception: the app on the phone still has an old per-run key, so
-uninstall it once, install the new APK and enter the settings again. After that, just
-install each new APK.
+uninstall it once, install the new APK and enter the settings again. After that, install
+each new APK over the old one.
+
+APKs from a pull request keep a per-run key: they are for trying out, and installing one
+means a fresh install (and going back to a main APK means another). An APK with a lower
+run number than the installed one is refused (`INSTALL_FAILED_VERSION_DOWNGRADE`).
 
 ## First run
 
@@ -224,14 +228,28 @@ The icon is a voice waveform whose last bar bends into a J: mint bars, a white J
 
 ## The signing key
 
-The key was made on agent-lxc on 16 Nov 2026 (PKCS12, alias `jarvis`, RSA 4096, SHA-256
-fingerprint `49:BC:A0:D1:6A:2A:84:FD:3B:BD:F8:25:14:7F:92:4C:80:97:41:4B:F8:62:E1:8C:DC:17:CE:98:75:B7:6D:95`). It lives in `~/.config/jarvis/android-signing/` there
-(mode 600) and in the repository secrets `ANDROID_KEYSTORE_BASE64`,
-`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. The android
-workflow writes the keystore to the runner's temp directory and Gradle signs both build types
-with it (`android/app/build.gradle.kts`, signing config `stable`). Without the secrets the
-build falls back to a per-machine debug key. Losing the key means one fresh install on every
-phone; it cannot be read back from GitHub.
+Mark asked on 16 Nov 2026 that updates install over the app; the key was then made on
+agent-lxc and Mark had the secrets set. It is a PKCS12 keystore, alias `jarvis`, RSA 4096,
+with the certificate SHA-256 fingerprint:
+
+```
+49:BC:A0:D1:6A:2A:84:FD:3B:BD:F8:25:14:7F:92:4C:80:97:41:4B:F8:62:E1:8C:DC:17:CE:98:75:B7:6D:95
+```
+
+- Where it lives: `~/.config/jarvis/android-signing/` on agent-lxc (mode 600:
+  `jarvis-release.jks`, `secrets.env`), a copy in OpenBao at `kv/jarvis/android-signing`,
+  and the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+  `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` (GitHub cannot give them back).
+- How CI uses it: on a push to main the android workflow writes the keystore to the
+  runner's temp directory and Gradle signs with signing config `stable`
+  (`android/app/build.gradle.kts`, variables `JARVIS_KEYSTORE_FILE`, `JARVIS_KEYSTORE_PASSWORD`,
+  `JARVIS_KEY_ALIAS`, `JARVIS_KEY_PASSWORD`). A missing secret fails the run on main, and
+  the step "Signing certificate" checks the fingerprint above and writes it to the summary.
+- Setting the secrets again (after a rotation, or if they were removed):
+  `bash ~/.config/jarvis/android-signing/set-github-secrets.sh` on agent-lxc, which runs
+  `base64 -w0 jarvis-release.jks | gh secret set ANDROID_KEYSTORE_BASE64 …` and the same for
+  the other three.
+- Losing every copy means one fresh install on every phone with a new key.
 
 ## Building and testing
 
