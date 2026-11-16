@@ -88,7 +88,7 @@ Settings for `full`, all refused at start when they are not what they should be:
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `JARVIS_AGENT_HOST` | yes | The agent host: a DNS name or an address on the tailnet (in a cluster: the name of the tailnet egress Service). |
+| `JARVIS_AGENT_HOST` | yes | The agent host: a DNS name or an address on a private network the bridge shares with it (the tailnet on a workstation; in a cluster see [`run-in-cluster.md`](run-in-cluster.md#full-mode-the-road-to-the-agent-host)). |
 | `JARVIS_AGENT_USER` | yes | The Unix user of the coding session there. |
 | `JARVIS_AGENT_PORT` | no (default `22`) | sshd's port. |
 | `JARVIS_AGENT_KEY_FILE` | yes | Absolute path of the bridge's private key: a dedicated key whose `authorized_keys` line on the agent host forces the wrapper. A file, never a variable. |
