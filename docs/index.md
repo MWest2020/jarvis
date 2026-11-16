@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-15
+last_reviewed: 2026-11-16
 ---
 # Jarvis docs
 
@@ -18,9 +18,10 @@ Start here. Agents: read this page and follow the links; there is no need to sca
 | Running the bridge in a Kubernetes cluster (image, tailnet-only Service, NetworkPolicy) | [`how-to/run-in-cluster.md`](how-to/run-in-cluster.md) |
 | Change in progress: run the bridge in a cluster | [`openspec/changes/run-bridge-in-cluster/`](../openspec/changes/run-bridge-in-cluster/) |
 | Change in progress: every project (`GET /projects`, `JARVIS_PROJECTS=*`, sync of all of one owner's repositories) | [`openspec/changes/add-project-list/`](../openspec/changes/add-project-list/) |
+| The agent host of `full` mode: install, configuration, kill switch, the `authorized_keys` line, records, update runbook and host checks, what it trusts | [`how-to/agent-host.md`](how-to/agent-host.md) |
 | The Android app: install, first run, errors, how it differs from HTTP Shortcuts | [`how-to/android-app.md`](how-to/android-app.md) |
 | Change in progress: the first Android app (code in [`android/`](../android/)) | [`openspec/changes/add-android-client/`](../openspec/changes/add-android-client/) |
-| Change in progress: Jarvis as a full agent. The turn runs on the coding session's host with the same rules, a spoken yes for irreversible actions, an audit record. Supersedes the read-only handoffs of `add-drive-mode` (#9). Phase 1a (the wrapper and one turn, no gate yet) is built in [`agent_host/`](../agent_host/); `full` mode stays off everywhere until the rest of phase 1 and its host checks (task 1.17) pass | [`openspec/changes/jarvis-full-agent/proposal.md`](../openspec/changes/jarvis-full-agent/proposal.md), with [`design.md`](../openspec/changes/jarvis-full-agent/design.md) (D30 to D40) and [`tasks.md`](../openspec/changes/jarvis-full-agent/tasks.md) (four phases) |
+| Change in progress: Jarvis as a full agent. The turn runs on the coding session's host with the same rules, a spoken yes for irreversible actions, an audit record. Supersedes the read-only handoffs of `add-drive-mode` (#9). Phase 1a (the wrapper and one turn) and phase 1c (the installer and the how-to) are built in [`agent_host/`](../agent_host/); the gate (phase 1b) is being built; `full` mode stays off everywhere until the host checks (task 1.17) pass | [`openspec/changes/jarvis-full-agent/proposal.md`](../openspec/changes/jarvis-full-agent/proposal.md), with [`design.md`](../openspec/changes/jarvis-full-agent/design.md) (D30 to D40) and [`tasks.md`](../openspec/changes/jarvis-full-agent/tasks.md) (four phases) |
 
 ## Rule
 

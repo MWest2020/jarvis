@@ -1,6 +1,9 @@
 # Tasks: jarvis-full-agent
 
-## Current phase: 1b (The gate, the hash and grant, the read-back)
+## Current phase: 2 (Bridge side)
+
+Moved here by build 1c (task 1.18). Phase 1b (tasks 1.7 to 1.14b, the gate) is built
+separately and is open until its own boxes are ticked; task 1.17 **(host)** is open too.
 
 One build does one phase: the phase named in this heading. Phase 1 is three builds (1a, 1b,
 1c). The last task of every phase
@@ -187,13 +190,13 @@ This build carries the change's guarantees and is reviewed on its own.
 
 ### 1c. Installer, docs and the host checks
 
-- [ ] 1.15 `agent_host/install.sh`: installs wrapper, gate, the `confirm` switch, rules,
+- [x] 1.15 `agent_host/install.sh`: installs wrapper, gate, the `confirm` switch, rules,
   prompt and the turn settings root-owned under `/usr/local/lib/jarvis-agent`. It never
   touches Claude Code's managed or user settings; a configuration template, an
   environment file and an empty `rules.d/` under `/etc/jarvis-agent`; prints the
   `authorized_keys` line for a given public key and source address; never edits
   `authorized_keys` itself
-- [ ] 1.16 `agent_host/` added to the `docs-gates` code paths; `docs/how-to/agent-host.md`
+- [x] 1.16 `agent_host/` added to the `docs-gates` code paths; `docs/how-to/agent-host.md`
   (what is installed where, the configuration keys, the kill switch, host-local rules, the
   `authorized_keys` line, how to read the records, how to switch confirmation off, the
   update runbook (which checks to repeat on a Claude Code version bump, the mid-turn
@@ -205,6 +208,12 @@ This build carries the change's guarantees and is reviewed on its own.
 - [ ] 1.17 **(host)** Canary checks with the real Claude Code on the agent host (a factory build
   cannot run them and leaves each one open, naming the host and the version to run against), written into the how-to with
   the version, and their outcome into design D36 where it says so:
+
+  **Left open by build 1c, every check below.** To run on the agent host (`agent-lxc`,
+  where the coding session runs, as the coding session's user) against the Claude Code
+  installed there (2.1.322 at the time of this build; `claude --version`). The table to
+  fill in is in `docs/how-to/agent-host.md`, "Host checks".
+
   - auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
   - a blocked call is denied and the turn ends; it does not hang until the timeout;
@@ -235,7 +244,7 @@ This build carries the change's guarantees and is reviewed on its own.
   - the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
     a volume claim, namespace or resource definition): are they refused after a yes? If so
     they are marked desk-only in the rules
-- [ ] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
+- [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
   code as evidence, until 1.17 is done on the host
 
 ## 2. Bridge side
