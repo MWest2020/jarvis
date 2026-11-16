@@ -352,3 +352,128 @@ def test_the_new_session_id_is_stored_after_a_successful_turn(tmp_path, monkeypa
     session_id, discarded = sessions.get("demo")
     assert session_id == new_id
     assert discarded is False
+
+
+# --- the checkout settings rule: before and after every turn (1.7d, D36) ----
+
+def _checkout_settings(tmp_path, name, content):
+    target = tmp_path / "projects" / "demo" / ".claude" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    return target
+
+
+@pytest.mark.parametrize("name", ["settings.json", "settings.local.json"])
+@pytest.mark.parametrize("content", [
+    '{"env": {"JARVIS_GRANT": "abc"}}',
+    '{"hooks": {"PreToolUse": []}}',
+    '{"disableAllHooks": true}',
+    '{"disableAllHooks": false}',
+    "{ not json",
+])
+def test_a_checkout_whose_settings_carry_one_of_the_three_keys_is_refused(
+    tmp_path, monkeypatch, name, content,
+):
+    called = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: called.append(1))
+    config = _config(tmp_path)
+    _checkout_settings(tmp_path, name, content)
+
+    reply = handle_request(_raw(), config)
+
+    assert reply["status"] == "error"
+    assert reply["error"] == "unsafe_settings"
+    assert reply["turn"] is None
+    assert set(reply) == set(V1_FIELDS)
+    assert not called
+    assert not config.records_dir.exists()
+
+
+def test_checkout_settings_without_the_three_keys_do_not_stop_a_turn(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _popen(stdout=_ok_payload("hi\nSPOKEN SUMMARY: hi.")))
+    config = _config(tmp_path)
+    _checkout_settings(tmp_path, "settings.json", '{"permissions": {"allow": ["Bash(ls:*)"]}}')
+    _checkout_settings(tmp_path, "settings.local.json", "{}")
+
+    reply = handle_request(_raw(), config)
+
+    assert reply["status"] == "ok"
+    assert reply["notice"] is None
+
+
+def test_the_gate_gets_the_configuration_path_and_the_turn_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _popen(stdout=_ok_payload("hi\nSPOKEN SUMMARY: hi.")))
+    config = _config(tmp_path)
+
+    handle_request(_raw(), config)
+
+    env = FakePopen.last.kwargs["env"]
+    assert env["JARVIS_AGENT_CONFIG"] == str(config.config_path)
+    assert env["JARVIS_TURN_CHECKOUT"] == str((tmp_path / "projects" / "demo").resolve())
+
+
+def _popen_that_plants(tmp_path, content, **kwargs):
+    """A turn during which a settings file arrives in the checkout, as a
+    `git pull` or `gh pr checkout` would bring it."""
+    base = _popen(**kwargs)
+
+    class Planting(base):
+        def communicate(self, input=None, timeout=None):  # noqa: A002
+            if input is not None:
+                _checkout_settings(tmp_path, "settings.json", content)
+            return super().communicate(input, timeout)
+
+    return Planting
+
+
+def test_settings_that_appear_during_the_turn_are_noticed_after_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _popen_that_plants(
+        tmp_path, '{"env": {"X": "1"}}', stdout=_ok_payload("done.\nSPOKEN SUMMARY: done.")))
+    config = _config(tmp_path)
+
+    reply = handle_request(_raw(), config)
+
+    assert reply["status"] == "ok"
+    assert reply["notice"] == "settings_changed"
+    assert reply["pending"] is False and reply["readback"] is None and reply["confirm"] is None
+    (record_path,) = config.records_dir.glob("*.json")
+    record = json.loads(record_path.read_text())
+    assert record["settings_changed"] == "settings.json sets env"
+
+    # And the next turn in that checkout is refused before it starts.
+    reply = handle_request(_raw(), config)
+    assert reply["error"] == "unsafe_settings"
+    assert reply["turn"] is None
+
+
+def test_settings_changed_outranks_new_session_and_rides_on_a_failed_turn(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    SessionStore(config.sessions_dir / "sessions.json").set("demo", "--version")
+    monkeypatch.setattr(subprocess, "Popen", _popen_that_plants(
+        tmp_path, '{"hooks": {}}', stdout=_ok_payload("done.\nSPOKEN SUMMARY: done.")))
+    assert handle_request(_raw(), config)["notice"] == "settings_changed"
+
+    (tmp_path / "projects" / "demo" / ".claude" / "settings.json").unlink()
+    monkeypatch.setattr(subprocess, "Popen", _popen_that_plants(
+        tmp_path, '{"disableAllHooks": true}', returncode=1, stderr="boom"))
+    reply = handle_request(_raw(), config)
+    assert reply["error"] == "agent_failed"
+    assert reply["notice"] == "settings_changed"
+
+
+def test_a_turn_that_leaves_the_settings_alone_records_no_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _popen(stdout=_ok_payload("hi\nSPOKEN SUMMARY: hi.")))
+    config = _config(tmp_path)
+    handle_request(_raw(), config)
+    (record_path,) = config.records_dir.glob("*.json")
+    assert json.loads(record_path.read_text())["settings_changed"] is None
+
+
+def test_a_confirm_still_answers_expired_whatever_the_settings_say(tmp_path):
+    # 1b1: nothing can be pending, so a confirm starts no turn in any case.
+    config = _config(tmp_path)
+    _checkout_settings(tmp_path, "settings.json", '{"env": {}}')
+    raw = _raw(prompt="", confirm={"id": "a", "sha256": "b", "answer": "yes"})
+    reply = handle_request(raw, config)
+    assert reply["error"] == "expired"
+    assert reply["turn"] is None
