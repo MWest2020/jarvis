@@ -550,7 +550,13 @@ def _after_turn(
             except Exception as exc:  # noqa: BLE001 - whatever it was, not ready
                 made = clones.Outcome("needs_desk", f"failed: {type(exc).__name__}")
             action["project"] = made.recorded()
-            project_field = made.field(name)
+            if projects.project_name_ok(name):
+                project_field = made.field(name)
+            else:
+                # A repository the forge accepts but no project can be named
+                # (`.github`, over 64 characters): the field could not carry
+                # it, so the record keeps it and the driver hears the desk.
+                notice = most_important_notice([notice, "needs_desk"])
         actions.append(action)
 
     call = state["pending"]

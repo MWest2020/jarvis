@@ -70,7 +70,9 @@ class Outcome:
         return self.state == READY
 
     def field(self, name: str) -> dict:
-        """The reply's `project` field."""
+        """The reply's `project` field. Only for a valid project name: the
+        contract's pattern (bridge.contract.PROJECT_NAME) is part of it."""
+        assert projects.project_name_ok(name), name
         return {"name": name, "ready": self.ready, "reason": None if self.ready else self.state}
 
     def recorded(self) -> str:
@@ -260,6 +262,11 @@ def pending(config: AgentHostConfig) -> list[tuple[str, int]]:
     except OSError:
         return []
     found = []
+    try:
+        # Oldest first (by when the marker was last written), then by name.
+        entries.sort(key=lambda e: (e.lstat().st_mtime_ns, e.name))
+    except OSError:
+        pass
     for entry in entries:
         if entry.name.startswith(".") or entry.suffix != ".json":
             continue
@@ -285,12 +292,14 @@ def pending(config: AgentHostConfig) -> list[tuple[str, int]]:
 
 
 def retry_pending(config: AgentHostConfig, env: dict[str, str]) -> list[tuple[str, Outcome]]:
-    """Try every pending clone once more. The caller holds the turn lock.
-    Stale staging directories go first. Each retry is recorded."""
+    """Try the oldest pending clone once more. The caller holds the turn lock.
+    Stale staging directories go first. The retry is recorded."""
     if config.projects_root is not None:
         record_mod.remove_stale_staging(config.projects_root)
     done = []
-    for repository, tries in pending(config):
+    # One marker per call, the oldest: whoever holds the turn lock holds it for
+    # at most one clone attempt. The others wait for the next request.
+    for repository, tries in pending(config)[:1]:
         try:
             outcome = make_project(config, repository, env, tries_before=tries)
         except Exception as exc:  # noqa: BLE001 - recorded, and the marker is used up

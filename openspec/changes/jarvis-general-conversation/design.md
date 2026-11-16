@@ -136,18 +136,21 @@ checkouts; Jarvis is its equal (D40).
   whose window is accepted (a plain rename could only replace an empty directory).
   Whatever is left of an attempt is removed.
 - *Retries.* A failed or timed-out attempt answers `retrying` and leaves a marker in
-  `state_dir/clones/<name>.json`. Every later wrapper request tries pending clones again: a
-  turn first, under its turn lock, before its agent runs; a list after its answer, in the
-  background (the bridge waits only 8 seconds for a list). At most three attempts in all,
-  each bounded by `clone_timeout_s`; after the third the marker is gone and the outcome is
-  `needs_desk`. Every retry writes a record (outcome `clone`). Staging directories older than
-  an hour are removed at the start of every retry and by `record.prune`. The state directory
+  `state_dir/clones/<name>.json`. Every later wrapper request retries one pending clone, the
+  oldest, so the turn lock is held for at most one attempt: a turn first, under its turn
+  lock, before its agent runs; a list after its answer, in the background (the bridge waits
+  only 8 seconds for a list). At most three attempts per repository, each bounded by
+  `clone_timeout_s`; after the third the marker is gone and the outcome is `needs_desk`.
+  Every retry writes a record (outcome `clone`). Staging directories older than an hour are
+  removed at the start of every retry (`record.prune` can do it too when given the root; it
+  has no caller until the retention timer of `jarvis-full-agent` task 4.1). The state directory
   is writable by the agent (D40), so a marker is checked in full before use; the worst a
   planted one can do is have one of the user's own repositories cloned to an empty name
   under the root, which the coding session can do anyway. Accepted.
 - *What is said.* Not a notice: the reply gets an optional field `project`,
   `{"name", "ready", "reason"}` with `reason` one of `retrying`, `name_taken`, `needs_desk`
-  (null when ready), on **every** reply of that turn: with the summary, with a new read-back,
+  (null when ready), only for a name that is a project name (bridge.contract), on **every**
+  reply of that turn: with the summary, with a new read-back,
   with a notice (`new_session`, `settings_changed`, …) and with an error. Notices compete for
   one slot; this must never lose to one, nor silence one. The field is left out when there is
   nothing to say, so a bridge from before it reads every other reply unchanged. The bridge
@@ -159,7 +162,9 @@ checkouts; Jarvis is its equal (D40).
   typed names says so with `X-Jarvis-Projects: typed` on its turns and hears "It's ready. Add
   it to your project list in the app." instead.
 - *Record.* The confirmed action in the record gets `"project": "ready"`, or
-  `"project": "not ready (<reason>): <why>"`.
+  `"project": "not ready (<reason>): <why>"`. A repository the forge accepts but no project can
+  be named after (`.github`, over 64 characters) is in the record only: the reply has no
+  `project` field (the bridge would refuse it) and carries the notice `needs_desk` instead.
 - *What does not change.* The agent never writes into the home directory: a write there is
   class `self` and stays desk-only. The clone is the wrapper's own act, like the notify
   command, after the agent turn has ended. It does not hold a grant and runs no hook.

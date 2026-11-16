@@ -250,16 +250,20 @@ check right before a plain rename, which leaves a short window in which only an 
 directory could be replaced). Whatever is left of an attempt is removed.
 
 A failed attempt leaves a marker in `state_dir/clones/<name>.json`. Every later wrapper
-request tries pending clones again: a turn first, under its lock, before the agent runs;
-a list after answering, in the background. Three attempts in all; the last failure
-clears the marker and is recorded as `needs_desk`. Each retry writes a record with
-outcome `clone`. Staging directories older than an hour are removed at the start of every
-retry, and by `record.prune` when it is given the root. The state directory is writable by
+request retries one pending clone, the oldest: a turn first, under its lock, before the
+agent runs; a list after answering, in the background. So whoever holds the lock holds it
+for at most one attempt. Three attempts per repository in all; the last failure clears the
+marker and is recorded as `needs_desk`. Each retry writes a record with outcome `clone`.
+Staging directories older than an hour are removed at the start of every retry.
+(`record.prune` can do the same when it is given the root, but nothing calls `prune` yet:
+the retention timer is task 4.1 of `jarvis-full-agent`.) The state directory is writable by
 the agent, so a marker is checked in full before it is used: the worst a planted one can
 do is have one of your own repositories cloned to an empty name under the root.
 
 The turn record says what happened in the confirmed action's `project` field (`ready`, or
-`not ready (<reason>): <why>`). The agent cannot clone into the home directory itself:
+`not ready (<reason>): <why>`). A repository whose name the forge accepts but a project
+cannot have (`.github`, over 64 characters) is not cloned; it is in the record only, the
+reply has no `project` field, and Jarvis says "That one needs the desk." with the summary. The agent cannot clone into the home directory itself:
 that write is in the class `self`.
 
 `/etc/jarvis-agent/environment` holds `KEY=value` lines, no quoting and no expansion. A

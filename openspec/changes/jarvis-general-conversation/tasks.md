@@ -71,8 +71,12 @@ still in those.
   test extended (D53).
 - [x] 4b.2 Clone: 45 s per attempt (at most 90), `--depth 1`, a pending-clone marker on
   failure, retried by the next turn (under its lock) or list (after its answer, in the
-  background), three attempts in all; stale staging removed by a retry and by
-  `record.prune`; the process group killed on every way out; `renameat2(RENAME_NOREPLACE)`.
+  background), one marker per request (the oldest), three attempts per repository; stale
+  staging removed by a retry (`record.prune` can too, no caller yet); the process group
+  killed on every way out; `renameat2(RENAME_NOREPLACE)`.
+- [x] 4b.8 A repository no project can be named after (`.github`, over 64 characters) is
+  not put in the `project` field: record only, notice `needs_desk` (verification of
+  f873f27).
 - [x] 4b.3 An existing folder is ready only when its `origin` is exactly that repository,
   else `name_taken`; a create behind `sudo` or ssh is not cloned; `--clone` / `-c` refused
   with a reason to ask again without it.

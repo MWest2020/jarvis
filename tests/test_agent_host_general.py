@@ -519,3 +519,34 @@ def test_the_rename_without_renameat2_checks_first(tmp_path, monkeypatch):
 
 def test_project_notices_are_gone_from_the_closed_list():
     assert {"project_ready", "project_not_ready"}.isdisjoint(wrapper.NOTICE_CODES)
+
+
+@pytest.mark.parametrize("name", [".github", "long." * 13 + "names"])   # 70 characters
+def test_a_repository_no_project_can_be_named_after_needs_the_desk_and_reads_cleanly(
+        host, monkeypatch, name):
+    """The forge accepts these names, a project name does not: the reply must not
+    carry them in `project` (the bridge would refuse the reply), so the record keeps
+    it and the driver hears the desk with the agent's summary."""
+    from bridge import remote_adapter
+    command = f"gh repo create me/{name} --private"
+    host.agent(monkeypatch, [command])
+    asked = host.ask(prompt="make it")
+    assert asked["pending"] is True
+    host.agent(monkeypatch, [command], reply="made.\nSPOKEN SUMMARY: I made it.")
+    reply = host.answer(asked)
+    assert "project" not in reply
+    assert reply["notice"] == "needs_desk"
+    parsed = remote_adapter.parse_reply(json.dumps(reply).encode())
+    assert remote_adapter._spoken(parsed["notice"], parsed["spoken"]) == \
+        "That one needs the desk. I made it."
+    assert _confirmed_action(host)["project"].startswith("not ready (needs_desk)")
+    assert host.clones() == []
+
+
+def test_one_pending_clone_per_request_the_oldest_first(host, monkeypatch):
+    for index, name in enumerate(("second", "first")):
+        clones._write_marker(host.config, name, f"me/{name}", 1)
+        os.utime(clones.markers_dir(host.config) / f"{name}.json", (1000 - index, 1000 - index))
+    done = clones.retry_pending(host.config, {})
+    assert [repository for repository, _ in done] == ["me/first"]
+    assert [repository for repository, _ in clones.pending(host.config)] == ["me/second"]
