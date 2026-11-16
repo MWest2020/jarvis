@@ -1,9 +1,18 @@
-"""Orchestrates one turn (1.1-1.6, 1.12a, 1.13, D33/D34/D37/D38).
+"""Orchestrates one turn (1.1-1.6, 1.7d, 1.12a, 1.13, D33/D34/D36/D37/D38).
 
-No gate yet (phase 1b adds agent_host.gate): a call from the agent is never
-confirmed here, so `pending`, `readback` and `confirm` are always the empty
-values of D33's table, and a `confirm` from the caller always answers
-`expired` (nothing can be pending without a gate to make it so).
+Phase 1b1: the gate (agent_host/gate) decides and refuses. It denies every
+gated call and makes nothing pending, so `pending`, `readback` and `confirm`
+are still always the empty values of D33's table, and a `confirm` from the
+caller still always answers `expired` (nothing can be pending until 1b2
+adds the hash, the grant and the read-back).
+
+What this build adds here is the wrapper's half of the checkout settings
+rule (D36): a turn is refused with `unsafe_settings` when the checkout's own
+`.claude/settings.json` or `settings.local.json` carries `env`, `hooks` or
+`disableAllHooks`, and the two files are read again after the turn. If a key
+appeared during the turn the reply carries the notice `settings_changed`
+and the record says so; dropping a pending call at that point is 1b2's,
+when there is one to drop.
 """
 from __future__ import annotations
 
@@ -16,10 +25,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from agent_host import command, identity, projects
+from agent_host import checkout_settings, command, identity, projects
 from agent_host import record as record_mod
 from agent_host import request as request_mod
-from agent_host.config import DEFAULT_CONFIG_PATH, AgentHostConfig, load_config
+from agent_host.config import AgentHostConfig, hook_config_path, load_config
 from agent_host.sessions import KeyValueStore, SessionStore
 from agent_host.turnlock import Busy, acquire_turn_lock, available_memory_mb
 from bridge.summary import last_marker_line
@@ -34,12 +43,31 @@ ERROR_CODES = frozenset({
     "agent_failed", "disabled", "unsafe_settings", "expired",
 })
 
-# The closed notice list of D33 (phase 1a only ever sets `new_session`; the
-# others belong to the gate, 1b).
+# The closed notice list of D33. This build sets `new_session` and
+# `settings_changed`; the others arrive with the pending call (1b2).
 NOTICE_CODES = frozenset({
     "needs_desk", "run_alone", "settings_changed", "target_changed",
     "out_of_budget", "new_session",
 })
+
+
+# One reply carries one notice. When more than one applies they must not
+# hide each other by accident: the most important one is sent, by this
+# fixed order. First what means "something is wrong with this checkout or
+# this call, go to the desk", last what is only good to know.
+NOTICE_ORDER: tuple[str, ...] = (
+    "settings_changed", "target_changed", "needs_desk", "run_alone", "out_of_budget",
+    "new_session",
+)
+assert set(NOTICE_ORDER) == NOTICE_CODES
+
+
+def most_important_notice(notices) -> str | None:
+    present = {notice for notice in notices if notice is not None}
+    for notice in NOTICE_ORDER:
+        if notice in present:
+            return notice
+    return None
 
 
 def load_runtime_config() -> AgentHostConfig:
@@ -48,8 +76,14 @@ def load_runtime_config() -> AgentHostConfig:
     `claude` sees) is never built from this process's environment, whatever
     it is (agent_host.identity).
     """
-    path = Path(os.environ.get("JARVIS_AGENT_CONFIG", str(DEFAULT_CONFIG_PATH)))
-    return load_config(path)
+    # Installed, the configuration is one fixed path; the variable counts in
+    # a source checkout only (agent_host.config.hook_config_path), where a
+    # relative path is made absolute here: the gate runs in another
+    # directory, where a relative path would name another file.
+    given = os.environ.get("JARVIS_AGENT_CONFIG")
+    environ = {"JARVIS_AGENT_CONFIG": os.path.abspath(given)} if given else {}
+    path = hook_config_path(environ, Path(__file__).resolve().parent)
+    return load_config(Path(os.path.abspath(path)))
 
 
 def _reply(
@@ -101,11 +135,21 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
 
     try:
         with acquire_turn_lock(config.lock_path):
+            # The checkout settings rule, before the turn (D36, check 1),
+            # inside the lock: another turn that is still running in this
+            # checkout could otherwise bring the file in between the check
+            # and the start.
+            if _checkout_settings_problem(working_dir, config) is not None:
+                return _reply(status="error", error="unsafe_settings")
             if available_memory_mb() < config.memory_floor_mb:
                 return _reply(status="error", error="low_memory")
             return _run_turn(req, working_dir, config)
     except Busy:
         return _reply(status="error", error="busy")
+
+
+def _checkout_settings_problem(working_dir: Path, config: AgentHostConfig) -> str | None:
+    return checkout_settings.problem(working_dir, user_settings_path=config.user_settings_path)
 
 
 def _uses_inline_prompt(config: AgentHostConfig) -> bool:
@@ -154,6 +198,7 @@ def _resolve_session_id(
 def _write_record(
     config: AgentHostConfig, *, turn_id: str, project: str, session_id: str | None,
     prompt: str, reply_text: str, duration_s: float, outcome: str,
+    settings_changed: str | None = None,
 ) -> None:
     rec = record_mod.TurnRecord(
         turn_id=turn_id,
@@ -164,6 +209,7 @@ def _write_record(
         reply=reply_text,
         duration_s=duration_s,
         outcome=outcome,
+        settings_changed=settings_changed,
     )
     record_mod.write_record(config.records_dir, rec)
 
@@ -190,6 +236,8 @@ def _run_turn(req: request_mod.Request, working_dir: Path, config: AgentHostConf
         identity_env_var=config.identity_env_var,
         session_identity=config.session_identity,
         turn_id=turn_id,
+        config_path=config.config_path,
+        checkout=working_dir,
     )
 
     started = time.monotonic()
@@ -209,19 +257,27 @@ def _run_turn(req: request_mod.Request, working_dir: Path, config: AgentHostConf
             pass
         proc.communicate()
         duration = time.monotonic() - started
+        changed = _checkout_settings_problem(working_dir, config)
         _write_record(
             config, turn_id=turn_id, project=req.project, session_id=stored_id,
             prompt=req.prompt, reply_text="", duration_s=duration, outcome="timeout",
+            settings_changed=changed,
         )
-        return _reply(status="error", error="timeout", turn=turn_id)
+        return _reply(status="error", error="timeout", turn=turn_id,
+                      notice="settings_changed" if changed else None)
     duration = time.monotonic() - started
+    # The checkout settings rule, after the turn (D36, check 3): the files
+    # were safe when the turn started, so a problem now appeared during it.
+    changed = _checkout_settings_problem(working_dir, config)
+    changed_notice = "settings_changed" if changed else None
 
     if proc.returncode != 0:
         _write_record(
             config, turn_id=turn_id, project=req.project, session_id=stored_id,
             prompt=req.prompt, reply_text=stderr, duration_s=duration, outcome="agent_failed",
+            settings_changed=changed,
         )
-        return _reply(status="error", error="agent_failed", turn=turn_id)
+        return _reply(status="error", error="agent_failed", turn=turn_id, notice=changed_notice)
 
     try:
         payload = json.loads(stdout)
@@ -233,15 +289,18 @@ def _run_turn(req: request_mod.Request, working_dir: Path, config: AgentHostConf
         _write_record(
             config, turn_id=turn_id, project=req.project, session_id=stored_id,
             prompt=req.prompt, reply_text=stdout, duration_s=duration, outcome="agent_failed",
+            settings_changed=changed,
         )
-        return _reply(status="error", error="agent_failed", turn=turn_id)
+        return _reply(status="error", error="agent_failed", turn=turn_id, notice=changed_notice)
 
     sessions.set(req.project, new_session_id)
     _write_record(
         config, turn_id=turn_id, project=req.project, session_id=new_session_id,
         prompt=req.prompt, reply_text=reply_text, duration_s=duration, outcome="ok",
+        settings_changed=changed,
     )
 
     spoken = last_marker_line(reply_text)
-    notice = "new_session" if discarded else None
+    notice = most_important_notice(
+        [changed_notice, "new_session" if discarded else None])
     return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice)

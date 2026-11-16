@@ -1,4 +1,4 @@
-"""Configuration for the agent host wrapper (1a, D33/D34/D37).
+"""Configuration for the agent host wrapper and gate (1a, 1b1, D33/D34/D36/D37).
 
 Read from a root-owned TOML file (stdlib `tomllib`, no third-party
 dependency). Nothing of Mark's own setup lives here as a constant: every
@@ -6,6 +6,7 @@ path, name and identity is a configuration value (AGENTS.md).
 """
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,10 @@ DEFAULT_CONFIG_PATH = Path("/etc/jarvis-agent/config.toml")
 DEFAULT_MEMORY_FLOOR_MB = 600
 DEFAULT_TIMEOUT_S = 600
 DEFAULT_IDENTITY_ENV_VAR = "IDENT"
+DEFAULT_RULES_DIR = Path("/etc/jarvis-agent/rules.d")
+# Where Claude Code looks for managed settings on Linux. A configuration key,
+# so that no path of anyone's own setup is a constant (the class `self`, D36).
+DEFAULT_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,14 @@ class AgentHostConfig:
     user_settings_path: Path
     forge_host: str = "github.com"
     second_prompt_path: Path | None = field(default=None)
+    # The gate (1b1, D36). `config_path` is the file this configuration was
+    # read from: the gate, a separate process, is told it through the
+    # turn's environment (agent_host.identity).
+    config_path: Path = DEFAULT_CONFIG_PATH
+    rules_dir: Path = DEFAULT_RULES_DIR
+    managed_settings_path: Path = DEFAULT_MANAGED_SETTINGS_PATH
+    # Whose repositories are "own" (D36): owner names on the forge host.
+    own_owners: tuple[str, ...] = ()
 
     @property
     def lock_path(self) -> Path:
@@ -55,6 +68,29 @@ class AgentHostConfig:
     @property
     def records_dir(self) -> Path:
         return self.state_dir / "records"
+
+
+def hook_config_path(environ, package_dir: Path) -> Path:
+    """Where the gate and the action log read their configuration.
+
+    Installed, that is one fixed path, `DEFAULT_CONFIG_PATH`: a constant of
+    the installation, never something the turn's environment can say. A
+    hook is started by Claude Code with an environment that project
+    settings could have touched, so `JARVIS_AGENT_CONFIG` is **ignored**.
+
+    The one exception is a source checkout, where the tests run: there the
+    variable is honoured, and "a source checkout" means that the test kit
+    (`tests/gatekit.py`) lies next to the package. The installer copies the
+    package and never the tests, into a root-owned directory, so an
+    installed hook cannot be switched to this by anything a turn can do.
+    """
+    if (package_dir.parent / "tests" / "gatekit.py").is_file():
+        given = environ.get("JARVIS_AGENT_CONFIG")
+        if given:
+            if not os.path.isabs(given):
+                raise ConfigError("JARVIS_AGENT_CONFIG is not an absolute path")
+            return Path(given)
+    return DEFAULT_CONFIG_PATH
 
 
 def _require(data: dict, key: str) -> object:
@@ -72,10 +108,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentHostConfig:
         data = tomllib.loads(raw.decode("utf-8"))
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ConfigError(f"agent host configuration {path} is not valid TOML: {exc}") from exc
-    return config_from_dict(data)
+    return config_from_dict(data, config_path=path)
 
 
-def config_from_dict(data: dict) -> AgentHostConfig:
+def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> AgentHostConfig:
     projects_raw = data.get("projects")
     projects_root_raw = data.get("projects_root")
     if bool(projects_raw) == bool(projects_root_raw):
@@ -104,6 +140,12 @@ def config_from_dict(data: dict) -> AgentHostConfig:
     second_prompt_raw = data.get("second_prompt_file")
     second_prompt_path = Path(str(second_prompt_raw)).expanduser() if second_prompt_raw else None
 
+    own_owners_raw = data.get("own_owners", [])
+    if not isinstance(own_owners_raw, list) or not all(
+        isinstance(owner, str) and owner for owner in own_owners_raw
+    ):
+        raise ConfigError("own_owners must be a list of owner names")
+
     return AgentHostConfig(
         enabled=bool(data.get("enabled", True)),
         projects=projects,
@@ -122,4 +164,10 @@ def config_from_dict(data: dict) -> AgentHostConfig:
         user_settings_path=user_settings_path,
         forge_host=str(data.get("forge_host", "github.com")),
         second_prompt_path=second_prompt_path,
+        config_path=config_path,
+        rules_dir=Path(str(data.get("rules_dir", DEFAULT_RULES_DIR))).expanduser(),
+        managed_settings_path=Path(
+            str(data.get("managed_settings_path", DEFAULT_MANAGED_SETTINGS_PATH))
+        ).expanduser(),
+        own_owners=tuple(own_owners_raw),
     )

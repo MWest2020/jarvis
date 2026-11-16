@@ -1,0 +1,85 @@
+"""Shared set-up for the gate's tests (phase 1b1): a configuration in a
+temporary directory, and a classification context that never touches the
+real home directory, the real rules directory or a real remote."""
+from __future__ import annotations
+
+import dataclasses
+import subprocess
+from pathlib import Path
+
+from agent_host import classify, rules as rules_mod
+from agent_host.config import config_from_dict
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+OWN = ("me",)
+
+
+def make_config(tmp_path: Path, **overrides):
+    """A complete agent host configuration under tmp_path, with one
+    checkout `projects/demo` and a fake home directory `home`."""
+    root = tmp_path / "projects"
+    (root / "demo" / ".git").mkdir(parents=True, exist_ok=True)
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    etc = tmp_path / "etc"
+    etc.mkdir(exist_ok=True)
+    files = {
+        "environment_file": etc / "environment",
+        "turn_settings": etc / "turn-settings.json",
+        "prompt_file": etc / "prompt.md",
+        "user_settings_path": home / ".claude" / "settings.json",
+    }
+    defaults = {
+        "environment_file": "PATH=/usr/bin:/bin\n", "turn_settings": "{}",
+        "prompt_file": "be jarvis", "user_settings_path": "{}",
+    }
+    for key, path in files.items():
+        if not path.exists():
+            path.write_text(defaults[key])
+    data = {
+        "projects_root": str(root),
+        "state_dir": str(tmp_path / "state"),
+        "session_identity": "jarvis",
+        "rules_dir": str(etc / "rules.d"),
+        "managed_settings_path": str(etc / "managed-settings.json"),
+        "own_owners": list(OWN),
+        **{key: str(path) for key, path in files.items()},
+    }
+    data.update(overrides)
+    return config_from_dict(data, config_path=etc / "config.toml")
+
+
+def no_git(args, cwd):
+    """A `git` that knows nothing: every lookup fails."""
+    return None
+
+
+def make_ctx(tmp_path: Path, *, cwd: Path | None = None, git=no_git, temp_roots=(),
+             config=None) -> classify.Context:
+    config = config or make_config(tmp_path)
+    rules = rules_mod.load_rules(config.rules_dir)
+    ctx = classify.context_for(
+        config, rules, cwd=cwd or tmp_path / "projects" / "demo", home=tmp_path / "home",
+        lib_dir=tmp_path / "lib", git=git,
+    )
+    # The repository's temp roots include /tmp, where pytest keeps tmp_path:
+    # a test names its own, or none.
+    return dataclasses.replace(ctx, temp_roots=tuple(str(root) for root in temp_roots))
+
+
+def bash(command: str, ctx: classify.Context) -> classify.Verdict:
+    return classify.classify("Bash", {"command": command}, ctx)
+
+
+def git_init(path: Path, *, branch: str = "main") -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    run_git(path, "init", "-q", "-b", branch)
+    run_git(path, "config", "user.email", "test@example.invalid")
+    run_git(path, "config", "user.name", "Test")
+    run_git(path, "commit", "-q", "--allow-empty", "-m", "first")
+
+
+def run_git(path: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=path, check=True, capture_output=True, text=True,
+    ).stdout.strip()
