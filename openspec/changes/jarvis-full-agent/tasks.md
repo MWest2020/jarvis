@@ -2,9 +2,11 @@
 
 ## Current phase: 3 (Wiring)
 
-Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 1.17) are
-open, and `full` mode stays off everywhere until every one of them has passed on the agent
-host.** They are **(host)** work and come first in phase 3.
+Phases 1 (1a, 1b1, 1b2, 1c) and 2 are built. **The host checks of phase 1 (task 1.17) ran
+on `agent-lxc` on 2026-11-16 (Claude Code 2.1.322), and both hard stops failed: the mid-turn
+settings check and the gate timeout check.** Phase 1 does not ship as built, design D36 is
+reopened, and `full` mode stays off everywhere until every check has passed on the agent
+host. They are **(host)** work and come first in phase 3.
 
 One build does one phase: the phase named in this heading. Phase 1 is four builds (1a, 1b1,
 1b2, 1c). The last task of every phase
@@ -253,21 +255,24 @@ the finished guarantee.
   cannot run them and leaves each one open, naming the host and the version to run against), written into the how-to with
   the version, and their outcome into design D36 where it says so:
 
-  **Left open by build 1c, every check below.** To run on the agent host (`agent-lxc`,
-  where the coding session runs, as the coding session's user) against the Claude Code
-  installed there (2.1.322 at the time of this build; `claude --version`). The table to
-  fill in is in `docs/how-to/agent-host.md`, "Host checks".
+  **Run on 2026-11-16** on the agent host (`agent-lxc`, as the coding session's user)
+  against Claude Code 2.1.322 and the installed commit `1fc6d97`. The outcomes, with the
+  commands, are in `docs/how-to/agent-host.md`, "Host checks". Ticked: passed. **Two hard
+  stops failed** (the gate timeout check and the mid-turn settings check), so this task
+  stays open, phase 1 does not ship, and the design is reopened (D36). Every check is run
+  again once D36 has an answer.
 
-  - auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
+  - [x] auto mode is really active in a `-p` turn (`claude auto-mode config`, and a call the
     classifier refuses is refused);
-  - a blocked call is denied and the turn ends; it does not hang until the timeout;
-  - a gate that times out (the hook `timeout` in the turn settings, 10 s) denies the call;
+  - [x] a blocked call is denied and the turn ends; it does not hang until the timeout;
+  - [ ] a gate that times out (the hook `timeout` in the turn settings, 10 s) denies the call;
     it does not let it through. **If Claude Code lets the call through on a hook timeout,
-    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened;
-  - the gate from `--settings` runs next to the user's hooks; a gated dummy command is
+    phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened.
+    **2026-11-16: FAIL.** Claude Code 2.1.322 lets the call through on a hook timeout;
+  - [x] the gate from `--settings` runs next to the user's hooks; a gated dummy command is
     refused without a grant and runs once with one;
-  - a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
-  - the checkout settings, with the wrapper's start check switched off for the test: `env`
+  - [x] a call that matches a user allow rule (`ssh`, `gh pr merge`) is still stopped by the gate;
+  - [ ] the checkout settings, with the wrapper's start check switched off for the test: `env`
     (a planted grant included), `hooks` and `disableAllHooks` in a checkout's
     `.claude/settings.json`, present at the start and appearing in the middle of a turn,
     in the turn checkout and in a worktree the agent entered during the turn,
@@ -276,19 +281,25 @@ the finished guarantee.
     file that says `true`. **If this fails,
     phase 1 does not ship**: `full` mode is enabled nowhere and the design is reopened
     (D36). This check goes into the update runbook: run again on every Claude Code version
-    bump on the agent host, before Jarvis uses the new version;
-  - the employer hook refuses in a `-p` turn;
-  - `autoMemoryDirectory` from `--settings` gives the turn the coding session's memory; if
+    bump on the agent host, before Jarvis uses the new version. **2026-11-16: FAIL.**
+    `disableAllHooks: false` held, but project `env` reaches the gate, at the start and
+    mid-turn: a mid-turn `env` that set `JARVIS_GRANT` and redirected
+    `JARVIS_TURN_CHECKOUT` released a gated call made from a clean worktree;
+  - [x] the employer hook refuses in a `-p` turn;
+  - [x] `autoMemoryDirectory` from `--settings` gives the turn the coding session's memory; if
     not, the symlink fallback of D34 is set up for each listed checkout;
-  - `--append-system-prompt-file` exists, else the wrapper's fallback switch is set (the
+  - [x] `--append-system-prompt-file` exists, else the wrapper's fallback switch is set (the
     contents in `--append-system-prompt`); `--system-prompt-snapshot off` exists and a
     changed prompt reaches a resumed session, else the daily session rotation is set (D34);
-  - a real merge call in the explicit shape is refused, read back and released; the same
+  - [x] a real merge call in the explicit shape is refused, read back and released; the same
     call without `--repo` gets the naming refusal and one repair;
-  - a dropped caller does not kill the turn;
-  - the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
+  - [x] a dropped caller does not kill the turn;
+  - [ ] the classifier's own refusals (force push, `reset --hard`, rebase, `branch -D`, deleting
     a volume claim, namespace or resource definition): are they refused after a yes? If so
-    they are marked desk-only in the rules
+    they are marked desk-only in the rules. **2026-11-16, git part:** a force push was
+    released and run after a yes; `reset --hard`, rebase and `branch -D` run when named
+    (not gated); nothing marked desk-only. The cluster deletions were not run (outside
+    the sandbox), so this stays open
 - [x] 1.18 Roadmap and phase heading to 2. The phase-1 items stay open in the roadmap, with the
   code as evidence, until 1.17 is done on the host. (Phase 2 was built before 1c was
   merged, so the heading went from 1c straight to 3)
