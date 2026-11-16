@@ -119,16 +119,22 @@ class TurnState:
     def save(self) -> None:
         _write_private(self._path, self.data)
 
-    def note(self, outcome: str, *, code: str | None, verdict=None, sentence: str | None = None) -> None:
+    def note(self, outcome: str, *, code: str | None, verdict=None, sentence: str | None = None,
+             why: str | None = None) -> None:
         """One line for the record: `outcome` is pending, refused, released
-        or not_confirmed; `code` is the notice it leads to, if any."""
-        self.data["events"].append({
+        or not_confirmed; `code` is the notice it leads to, if any; `why`, when
+        given, a short reason made of fixed words and names only (never a
+        value from the environment or the call)."""
+        event = {
             "outcome": outcome,
             "code": code,
             "classes": list(verdict.classes) if verdict is not None else [],
             "rule": verdict.rule if verdict is not None else "",
             "readback": sentence,
-        })
+        }
+        if why is not None:
+            event["why"] = why
+        self.data["events"].append(event)
 
 
 def read_turn_state(gate_dir: Path, turn_id: str) -> dict:

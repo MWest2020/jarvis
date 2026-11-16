@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from agent_host import gatehash
+from agent_host.boundedio import open_append, read_text
 
 REDACTED = "[REDACTED]"
 # Values shaped like the credentials a turn on this host can meet: an
@@ -100,6 +101,8 @@ READ_ONLY_TOOLS = frozenset({
 _MAX_LOGGED_CHARS = 2000
 
 
+# An action log of one turn: far smaller than this. Read without blocking.
+MAX_ACTION_LOG_BYTES = 16 * 1024 * 1024
 _EXIT_CODE = re.compile(r"\AExit code (\d{1,3})\b")
 # The status of a line that says the call ran and failed.
 FAILED_STATUSES = frozenset({"failed", "error", "interrupted"})
@@ -139,8 +142,10 @@ def action_line(payload: dict, now: str) -> dict | None:
         else:
             status = "failed"
     elif isinstance(response, dict):
-        # The exit code of a Bash call where Claude Code gives one.
-        for key in ("exit_code", "exitCode", "returncode", "returnCode", "code"):
+        # The exit code of a Bash call where Claude Code gives one. Only the
+        # names of an exit code: a generic `code` field of another tool's
+        # response is not an exit status.
+        for key in ("exit_code", "exitCode", "returncode"):
             if isinstance(response.get(key), int):
                 status = response[key]
                 break
@@ -169,7 +174,11 @@ def action_line(payload: dict, now: str) -> dict | None:
 
 
 def failed_status(status: object) -> bool:
-    """Does a logged status say that the call ran and failed?"""
+    """Does a logged status say that the call ran and failed? A non-zero exit
+    code, or what a PostToolUseFailure line says ("failed", "interrupted",
+    "error"). Claude Code 2.1.322 runs no PostToolUseFailure (and no
+    PostToolUse) for a call a PreToolUse hook denied (seen on the host), so a
+    denied call leaves no line and is "not run"."""
     if isinstance(status, bool):
         return False
     if isinstance(status, int):
@@ -183,8 +192,8 @@ def ran(actions_dir: Path, turn_id: str, base_hash: str) -> str:
     failed: the PostToolUseFailure line), "not run", or "unknown" when the
     log cannot say (it is not there, or cannot be read)."""
     try:
-        text = (actions_dir / f"{turn_id}.jsonl").read_text()
-    except OSError:
+        text = read_text(actions_dir / f"{turn_id}.jsonl", MAX_ACTION_LOG_BYTES, follow=False)
+    except (OSError, UnicodeDecodeError):
         return "unknown"
     for line in text.splitlines():
         try:
@@ -199,7 +208,7 @@ def ran(actions_dir: Path, turn_id: str, base_hash: str) -> str:
 def append_action(actions_dir: Path, turn_id: str, line: dict) -> Path:
     actions_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = actions_dir / f"{turn_id}.jsonl"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    fd = open_append(path)
     with os.fdopen(fd, "a") as fh:
         fh.write(json.dumps(line) + "\n")
     return path

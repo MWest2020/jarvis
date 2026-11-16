@@ -1,5 +1,11 @@
 {
   "disableAllHooks": false,
+  "env": {
+    "LD_PRELOAD": "",
+    "LD_LIBRARY_PATH": "",
+    "LD_AUDIT": "",
+    "GIT_CONFIG_COUNT": "0"
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -19,7 +25,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/lib/jarvis-agent/action-log"
+            "command": "/usr/local/lib/jarvis-agent/action-log",
+            "timeout": 10
           }
         ]
       }
@@ -30,7 +37,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/lib/jarvis-agent/action-log"
+            "command": "/usr/local/lib/jarvis-agent/action-log",
+            "timeout": 10
           }
         ]
       }

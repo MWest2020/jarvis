@@ -42,6 +42,7 @@ the surroundings is never allowed (1b2).
 """
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import fnmatch
 import json
@@ -54,7 +55,7 @@ from pathlib import Path
 from typing import Callable
 
 from agent_host import shell
-from agent_host.boundedio import read_text
+from agent_host.boundedio import MAX_SETTINGS_BYTES, Budget, BudgetExhausted, read_text
 from agent_host.checkout_settings import git_top_level
 from agent_host.config import CONFIRM_CLASSES, AgentHostConfig
 from agent_host.rules import Program, Rules
@@ -116,21 +117,35 @@ GitRunner = Callable[[list[str], Path], "str | None"]
 
 
 # Every git lookup is bounded, far inside the gate's own deadline
-# (agent_host/gate): a lookup that takes longer fails, and what depends on it
-# is gated or not nameable.
+# (agent_host/gate): GIT_TIMEOUT_S each, and inside the gate all of them
+# together share one budget (`git_budget`, set by agent_host.decision).
 GIT_TIMEOUT_S = 2
-# A Claude Code settings file read for its hook commands: the user's own can
-# be replaced by the agent's user, so it is read without blocking and capped.
-MAX_SETTINGS_READ_BYTES = 1024 * 1024
+git_budget: contextvars.ContextVar[Budget | None] = contextvars.ContextVar(
+    "git_budget", default=None)
+
+
+class GitTimeout(RuntimeError):
+    """A git lookup did not answer in time. Its answer is unknown, which is
+    not the same as "unset" (a missing `remote.X.push` or `remote.X.mirror`
+    would read as harmless): the caller cannot decide, and the gate denies."""
 
 
 def run_git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str | None:
-    """`git <args>` in `cwd`: its output, or None when it fails for any reason."""
+    """`git <args>` in `cwd`: its output, or None when git says no (exit
+    status not 0, or git cannot be started). Raises GitTimeout when it does
+    not answer in time or the budget is spent."""
+    budget = git_budget.get()
+    try:
+        timeout = budget.take(GIT_TIMEOUT_S) if budget is not None else GIT_TIMEOUT_S
+    except BudgetExhausted as exc:
+        raise GitTimeout(str(exc)) from None
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL, env=env,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise GitTimeout(f"git {' '.join(args[:2])} did not answer in time") from exc
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -234,7 +249,7 @@ def hook_files(settings_path: Path, home: Path) -> set[str]:
     itself stays protected whatever is in it.
     """
     try:
-        data = json.loads(read_text(settings_path, MAX_SETTINGS_READ_BYTES))
+        data = json.loads(read_text(settings_path, MAX_SETTINGS_BYTES))
     except (OSError, ValueError):
         return set()
     found: set[str] = set()

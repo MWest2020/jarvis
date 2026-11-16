@@ -53,3 +53,65 @@ def read_regular(path: Path | str, cap: int, *, follow: bool = True,
 
 def read_text(path: Path | str, cap: int, **kwargs) -> str:
     return read_regular(path, cap, **kwargs).decode("utf-8")
+
+
+# A Claude Code settings file (a checkout's, the user's, the turn settings):
+# small, and read on every gated call.
+MAX_SETTINGS_BYTES = 1024 * 1024
+# One hook input (a tool call: a Write may carry a file's content).
+MAX_HOOK_INPUT_BYTES = 16 * 1024 * 1024
+
+
+def read_stdin(cap: int = MAX_HOOK_INPUT_BYTES) -> bytes | None:
+    """All of stdin, or None when it is longer than `cap`. A stdin that never
+    ends is the caller's deadline's to cut (agent_host/gate)."""
+    chunks: list[bytes] = []
+    size = 0
+    while size <= cap:
+        chunk = os.read(0, min(1 << 20, cap + 1 - size))
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        size += len(chunk)
+    return None
+
+
+def open_append(path: Path | str, mode: int = 0o600) -> int:
+    """A file descriptor for appending to a regular file: a symlink or a FIFO
+    planted in its place fails at once instead of redirecting or blocking."""
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+             | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, flags, mode)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+class BudgetExhausted(OSError):
+    """The time budget for waiting (git lookups, locks) is spent."""
+
+
+class Budget:
+    """One time budget shared by every step of a decision that waits on
+    something outside it, so that together they stay inside the gate's
+    deadline (host check 12)."""
+
+    def __init__(self, seconds: float):
+        import time
+        self._clock = time.monotonic
+        self._end = self._clock() + seconds
+
+    def remaining(self) -> float:
+        return max(0.0, self._end - self._clock())
+
+    def take(self, wanted: float) -> float:
+        """How long one step may wait: `wanted`, or what is left. Raises when
+        nothing is left."""
+        left = self.remaining()
+        if left <= 0:
+            raise BudgetExhausted("the time budget is spent")
+        return min(wanted, left)

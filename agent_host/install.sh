@@ -258,15 +258,30 @@ done
 # The turn settings: the static file of the repository, plus the one value that differs
 # per host (the coding session's memory directory, D34). Written here and nowhere else.
 installed_settings=$lib/turn-settings.json
-settings_json=$("$PYTHON" -I - "$src_dir/turn-settings.json" "$installed_settings" "$memory_dir" <<'PY'
+settings_json=$("$PYTHON" -I - "$src_dir/turn-settings.json" "$installed_settings" "$memory_dir" "$etc/environment" <<'PY'
 import json
 import sys
 
-template_path, installed_path, memory_dir = sys.argv[1:4]
+template_path, installed_path, memory_dir, environment_path = sys.argv[1:5]
 with open(template_path) as fh:
     settings = json.load(fh)
 if settings.get("disableAllHooks") is not False or "PreToolUse" not in settings.get("hooks", {}):
     sys.exit("turn-settings.json must set disableAllHooks to false and name the gate")
+# PATH and HOME are pinned to the values of the environment file: env in
+# --settings outranks a checkout's env (design D36), so a project cannot
+# change them for the hooks and the tools of a turn. Per host, so here.
+try:
+    with open(environment_path) as fh:
+        lines = fh.read().splitlines()
+except OSError:
+    lines = []
+for line in lines:
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, _, value = line.partition("=")
+    if key.strip() in ("PATH", "HOME"):
+        settings.setdefault("env", {})[key.strip()] = value.strip()
 if not memory_dir:
     try:
         with open(installed_path) as fh:

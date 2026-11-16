@@ -4,7 +4,7 @@ import pytest
 
 from agent_host import naming
 from agent_host.naming import Missing, Named
-from tests.gatekit import SHA, derive, make_config, make_ctx
+from tests.gatekit import SHA, bash, derive, make_config, make_ctx
 
 M = "me/demo"
 F = "them/demo"
@@ -441,7 +441,7 @@ def test_plain_wrappers_are_still_named(env):
         == "As root: Delete pod web in namespace shop on cluster homelab."
     assert _sentence(env, "ssh -t jumpy kubectl delete pod web -n shop --context homelab") \
         == "Delete pod web in namespace shop on cluster homelab, through host jumpy."
-    for kind in ("pod", "deployment", "sts", "svc", "configmap", "secret", "pvc", "job"):
+    for kind in ("pod", "deployment", "svc", "configmap", "secret", "job"):
         assert _sentence(env, f"kubectl delete {kind} web -n shop --context homelab") \
             == f"Delete {kind} web in namespace shop on cluster homelab."
 
@@ -538,3 +538,33 @@ def test_the_parts_are_the_fixed_phrases_of_d36():
     assert naming.PART_CONTEXT == "add --context"
     assert naming.PART_REMOTE == "name the remote and the refspec"
     assert naming.SAY_YES == "Say yes to go ahead."
+
+
+# --- host check 11, cluster part: deletes of data-holding kinds need the desk ----------------
+
+@pytest.mark.parametrize("prefix", ["", "ssh jumpy ", "ssh -t jumpy ", "sudo "])
+@pytest.mark.parametrize("what", [
+    "pvc data-0 -n shop", "persistentvolumeclaim data-0 -n shop", "pvc/data-0 -n shop",
+    "pv vol-1", "persistentvolume vol-1", "namespace shop", "ns shop", "namespaces shop",
+    "crd widgets.example.com", "customresourcedefinition widgets.example.com",
+    "sts db -n shop", "statefulset db -n shop", "statefulset/db -n shop", "PVC data-0 -n shop",
+    "pod/web pvc/data-0 -n shop",
+    "pod --all -n shop", "pods -l app=web -n shop", "pods --selector=app=web -n shop",
+    "-f manifest.yaml -n shop", "--filename=manifest.yaml -n shop", "-k overlay -n shop",
+    "deployment --all -n shop",
+])
+def test_deleting_a_data_holding_kind_or_by_selector_is_not_nameable(env, prefix, what):
+    ctx, config = env
+    command = f"{prefix}kubectl delete {what} --context homelab"
+    verdict = bash(command, ctx)
+    assert verdict.gated and "delete" in verdict.classes
+    outcome = derive(command, ctx, config).outcome
+    assert not isinstance(outcome, Named), (command, outcome)
+
+
+@pytest.mark.parametrize("prefix,tail", [("", ""), ("ssh jumpy ", ", through host jumpy")])
+@pytest.mark.parametrize("kind", ["pod", "deployment", "job", "svc", "configmap", "secret",
+                                  "cronjob", "daemonset", "replicaset", "ingress"])
+def test_other_namespaced_deletes_keep_their_voice_template(env, prefix, tail, kind):
+    assert _sentence(env, f"{prefix}kubectl delete {kind} web -n shop --context homelab") \
+        == f"Delete {kind} web in namespace shop on cluster homelab{tail}."

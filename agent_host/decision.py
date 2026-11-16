@@ -62,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_host import checkout_settings, classify, naming, pending, rules as rules_mod
+from agent_host.boundedio import Budget
 from agent_host.config import AgentHostConfig
 
 _STOP = (
@@ -137,6 +138,10 @@ _GRANT_RE = re.compile(r"[0-9a-f]{64}")
 # How long a gate waits for another gate of the same turn to finish with the
 # turn's state. Far inside the gate's own deadline (agent_host/gate).
 LOCK_WAIT_S = 3.0
+# Everything one decision waits on outside itself (git lookups, the state
+# lock) shares this budget, so that together they end inside the gate's 5 s
+# deadline with room to answer (host check 12).
+WAIT_BUDGET_S = 3.5
 
 
 @dataclass(frozen=True)
@@ -144,6 +149,9 @@ class Decision:
     allow: bool
     reason: str = ""
     verdict: classify.Verdict | None = None
+    # With `defer_grant`: the "used" marker the caller must create (O_EXCL)
+    # before it lets the call through. Creating it is what uses the grant.
+    grant_marker: Path | None = None
 
 
 ALLOW = Decision(allow=True)
@@ -201,6 +209,21 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
     return bool(verdict.classes) and set(verdict.classes) <= config.confirm_skip
 
 
+def grant_marker(config: AgentHostConfig, turn_id: str, grant: str) -> Path:
+    return config.gate_dir / f"{turn_id}.{grant}.used"
+
+
+def consume_grant_marker(path: Path) -> bool:
+    """Create the "used" marker of a grant: True exactly once."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     0o600)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
 def _use_grant_once(config: AgentHostConfig, turn_id: str, grant: str) -> bool:
     """Create the "used" marker of this grant. True exactly once.
 
@@ -211,17 +234,11 @@ def _use_grant_once(config: AgentHostConfig, turn_id: str, grant: str) -> bool:
     if not _GRANT_RE.fullmatch(grant):
         return False
     config.gate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    marker = config.gate_dir / f"{turn_id}.{grant}.used"
-    try:
-        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
-    os.close(fd)
-    return True
+    return consume_grant_marker(grant_marker(config, turn_id, grant))
 
 
 @contextlib.contextmanager
-def _turn_state_lock(config: AgentHostConfig, turn_id: str):
+def _turn_state_lock(config: AgentHostConfig, turn_id: str, budget=None):
     """One gate at a time per turn: the state file is read, changed and
     written under an exclusive lock, so two tool calls judged at the same
     moment cannot both become "the one pending call"."""
@@ -230,7 +247,8 @@ def _turn_state_lock(config: AgentHostConfig, turn_id: str):
                  os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
     try:
         # Never an unbounded wait (host check 12): poll, and give up in time.
-        deadline = time.monotonic() + LOCK_WAIT_S
+        wait = budget.take(LOCK_WAIT_S) if budget is not None else LOCK_WAIT_S
+        deadline = time.monotonic() + wait
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -247,7 +265,7 @@ def _turn_state_lock(config: AgentHostConfig, turn_id: str):
 def decide(
     payload: object, config: AgentHostConfig, *, turn_checkout: Path | None,
     turn_id: str | None, grant: str | None = None, grant_base: str | None = None,
-    env_changed: bool = False,
+    env_changed=(), defer_grant: bool = False,
     home: Path | None = None, lib_dir: Path | None = None,
     git: classify.GitRunner = classify.run_git,
 ) -> Decision:
@@ -258,7 +276,28 @@ def decide(
     trusted values; None for the first two when there are none, and then
     every gated call is denied. `env_changed`: the gate's own environment
     differs from the trusted one, and every gated call is denied with
-    `settings_changed`."""
+    `settings_changed` (a sequence of the names that differ, or a bool).
+    `defer_grant`: a matching, unused grant is not used here; the decision
+    names the marker the caller creates before it lets the call through
+    (the gate does that in its parent process, after the worker's answer,
+    so that a deadline never uses up a grant).
+
+    Every git lookup and the lock wait share one budget (`WAIT_BUDGET_S`).
+    A lookup that runs out of time raises (classify.GitTimeout), and the
+    caller denies."""
+    budget = Budget(WAIT_BUDGET_S)
+    token = classify.git_budget.set(budget)
+    try:
+        return _decide(payload, config, turn_checkout=turn_checkout, turn_id=turn_id,
+                       grant=grant, grant_base=grant_base, home=home, lib_dir=lib_dir,
+                       git=git, env_changed=env_changed, defer_grant=defer_grant,
+                       budget=budget)
+    finally:
+        classify.git_budget.reset(token)
+
+
+def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home, lib_dir,
+            git, env_changed, defer_grant, budget) -> Decision:
     if not isinstance(payload, dict):
         raise ValueError("the hook input is not an object")
     tool_name = payload.get("tool_name")
@@ -281,19 +320,24 @@ def decide(
         raise pending.StateError("no trusted turn id, or not one the wrapper issues")
     if turn_checkout is None or not turn_checkout.is_absolute():
         raise pending.StateError("no trusted turn checkout")
-    with _turn_state_lock(config, turn_id):
+    with _turn_state_lock(config, turn_id, budget):
         state = pending.TurnState.load(config.gate_dir, turn_id)
 
-        def deny(reason: str, code: str | None, sentence: str | None = None) -> Decision:
+        def deny(reason: str, code: str | None, sentence: str | None = None,
+                 why: str | None = None) -> Decision:
             state.note("pending" if reason == REASON_PENDING else "refused",
-                       code=code, verdict=verdict, sentence=sentence)
+                       code=code, verdict=verdict, sentence=sentence, why=why)
             state.save()
             return Decision(False, reason, verdict)
 
-        if env_changed or checkout_settings.problem(
-            turn_checkout, real_cwd, user_settings_path=config.user_settings_path,
-        ) is not None:
-            return deny(REASON_SETTINGS, "settings_changed")
+        if env_changed:
+            names = [] if isinstance(env_changed, bool) else sorted(env_changed)
+            return deny(REASON_SETTINGS, "settings_changed",
+                        why="environment differs: " + (", ".join(names) or "yes"))
+        settings = checkout_settings.problem(
+            turn_checkout, real_cwd, user_settings_path=config.user_settings_path)
+        if settings is not None:
+            return deny(REASON_SETTINGS, "settings_changed", why=settings)
         if verdict.desk_only:
             return deny(REASON_SELF, "needs_desk")
         if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
@@ -311,6 +355,14 @@ def decide(
 
         if grant:
             if derived.hash is not None and derived.hash == grant:
+                if defer_grant:
+                    marker = grant_marker(config, turn_id, grant)
+                    if state.data["grant_used"] or os.path.lexists(marker) \
+                            or not _GRANT_RE.fullmatch(grant):
+                        return deny(REASON_GRANT_USED, "needs_desk", sentence)
+                    state.note("released", code=None, verdict=verdict, sentence=sentence)
+                    state.save()
+                    return Decision(True, "", verdict, grant_marker=marker)
                 if state.data["grant_used"] or not _use_grant_once(config, turn_id, grant):
                     return deny(REASON_GRANT_USED, "needs_desk", sentence)
                 state.data["grant_used"] = True

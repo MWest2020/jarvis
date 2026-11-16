@@ -293,8 +293,26 @@ _NAMESPACED = frozenset({
 })
 
 
-def _resources(words: list[str]) -> str:
-    """`pod web` / `pod a b` / `pod/web deployment/api`, as spoken."""
+# Kinds that hold data: deleting one is never confirmed by voice (host
+# check 11, decided 2026-11-16). A volume claim, a volume, a namespace with
+# everything in it, a resource definition with every object of its kind, a
+# stateful set (and with it, often, its claims). The cluster-wide ones are
+# not in _NAMESPACED either; they are named here so that the rule says what
+# it means. Every form that deletes more than the named objects (`--all`,
+# `-l`/`--selector`, `-f`/`--filename`, `-k`) is not nameable already:
+# read_options knows none of those options.
+DESK_ONLY_DELETE_KINDS = frozenset({
+    "persistentvolumeclaim", "persistentvolumeclaims", "pvc",
+    "persistentvolume", "persistentvolumes", "pv",
+    "namespace", "namespaces", "ns",
+    "customresourcedefinition", "customresourcedefinitions", "crd", "crds",
+    "statefulset", "statefulsets", "sts",
+})
+
+
+def _resources(words: list[str], *, refuse: frozenset[str] = frozenset()) -> str:
+    """`pod web` / `pod a b` / `pod/web deployment/api`, as spoken. A kind in
+    `refuse` makes the call not nameable."""
     if not words:
         raise NotNameable("no resource")
     pairs: list[tuple[str, str]] = []
@@ -310,6 +328,8 @@ def _resources(words: list[str]) -> str:
         raise NotNameable("more resources than one sentence holds")
     spoken = []
     for kind, resource in pairs:
+        if kind.lower() in refuse or kind.split(".", 1)[0].lower() in refuse:
+            raise NotNameable("a kind that holds data: deleting it needs the desk")
         if kind not in _NAMESPACED:
             raise NotNameable("a kind that is not known to live in a namespace")
         spoken.append(f"{targets.label(kind).spoken} {targets.label(resource).spoken}")
@@ -338,7 +358,7 @@ def _name_kubectl(subpath, args, rest, ctx, config) -> Named | Missing:
         )
         if "grace" in values:
             targets.number(values["grace"])
-        what = _resources(_after(positional, subpath))
+        what = _resources(_after(positional, subpath), refuse=DESK_ONLY_DELETE_KINDS)
         missing, options, namespace, context = _cluster_parts(values, PART_CONTEXT, "--context")
         if missing:
             return Missing(tuple(missing), tuple(options))

@@ -32,6 +32,17 @@ equal that process's exec-time `JARVIS_*` values exactly; if they do not,
 or there is no record, there are no trusted values and every gated call is
 denied.
 
+**The whole environment is compared**, not only `JARVIS_*`: a project's
+`env` can set `LD_PRELOAD`, `PATH`, `HOME`, `GIT_CONFIG_*` and more, which
+change what the gate and every command after it do. `env_difference` lists
+every name whose value in the gate's own environment is not the one
+expected: the exec-time environment of `claude`, with the values the turn
+settings pin (`env` in `--settings`, which outranks a project's `env`, at
+the start and after a mid-turn reload: seen on the host), and minus the
+names Claude Code itself adds to every hook process (`CLAUDE_ADDED`,
+measured on the host for 2.1.322). Any name in that list denies every gated
+call (`settings_changed`).
+
 Every read here is bounded (agent_host.boundedio): the walk has a depth,
 each file a cap.
 """
@@ -42,7 +53,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent_host.boundedio import read_regular
+from agent_host.boundedio import MAX_SETTINGS_BYTES, read_regular
 
 PREFIX = "JARVIS_"
 RECORD_PREFIX = "trusted-"
@@ -52,12 +63,28 @@ MAX_ENVIRON_BYTES = 4 * 1024 * 1024
 MAX_STAT_BYTES = 4096
 PROC = Path("/proc")
 
+# The names Claude Code 2.1.322 adds to the environment of every hook
+# process, by itself, measured on the agent host (a hook that dumped its
+# environment, compared with /proc/<claude>/environ, in a clean checkout).
+# Their values are Claude Code's, and they are not compared. On a new Claude
+# Code version a name missing here shows up as a denial of every gated call
+# with `settings_changed`: the update runbook's check 4 catches it.
+CLAUDE_ADDED: frozenset[str] = frozenset({
+    "AI_AGENT", "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT", "CLAUDE_PID",
+    "CLAUDE_PROJECT_DIR", "COREPACK_ENABLE_AUTO_PIN", "DISABLE_AUTOUPDATER", "LC_CTYPE",
+    "NoDefaultCurrentDirectoryInExePath", "PWD",
+})
+
 
 @dataclass(frozen=True)
 class Trusted:
-    """The `JARVIS_*` values the wrapper started the turn's `claude` with."""
+    """The values the wrapper started the turn's `claude` with: its whole
+    exec-time environment, and the `JARVIS_*` part of it (`env`)."""
     pid: int
     env: dict[str, str]
+    exec_env: dict[str, str] | None = None
 
     @property
     def turn_id(self) -> str | None:
@@ -84,11 +111,38 @@ def jarvis_env(environ) -> dict[str, str]:
     return {key: value for key, value in environ.items() if key.startswith(PREFIX)}
 
 
-def changed(own_environ, trusted: Trusted) -> bool:
-    """Does this environment's `JARVIS_*` part differ from the trusted one in
-    any way: a value changed, a key added, a key gone? Project `env` settings
-    are the only way that happens in a turn the wrapper started."""
-    return jarvis_env(own_environ) != trusted.env
+def env_difference(own_environ, trusted: Trusted,
+                   pins: dict[str, str] | None = None) -> list[str]:
+    """The names whose value in this environment is not the expected one: a
+    value changed, a name added, a name gone. Expected is the exec-time
+    environment of `claude` with the turn settings' pins on top; the names
+    Claude Code adds itself are not compared. Project `env` settings are the
+    only way a difference comes about in a turn the wrapper started."""
+    base = trusted.exec_env if trusted.exec_env is not None else trusted.env
+    expected = {**base, **(pins or {})}
+    found = []
+    for name in sorted(set(own_environ) | set(expected)):
+        if name in CLAUDE_ADDED:
+            continue
+        if own_environ.get(name) != expected.get(name):
+            found.append(name)
+    return found
+
+
+def changed(own_environ, trusted: Trusted, pins: dict[str, str] | None = None) -> bool:
+    return bool(env_difference(own_environ, trusted, pins))
+
+
+def settings_pins(turn_settings: Path) -> dict[str, str]:
+    """The `env` the turn settings pin: names and values. Raises when the
+    file cannot be read: then nobody knows what to expect, and the gate
+    denies."""
+    data = json.loads(read_regular(turn_settings, MAX_SETTINGS_BYTES))
+    env = data.get("env", {}) if isinstance(data, dict) else None
+    if not isinstance(env, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
+        raise ValueError("the turn settings' env is not a table of strings")
+    return dict(env)
 
 
 def boot_id(proc: Path = PROC) -> str:
@@ -152,16 +206,37 @@ def remove_for(gate_dir: Path, pid: int) -> None:
             pass
 
 
-def exec_environ(pid: int, proc: Path = PROC) -> dict[str, str] | None:
-    """The `JARVIS_*` part of a process's exec-time environment, or None when
-    it cannot be read or names a `JARVIS_*` key twice."""
+def remove_stale(gate_dir: Path, proc: Path = PROC) -> None:
+    """Remove every record whose process is gone (or is another process now):
+    what a `claude` that failed to start leaves behind."""
+    try:
+        entries = list(gate_dir.glob(f"{RECORD_PREFIX}*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            pid_text, start_text = path.name[len(RECORD_PREFIX):].split("-")[:2]
+            found = proc_stat(int(pid_text), proc)
+            if found is not None and found[1] == int(start_text):
+                continue
+            path.unlink()
+        except (OSError, ValueError):
+            continue
+
+
+def exec_environ(pid: int, proc: Path = PROC, *, whole: bool = False) -> dict[str, str] | None:
+    """The `JARVIS_*` part (or with `whole`, all) of a process's exec-time
+    environment, or None when it cannot be read, is not text, or names a key
+    twice."""
     try:
         raw = read_regular(proc / str(pid) / "environ", MAX_ENVIRON_BYTES)
     except OSError:
         return None
     found: dict[str, str] = {}
     for entry in raw.split(b"\0"):
-        if not entry.startswith(PREFIX.encode()) or b"=" not in entry:
+        if not entry or b"=" not in entry:
+            continue
+        if not whole and not entry.startswith(PREFIX.encode()):
             continue
         key, _, value = entry.partition(b"=")
         try:
@@ -217,11 +292,12 @@ def find(gate_dir: Path, *, start_pid: int | None = None, proc: Path = PROC) -> 
         return None
     pid, start = topmost
     env = _load_record(gate_dir / record_name(pid, start, boot), pid, start, boot)
-    if env is None or exec_environ(pid, proc) != env:
+    whole = exec_environ(pid, proc, whole=True)
+    if env is None or whole is None or jarvis_env(whole) != env:
         return None
     # The same process still: not gone and replaced under the same pid
     # while the files were read.
     again = proc_stat(pid, proc)
     if again is None or again[1] != start:
         return None
-    return Trusted(pid, dict(env))
+    return Trusted(pid, dict(env), whole)

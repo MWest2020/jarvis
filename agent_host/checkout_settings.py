@@ -38,7 +38,7 @@ import json
 import os
 from pathlib import Path
 
-from agent_host.boundedio import read_regular
+from agent_host.boundedio import MAX_SETTINGS_BYTES, read_regular
 
 # The three names of D36. Kept for what they are: the reason the rule
 # exists. The rule itself is the allow-list below.
@@ -56,7 +56,6 @@ SAFE_KEYS: frozenset[str] = frozenset({
 # only, as the user's own allow rules do (D34, D40). `defaultMode`,
 # `additionalDirectories` and anything else in it are not.
 SAFE_PERMISSION_KEYS: frozenset[str] = frozenset({"deny", "ask", "allow"})
-MAX_SETTINGS_BYTES = 1024 * 1024
 
 
 def _read_regular(path: Path) -> bytes:

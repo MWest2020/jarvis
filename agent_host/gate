@@ -22,8 +22,9 @@ Three answers:
 never taken from this process's environment: Claude Code adds a checkout's
 `env` settings to it, mid-turn too. They come from the record the wrapper
 wrote for the `claude` process it started, checked against that process's
-exec-time environment (agent_host.trusted). When this process's `JARVIS_*`
-values differ from those in any way, every gated call is denied
+exec-time environment (agent_host.trusted). When this process's environment
+differs from that one in any name (other than those Claude Code adds itself,
+and with the turn settings' pins applied), every gated call is denied
 (`settings_changed`).
 
 **Always in time** (host check 12). A hook that runs past its `timeout`
@@ -34,7 +35,9 @@ process only waits for the worker's answer and is the only one that writes
 to stdout. When the deadline comes first, it kills the worker, prints the
 denial and exits, whatever the worker was stuck in (a blocked read, a
 regular expression, a lock). That holds unless the whole host stalls for
-longer than the hook timeout.
+longer than the hook timeout. A grant is used (its "used" marker created)
+here in the parent, after the worker's answer and just before the call is
+let through, so a deadline never uses up a grant.
 
 Failing closed: inside a turn, unreadable rules, an unparsable call, a
 missing configuration, no trusted values, a crash or the deadline all deny
@@ -107,72 +110,70 @@ signal.setitimer(signal.ITIMER_REAL, DEADLINE_S)
 if "JARVIS_TURN" not in os.environ:
     sys.exit(0)
 
-MAX_INPUT_BYTES = 16 * 1024 * 1024
 
-
-def _decide() -> str | None:
-    """The worker's part: None to let the call through, else the reason of
-    the denial. Raises on anything it cannot do."""
+def _decide():
+    """The worker's part: ("A", None) to let the call through, ("G", marker)
+    to let it through once the parent has created the grant's marker, or
+    ("D", reason) to deny."""
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from agent_host import decision, trusted
-    from agent_host.config import hook_config_path, load_config
+    from agent_host import decision
 
     try:
-        return _decide_with(decision, trusted, hook_config_path, load_config)
+        return _judge(Path(__file__).resolve().parent, decision)
     except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
-        return decision.REASON_ERROR
+        return "D", decision.REASON_ERROR
 
 
-def _decide_with(decision, trusted, hook_config_path, load_config) -> str | None:
+def _judge(package_dir, decision):
+    import json
     from pathlib import Path
 
-    raw = b""
-    while len(raw) <= MAX_INPUT_BYTES:
-        chunk = os.read(0, 1 << 20)
-        if not chunk:
-            break
-        raw += chunk
-    if len(raw) > MAX_INPUT_BYTES:
-        return decision.REASON_ERROR
-    import json
+    from agent_host import boundedio, trusted
+    from agent_host.config import hook_config_path, load_config
 
+    raw = boundedio.read_stdin()
+    if raw is None:
+        return "D", decision.REASON_ERROR
     payload = json.loads(raw.decode("utf-8"))
     # A fixed path when installed; the environment is not asked (see
     # agent_host.config.hook_config_path).
-    config = load_config(hook_config_path(os.environ, Path(__file__).resolve().parent))
+    config = load_config(hook_config_path(os.environ, package_dir))
     turn = trusted.find(config.gate_dir)
     if turn is None or turn.checkout is None or turn.turn_id is None:
         # No record of the turn the wrapper started, or one without its
         # checkout or id: this is not a turn as the wrapper starts one, and
         # nothing is let through, gated or not.
-        return decision.REASON_ERROR
+        return "D", decision.REASON_ERROR
+    pins = trusted.settings_pins(config.turn_settings_path)
     result = decision.decide(
         payload, config, turn_checkout=turn.checkout, turn_id=turn.turn_id,
         grant=turn.grant, grant_base=turn.grant_base,
-        env_changed=trusted.changed(os.environ, turn),
+        env_changed=trusted.env_difference(dict(os.environ), turn, pins),
+        defer_grant=True,
     )
-    return None if result.allow else result.reason
+    if not result.allow:
+        return "D", result.reason
+    if result.grant_marker is not None:
+        return "G", [str(Path(result.grant_marker)), decision.REASON_GRANT_USED]
+    return "A", None
 
 
 def _work(write_fd: int) -> None:
-    """In the worker: decide, send "A" (let through) or "D" and the denial's
-    JSON to the parent, and leave. Never writes to stdout."""
+    """In the worker: decide, send the answer to the parent as JSON, leave.
+    Its stdout and stderr are /dev/null: only the parent ever writes there."""
     try:
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
         import json
 
-        reason = _decide()
-        if reason is None:
-            answer = b"A"
-        else:
-            answer = b"D" + json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }}).encode("utf-8")
+        kind, detail = _decide()
+        answer = json.dumps({"kind": kind, "detail": detail}).encode("utf-8")
     except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
-        answer = b"D" + _FALLBACK_DENY
+        answer = b'{"kind": "D", "detail": null}'
     try:
         view = memoryview(answer)
         while view:
@@ -202,19 +203,40 @@ def main() -> None:
             break
         chunks.append(chunk)
     os.waitpid(pid, 0)
-    answer = b"".join(chunks)
-    if answer == b"A":
+    _worker = 0
+    import json
+
+    try:
+        answer = json.loads(b"".join(chunks))
+        kind, detail = answer["kind"], answer["detail"]
+    except (ValueError, KeyError, TypeError):
+        kind, detail = "D", None
+    if kind == "A":
         _answered = True
         os._exit(0)
-    if answer.startswith(b"D"):
-        import json
-
+    if kind == "G" and isinstance(detail, list) and len(detail) == 2 \
+            and all(isinstance(part, str) for part in detail):
+        # Use the grant now, and only now: exactly once, after the worker's
+        # answer is in and right before the call is let through. Another
+        # gate that got there first (the same call twice at once) means used.
+        marker, used_reason = detail
         try:
-            out = json.loads(answer[1:])
-            if out["hookSpecificOutput"]["permissionDecision"] == "deny":
-                _emit_and_exit(answer[1:], _FALLBACK_REASON)
-        except (ValueError, KeyError, TypeError):
-            pass
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                         | os.O_NONBLOCK, 0o600)
+        except OSError:
+            _emit_and_exit(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": used_reason}}).encode("utf-8"), _FALLBACK_REASON)
+        os.close(fd)
+        _answered = True
+        os._exit(0)
+    if kind == "D" and isinstance(detail, str):
+        out = json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": detail,
+        }}).encode("utf-8")
+        _emit_and_exit(out, _FALLBACK_REASON)
     # A worker that died, or sent anything else: denied.
     _emit_and_exit(_FALLBACK_DENY, _FALLBACK_REASON)
 

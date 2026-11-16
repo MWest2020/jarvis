@@ -138,6 +138,17 @@ def hook_config_path(environ, package_dir: Path) -> Path:
     return DEFAULT_CONFIG_PATH
 
 
+def _path(value: object, key: str) -> Path:
+    """A path from the configuration: absolute, as written. No `~` and no
+    environment is expanded: the gate reads this file in a process whose
+    `HOME` a project's settings could have set, so `~` would name a
+    directory of the project's choosing."""
+    text = str(value)
+    if not os.path.isabs(text):
+        raise ConfigError(f"{key} = {text!r} must be an absolute path (no ~)")
+    return Path(text)
+
+
 def _require(data: dict, key: str) -> object:
     if key not in data:
         raise ConfigError(f"{key} is required in the agent host configuration")
@@ -174,23 +185,21 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
     if projects_raw:
         if not isinstance(projects_raw, dict):
             raise ConfigError("projects must be a table of name = \"path\"")
-        projects = {name: Path(str(p)).expanduser() for name, p in projects_raw.items()}
+        projects = {name: _path(p, f"projects.{name}") for name, p in projects_raw.items()}
     else:
-        projects_root = Path(str(projects_root_raw)).expanduser()
-        if not projects_root.is_absolute():
-            raise ConfigError(f"projects_root={projects_root_raw!r} must be an absolute path")
+        projects_root = _path(projects_root_raw, "projects_root")
 
     exclusions = frozenset(str(x) for x in data.get("project_exclusions", []))
 
-    state_dir = Path(str(_require(data, "state_dir"))).expanduser()
-    environment_file = Path(str(_require(data, "environment_file"))).expanduser()
-    turn_settings_path = Path(str(_require(data, "turn_settings"))).expanduser()
-    prompt_path = Path(str(_require(data, "prompt_file"))).expanduser()
+    state_dir = _path(_require(data, "state_dir"), "state_dir")
+    environment_file = _path(_require(data, "environment_file"), "environment_file")
+    turn_settings_path = _path(_require(data, "turn_settings"), "turn_settings")
+    prompt_path = _path(_require(data, "prompt_file"), "prompt_file")
     session_identity = str(_require(data, "session_identity"))
-    user_settings_path = Path(str(_require(data, "user_settings_path"))).expanduser()
+    user_settings_path = _path(_require(data, "user_settings_path"), "user_settings_path")
 
     second_prompt_raw = data.get("second_prompt_file")
-    second_prompt_path = Path(str(second_prompt_raw)).expanduser() if second_prompt_raw else None
+    second_prompt_path = _path(second_prompt_raw, "second_prompt_file") if second_prompt_raw else None
 
     own_owners_raw = data.get("own_owners", [])
     if not isinstance(own_owners_raw, list) or not all(
@@ -231,14 +240,15 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
         forge_host=str(data.get("forge_host", "github.com")),
         second_prompt_path=second_prompt_path,
         config_path=config_path,
-        rules_dir=Path(str(data.get("rules_dir", DEFAULT_RULES_DIR))).expanduser(),
-        managed_settings_path=Path(
-            str(data.get("managed_settings_path", DEFAULT_MANAGED_SETTINGS_PATH))
-        ).expanduser(),
+        rules_dir=_path(data.get("rules_dir", DEFAULT_RULES_DIR), "rules_dir"),
+        managed_settings_path=_path(
+            data.get("managed_settings_path", DEFAULT_MANAGED_SETTINGS_PATH),
+            "managed_settings_path"),
         own_owners=tuple(own_owners_raw),
         confirm=confirm,
         confirm_skip=frozenset(confirm_skip),
-        confirm_program=Path(str(data.get("confirm_program", DEFAULT_CONFIRM_PROGRAM))).expanduser(),
+        confirm_program=_path(data.get("confirm_program", DEFAULT_CONFIRM_PROGRAM),
+                              "confirm_program"),
         notify_command=_string_list(data, "notify_command"),
         pr_status_command=pr_status_command,
         retention_days=retention_days,

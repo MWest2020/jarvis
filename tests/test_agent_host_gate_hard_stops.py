@@ -382,12 +382,47 @@ def test_the_walk_is_bounded(tmp_path):
     assert trusted.find(tmp_path / "gate", start_pid=5, proc=proc) is None
 
 
-def test_changed_sees_any_difference():
-    turn = trusted.Trusted(1, dict(TURN))
-    assert not trusted.changed({**TURN, "PATH": "/x", "CLAUDE_PROJECT_DIR": "/y"}, turn)
-    assert trusted.changed({**TURN, "JARVIS_GRANT": "x"}, turn)
-    assert trusted.changed({**TURN, "JARVIS_TURN_ID": "b"}, turn)
-    assert trusted.changed({k: v for k, v in TURN.items() if k != "JARVIS_TURN_ID"}, turn)
+EXEC = {**TURN, "PATH": "/usr/bin:/bin", "HOME": "/home/u"}
+
+
+def test_the_whole_environment_is_compared_minus_what_claude_code_adds():
+    turn = trusted.Trusted(1, dict(TURN), dict(EXEC))
+    # What Claude Code adds to every hook process itself is not a change.
+    same = {**EXEC, "CLAUDE_PROJECT_DIR": "/y", "CLAUDECODE": "1", "PWD": "/z",
+            "CLAUDE_CODE_SESSION_ID": "s"}
+    assert trusted.env_difference(same, turn) == []
+    for name, value in (("PATH", "/evil:/usr/bin"), ("HOME", "/tmp/h"), ("LD_PRELOAD", "/x.so"),
+                        ("LD_LIBRARY_PATH", "/x"), ("LD_AUDIT", "/x.so"),
+                        ("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "alias.status"),
+                        ("SSH_AUTH_SOCK", "/x"), ("PYTHONPATH", "/x"), ("NODE_OPTIONS", "-r x"),
+                        ("JARVIS_GRANT", "x"), ("JARVIS_TURN_ID", "b")):
+        assert trusted.env_difference({**EXEC, name: value}, turn) == [name], name
+    gone = {k: v for k, v in EXEC.items() if k != "HOME"}
+    assert trusted.env_difference(gone, turn) == ["HOME"]
+
+
+def test_the_turn_settings_pins_are_expected_values():
+    turn = trusted.Trusted(1, dict(TURN), dict(EXEC))
+    pins = {"LD_PRELOAD": "", "LD_LIBRARY_PATH": "", "GIT_CONFIG_COUNT": "0",
+            "PATH": "/usr/bin:/bin"}
+    pinned = {**EXEC, "LD_PRELOAD": "", "LD_LIBRARY_PATH": "", "GIT_CONFIG_COUNT": "0"}
+    assert trusted.env_difference(pinned, turn, pins) == []
+    # A pin that did not take (an older Claude Code, a project that won): a change.
+    assert trusted.env_difference({**pinned, "LD_PRELOAD": "/x.so"}, turn, pins) == ["LD_PRELOAD"]
+    assert trusted.env_difference(dict(EXEC), turn, pins) == [
+        "GIT_CONFIG_COUNT", "LD_LIBRARY_PATH", "LD_PRELOAD"]
+
+
+def test_settings_pins_reads_the_turn_settings(tmp_path):
+    path = tmp_path / "turn-settings.json"
+    path.write_text('{"hooks": {}, "env": {"LD_PRELOAD": ""}}')
+    assert trusted.settings_pins(path) == {"LD_PRELOAD": ""}
+    path.write_text('{"hooks": {}}')
+    assert trusted.settings_pins(path) == {}
+    for bad in ('{"env": {"A": 1}}', '{"env": []}', "{"):
+        path.write_text(bad)
+        with pytest.raises((ValueError, OSError)):
+            trusted.settings_pins(path)
 
 
 def test_exec_environ_is_what_the_process_was_started_with():
@@ -602,3 +637,204 @@ def test_the_action_log_writes_to_the_trusted_turn_not_the_planted_one(host):
     proc = run_hook([sys.executable, ACTION_LOG], payload, _turn_env(config_path, checkout),
                     gate_dir=None)
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
+
+
+# --- the whole environment, as processes (the ultra review of #47) ----------------------------------
+
+@pytest.mark.parametrize("overrides", [
+    {"LD_PRELOAD": "/tmp/x.so"}, {"LD_LIBRARY_PATH": "/tmp"}, {"LD_AUDIT": "/tmp/x.so"},
+    {"PATH": "/tmp/evil:/usr/bin:/bin"}, {"HOME": "/tmp/evilhome"},
+    {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "alias.status", "GIT_CONFIG_VALUE_0": "!x"},
+    {"GIT_DIR": "/tmp/x"}, {"SSH_AUTH_SOCK": "/tmp/agent"}, {"PYTHONPATH": "/tmp"},
+    {"NODE_OPTIONS": "--require /tmp/x.js"}, {"PATH": None},
+])
+def test_any_environment_difference_denies_every_gated_call(host, overrides):
+    _, config, config_path, checkout = host
+    env = _turn_env(config_path, checkout, HOME="/home/u")
+    assert _reason(_gate(host, "terraform apply", checkout, env, overrides=overrides)) \
+        == decision.REASON_SETTINGS
+    state = json.loads((config.gate_dir / f"{env['JARVIS_TURN_ID']}.json").read_text())
+    why = state["events"][-1]["why"]
+    assert why.startswith("environment differs: ")
+    for name in overrides:
+        assert name in why
+    # Names only: never a value.
+    for value in overrides.values():
+        if value:
+            assert value not in why
+    assert _reason(_gate(host, "ls -la", checkout, env, overrides=overrides)) is None
+
+
+def test_what_claude_code_adds_itself_is_not_a_difference(host):
+    _, _, config_path, checkout = host
+    env = _turn_env(config_path, checkout)
+    added = {name: "x" for name in trusted.CLAUDE_ADDED}
+    assert _reason(_gate(host, "terraform apply", checkout, env, overrides=added)) \
+        == decision.REASON_DESK
+
+
+def test_the_turn_settings_pins_are_what_the_gate_expects(host):
+    tmp_path, config, config_path, checkout = host
+    config.turn_settings_path.write_text(json.dumps(
+        {"hooks": {}, "env": {"LD_PRELOAD": "", "GIT_CONFIG_COUNT": "0"}}))
+    env = _turn_env(config_path, checkout)
+    pinned = {"LD_PRELOAD": "", "GIT_CONFIG_COUNT": "0"}
+    # Claude Code applied the pins: no difference.
+    assert _reason(_gate(host, "terraform apply", checkout, env, overrides=pinned)) \
+        == decision.REASON_DESK
+    # A pin that did not take: a difference.
+    assert _reason(_gate(host, "terraform apply", checkout, env,
+                         overrides={**pinned, "LD_PRELOAD": "/tmp/x.so"})) == decision.REASON_SETTINGS
+    assert _reason(_gate(host, "terraform apply", checkout, env)) == decision.REASON_SETTINGS
+    # Turn settings that cannot be read: nobody knows what to expect.
+    config.turn_settings_path.write_text("{")
+    assert _reason(_gate(host, "ls", checkout, env, overrides=pinned)) == decision.REASON_ERROR
+
+
+# --- the grant is used in the parent, after the worker's answer --------------------------------------
+
+def test_a_refused_call_never_uses_up_the_grant(host):
+    """The state lock is held by someone else: the gate refuses (in time),
+    and the grant is still there for the next try."""
+    _, config, config_path, checkout = host
+    grant = gatehash.call_hash("Bash", str(checkout.resolve()), {"command": MERGE})
+    env = _turn_env(config_path, checkout, JARVIS_GRANT=grant, JARVIS_GRANT_BASE=grant)
+    config.gate_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(config.gate_dir / f"{env['JARVIS_TURN_ID']}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        assert _reason(_gate(host, MERGE, checkout, env)) == decision.REASON_ERROR
+    finally:
+        os.close(fd)
+    assert not list(config.gate_dir.glob("*.used"))
+    proc = _gate(host, MERGE, checkout, env)
+    assert (proc.returncode, proc.stdout) == (0, b"")
+    assert len(list(config.gate_dir.glob("*.used"))) == 1
+
+
+def test_the_same_confirmed_call_judged_twice_at_once_is_released_once(host):
+    from concurrent.futures import ThreadPoolExecutor
+    _, config, config_path, checkout = host
+    grant = gatehash.call_hash("Bash", str(checkout.resolve()), {"command": MERGE})
+    env = _turn_env(config_path, checkout, JARVIS_GRANT=grant, JARVIS_GRANT_BASE=grant)
+    with ThreadPoolExecutor(4) as pool:
+        reasons = list(pool.map(lambda _: _reason(_gate(host, MERGE, checkout, env)), range(4)))
+    assert reasons.count(None) == 1
+    assert all(reason == decision.REASON_GRANT_USED for reason in reasons if reason is not None)
+
+
+# --- git lookups: bounded, and a timeout is not "unset" ----------------------------------------------
+
+def test_a_git_that_does_not_answer_denies_in_time(host, tmp_path):
+    """`git push` makes the gate ask git where the push goes. A git that
+    hangs: each lookup times out, the shared budget runs out, and the call
+    is denied (a timed-out answer is unknown, never "unset") well inside
+    the deadline."""
+    _, config, config_path, checkout = host
+    slow = tmp_path / "slowbin"
+    slow.mkdir()
+    (slow / "git").write_text("#!/bin/sh\nexec sleep 30\n")
+    (slow / "git").chmod(0o755)
+    env = _turn_env(config_path, checkout, PATH=f"{slow}:/usr/bin:/bin")
+    started = time.monotonic()
+    reason = _reason(_gate(host, "git push origin main", checkout, env, timeout=40))
+    took = time.monotonic() - started
+    assert reason == decision.REASON_ERROR
+    assert took < 5.5
+
+
+def test_run_git_raises_when_the_budget_is_spent(tmp_path):
+    from agent_host import classify
+    from agent_host.boundedio import Budget
+    token = classify.git_budget.set(Budget(0))
+    try:
+        with pytest.raises(classify.GitTimeout):
+            classify.run_git(["status"], tmp_path)
+    finally:
+        classify.git_budget.reset(token)
+    # Without a budget: an ordinary lookup, None when git says no.
+    assert classify.run_git(["config", "--get", "no.such-key"], tmp_path) is None
+
+
+# --- the worker never writes where Claude Code reads ---------------------------------------------------
+
+def test_what_the_worker_writes_to_stdout_or_stderr_is_lost(host, tmp_path):
+    _, _, config_path, checkout = host
+    sitedir = tmp_path / "site2"
+    sitedir.mkdir()
+    (sitedir / "sitecustomize.py").write_text(
+        "import builtins, os\n"
+        "_real = builtins.__import__\n"
+        "def _imp(name, *a, **k):\n"
+        "    if name == 'agent_host' and a and a[2] and 'decision' in a[2]:\n"
+        "        os.write(1, b'garbage on stdout'); os.write(2, b'garbage on stderr')\n"
+        "    return _real(name, *a, **k)\n"
+        "builtins.__import__ = _imp\n")
+    env = _turn_env(config_path, checkout, PYTHONPATH=str(sitedir))
+    proc = _gate(host, "ls -la", checkout, env)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
+    assert _reason(_gate(host, "terraform apply", checkout, env)) == decision.REASON_DESK
+
+
+# --- smaller findings -------------------------------------------------------------------------------
+
+def test_stale_records_of_processes_that_are_gone_are_removed(tmp_path):
+    proc = _proc(tmp_path, CHAIN, {200: TURN})
+    gate_dir = tmp_path / "gate"
+    live = _record(gate_dir, 200, 22, TURN)
+    gone = _record(gate_dir, 4242, 7, TURN)
+    reused = _record(gate_dir, 300, 999, TURN)          # pid 300 exists, with another start time
+    trusted.remove_stale(gate_dir, proc)
+    assert live.exists() and not gone.exists() and not reused.exists()
+
+
+def test_a_claude_that_fails_to_exec_leaves_no_record(tmp_path, monkeypatch):
+    from agent_host import wrapper
+    config = make_config(tmp_path, memory_floor_mb=0)
+    monkeypatch.setattr(wrapper.command, "build_command",
+                        lambda **kw: [str(tmp_path / "no-such-claude")])
+    reply = wrapper._run_turn("demo", "hi", tmp_path / "projects" / "demo", config,
+                              turn_id=str(uuid.uuid4()),
+                              env={"JARVIS_TURN": "1", "PATH": "/usr/bin:/bin"})
+    assert (reply["status"], reply["error"]) == ("error", "agent_failed")
+    assert not list(config.gate_dir.glob("trusted-*"))
+
+
+@pytest.mark.parametrize("key", ["state_dir", "user_settings_path", "environment_file",
+                                 "turn_settings", "prompt_file", "rules_dir",
+                                 "managed_settings_path", "confirm_program", "projects_root"])
+@pytest.mark.parametrize("value", ["~/state", "relative/state", "$HOME/state"])
+def test_every_configuration_path_must_be_absolute(tmp_path, key, value):
+    from agent_host.config import ConfigError
+    with pytest.raises(ConfigError):
+        make_config(tmp_path, **{key: value})
+
+
+def test_a_non_zero_exit_code_ran_and_failed_and_a_generic_code_is_no_exit_code(tmp_path):
+    directory, turn = tmp_path / "actions", str(uuid.uuid4())
+    wanted = gatehash.call_hash("Bash", "/srv/repo", {"command": MERGE})
+    record.append_action(directory, turn, record.action_line(
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": MERGE},
+         "cwd": "/srv/repo", "tool_response": {"exit_code": 1}}, NOW))
+    assert record.ran(directory, turn, wanted) == "ran, failed"
+    line = record.action_line({"tool_name": "mcp__x__do", "tool_input": {"id": 1},
+                               "tool_response": {"code": 1}}, NOW)
+    assert line["status"] == "ok" and not record.failed_status(line["status"])
+
+
+def test_the_action_log_never_follows_a_symlink_or_blocks_on_a_fifo(tmp_path):
+    directory, turn = tmp_path / "actions", str(uuid.uuid4())
+    directory.mkdir()
+    target = tmp_path / "elsewhere.jsonl"
+    (directory / f"{turn}.jsonl").symlink_to(target)
+    with pytest.raises(OSError):
+        record.append_action(directory, turn, {"x": 1})
+    assert not target.exists()
+    assert record.ran(directory, turn, "0" * 64) == "unknown"
+    other = str(uuid.uuid4())
+    os.mkfifo(directory / f"{other}.jsonl")
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        record.append_action(directory, other, {"x": 1})
+    assert record.ran(directory, other, "0" * 64) == "unknown"
+    assert time.monotonic() - started < 2

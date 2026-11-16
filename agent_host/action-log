@@ -26,7 +26,6 @@ import sys
 if "JARVIS_TURN" not in os.environ:
     sys.exit(0)
 
-MAX_INPUT_BYTES = 16 * 1024 * 1024
 
 
 def main() -> int:
@@ -36,12 +35,12 @@ def main() -> int:
         from pathlib import Path
 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from agent_host import record, trusted
+        from agent_host import boundedio, record, trusted
         from agent_host.config import hook_config_path, load_config
         from agent_host.sessions import is_canonical_uuid
 
-        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
-        if len(raw) > MAX_INPUT_BYTES:
+        raw = boundedio.read_stdin()
+        if raw is None:
             return 0
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):

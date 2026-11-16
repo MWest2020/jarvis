@@ -448,7 +448,10 @@ def _after_turn(
         return actions, None, notice
 
     derived, ctx = _derive(call, config, env)
-    readback = build_readback(derived, ctx, call, config, env) if derived is not None else None
+    try:
+        readback = build_readback(derived, ctx, call, config, env) if derived is not None else None
+    except Exception:  # noqa: BLE001 - a git lookup that timed out, anything: no read-back
+        readback = None
     if readback is None:
         # No fallback sentence, ever: nothing is pending (D36, step 4).
         actions.append({"outcome": "refused", "code": "needs_desk",
@@ -489,7 +492,15 @@ def _run_turn(
     )
 
     started = time.monotonic()
-    gate_dir = config.gate_dir
+    # Resolved and created here, before the fork: the child changes into the
+    # checkout before it runs `preexec_fn`, and must not have to make
+    # directories or resolve anything there (the configuration's paths are
+    # absolute, agent_host.config).
+    gate_dir = Path(os.path.abspath(config.gate_dir))
+    try:
+        gate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        pass  # the child's write fails then, and the turn does not start
 
     def write_trusted_record() -> None:
         # In the child, between fork and exec: the record of the turn's
@@ -508,7 +519,10 @@ def _run_turn(
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # No `claude`, or no record of the turn's trusted values: the turn
-        # does not start, because its gate could not know whom to trust.
+        # does not start, because its gate could not know whom to trust. A
+        # child that wrote its record and then failed to exec leaves it
+        # behind: removed here.
+        trusted.remove_stale(gate_dir)
         _write_record(
             config, turn_id=turn_id, project=project, session_id=stored_id, prompt=prompt,
             reply_text=f"the turn could not start: {exc}", duration_s=0.0,
