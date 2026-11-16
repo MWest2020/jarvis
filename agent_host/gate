@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""The PreToolUse hook of a Jarvis turn: the gate (1.7, D36).
+
+Installed root-owned (1.15, phase 1c) and named in the static turn settings,
+so it runs next to the user's own hooks for every tool call of a turn the
+wrapper started. It reads the hook input (one JSON object) on stdin and
+reads its configuration from one fixed path, /etc/jarvis-agent/config.toml:
+a constant of the installation, not something the turn's environment can
+choose (`JARVIS_AGENT_CONFIG` is honoured in a source checkout only, for the
+tests).
+
+Three answers:
+- no turn marker (`JARVIS_TURN`) in the environment: exit 0 at once,
+  before anything else is imported or read. The coding session is never
+  gated, whether the rest of this script works or not;
+- a call no rule gates, and a gated call whose hash equals the turn's grant
+  (once): exit 0 in silence;
+- every other gated call: denied, with a reason for the agent. A nameable
+  one becomes the turn's pending call (agent_host.decision).
+
+**What it trusts** (host check 6). The turn's id, checkout and grant are
+never taken from this process's environment: Claude Code adds a checkout's
+`env` settings to it, mid-turn too. They come from the record the wrapper
+wrote for the `claude` process it started, checked against that process's
+exec-time environment (agent_host.trusted). When this process's environment
+differs from that one in any name (other than those Claude Code adds itself,
+and with the turn settings' pins applied), every gated call is denied
+(`settings_changed`).
+
+**Always in time** (host check 12). A hook that runs past its `timeout`
+fails OPEN in Claude Code 2.1.322: the call runs. So the first thing this
+script does is set its own deadline (`DEADLINE_S`, far inside the 30 s of
+the turn settings), and the decision is made in a forked worker: this
+process only waits for the worker's answer and is the only one that writes
+to stdout. When the deadline comes first, it kills the worker, prints the
+denial and exits, whatever the worker was stuck in (a blocked read, a
+regular expression, a lock). That holds unless the whole host stalls for
+longer than the hook timeout. A grant is used (its "used" marker created)
+here in the parent, after the worker's answer and just before the call is
+let through, so a deadline never uses up a grant.
+
+Failing closed: inside a turn, unreadable rules, an unparsable call, a
+missing configuration, no trusted values, a crash or the deadline all deny
+the call.
+"""
+import os
+import signal
+import sys
+
+DEADLINE_S = 5.0
+_DEADLINE_REASON = (
+    "[needs_desk] The gate ran out of time deciding about this call, so it is refused."
+    " That one needs the desk. Stop here and end your turn."
+)
+_FALLBACK_REASON = (
+    "[needs_desk] The gate could not decide about this call, so it is refused. That"
+    " one needs the desk. Stop here and end your turn."
+)
+
+
+def _deny_bytes(reason: str) -> bytes:
+    # Built by hand so that the deadline path needs no import. The reasons
+    # are fixed ASCII text without quotes or backslashes.
+    return (
+        '{"hookSpecificOutput": {"hookEventName": "PreToolUse",'
+        ' "permissionDecision": "deny", "permissionDecisionReason": "' + reason + '"}}'
+    ).encode("ascii")
+
+
+_DEADLINE_DENY = _deny_bytes(_DEADLINE_REASON)
+_FALLBACK_DENY = _deny_bytes(_FALLBACK_REASON)
+_worker = 0
+_answered = False
+
+
+def _emit_and_exit(data: bytes, reason: str) -> None:
+    """Write the one answer and leave. A denial that cannot be written is
+    still a denial: exit 2 with the reason on stderr."""
+    global _answered
+    _answered = True
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(1, view):]
+        code = 0
+    except OSError:
+        try:
+            os.write(2, reason.encode("ascii"))
+        except OSError:
+            pass
+        code = 2
+    os._exit(code)
+
+
+def _on_deadline(signum, frame):
+    if _answered:
+        return
+    if _worker > 0:
+        try:
+            os.kill(_worker, signal.SIGKILL)
+        except OSError:
+            pass
+    _emit_and_exit(_DEADLINE_DENY, _DEADLINE_REASON)
+
+
+# The deadline first, before anything else is imported or read.
+signal.signal(signal.SIGALRM, _on_deadline)
+signal.setitimer(signal.ITIMER_REAL, DEADLINE_S)
+
+if "JARVIS_TURN" not in os.environ:
+    sys.exit(0)
+
+
+def _decide():
+    """The worker's part: ("A", None) to let the call through, ("G", marker)
+    to let it through once the parent has created the grant's marker, or
+    ("D", reason) to deny."""
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from agent_host import decision
+
+    try:
+        return _judge(Path(__file__).resolve().parent, decision)
+    except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
+        return "D", decision.REASON_ERROR
+
+
+def _judge(package_dir, decision):
+    import json
+    from pathlib import Path
+
+    from agent_host import boundedio, trusted
+    from agent_host.config import hook_config_path, load_config
+
+    raw = boundedio.read_stdin()
+    if raw is None:
+        return "D", decision.REASON_ERROR
+    payload = json.loads(raw.decode("utf-8"))
+    # A fixed path when installed; the environment is not asked (see
+    # agent_host.config.hook_config_path).
+    config = load_config(hook_config_path(os.environ, package_dir))
+    turn = trusted.find(config.gate_dir)
+    if turn is None or turn.checkout is None or turn.turn_id is None:
+        # No record of the turn the wrapper started, or one without its
+        # checkout or id: this is not a turn as the wrapper starts one, and
+        # nothing is let through, gated or not.
+        return "D", decision.REASON_ERROR
+    pins = trusted.settings_pins(config.turn_settings_path)
+    result = decision.decide(
+        payload, config, turn_checkout=turn.checkout, turn_id=turn.turn_id,
+        grant=turn.grant, grant_base=turn.grant_base,
+        env_changed=trusted.env_difference(dict(os.environ), turn, pins),
+        defer_grant=True,
+    )
+    if not result.allow:
+        return "D", result.reason
+    if result.grant_marker is not None:
+        return "G", [str(Path(result.grant_marker)), decision.REASON_GRANT_USED]
+    return "A", None
+
+
+def _work(write_fd: int) -> None:
+    """In the worker: decide, send the answer to the parent as JSON, leave.
+    Its stdout and stderr are /dev/null: only the parent ever writes there."""
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+        import json
+
+        kind, detail = _decide()
+        answer = json.dumps({"kind": kind, "detail": detail}).encode("utf-8")
+    except BaseException:  # noqa: BLE001 - whatever went wrong, the call is denied
+        answer = b'{"kind": "D", "detail": null}'
+    try:
+        view = memoryview(answer)
+        while view:
+            view = view[os.write(write_fd, view):]
+    finally:
+        os._exit(0)
+
+
+def main() -> None:
+    global _worker, _answered
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # Timers do not cross a fork. The worker gets its own, a little
+        # later, with the default action (the end of the process), so that a
+        # worker whose parent is gone cannot run on.
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.setitimer(signal.ITIMER_REAL, DEADLINE_S + 1)
+        os.close(read_fd)
+        _work(write_fd)
+    _worker = pid
+    os.close(write_fd)
+    chunks = []
+    while True:
+        chunk = os.read(read_fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.waitpid(pid, 0)
+    _worker = 0
+    import json
+
+    try:
+        answer = json.loads(b"".join(chunks))
+        kind, detail = answer["kind"], answer["detail"]
+    except (ValueError, KeyError, TypeError):
+        kind, detail = "D", None
+    if kind == "A":
+        _answered = True
+        os._exit(0)
+    if kind == "G" and isinstance(detail, list) and len(detail) == 2 \
+            and all(isinstance(part, str) for part in detail):
+        # Use the grant now, and only now: exactly once, after the worker's
+        # answer is in and right before the call is let through. Another
+        # gate that got there first (the same call twice at once) means used.
+        marker, used_reason = detail
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                         | os.O_NONBLOCK, 0o600)
+        except OSError:
+            _emit_and_exit(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": used_reason}}).encode("utf-8"), _FALLBACK_REASON)
+        os.close(fd)
+        _answered = True
+        os._exit(0)
+    if kind == "D" and isinstance(detail, str):
+        out = json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": detail,
+        }}).encode("utf-8")
+        _emit_and_exit(out, _FALLBACK_REASON)
+    # A worker that died, or sent anything else: denied.
+    _emit_and_exit(_FALLBACK_DENY, _FALLBACK_REASON)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BaseException:  # noqa: BLE001 - denied, whatever went wrong here
+        _emit_and_exit(_FALLBACK_DENY, _FALLBACK_REASON)

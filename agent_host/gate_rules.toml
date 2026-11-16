@@ -1,0 +1,452 @@
+# The gate's rules as data (design D36, task 1.7). Read by agent_host/rules.py,
+# with one test per rule in tests/test_agent_host_gate_rules.py.
+#
+# Files in the host-local rules directory (`rules_dir` in the configuration,
+# /etc/jarvis-agent/rules.d by default) have this same shape and are merged
+# on top: lists are joined, tables are merged, [[actions]] are appended. That
+# is where a user's own commands go (a chat ping, a build trigger, a mailer);
+# nothing of anyone's own setup belongs in this file.
+#
+# Two kinds of rule (D36):
+#   - rules by default: for the programs under [programs], EVERY subcommand is
+#     gated unless its verb is a read verb. A subcommand nobody thought of is
+#     gated without a rule naming it.
+#   - rules that name an action ([[actions]], [[option_classes]]): they put a
+#     gated call in a class, so that it can be read back (the sentences are in
+#     agent_host/naming.py). A gated call in no class has no sentence and
+#     needs the desk.
+#
+# Matching too much costs a trip to the desk; matching too little is the
+# failure. When in doubt, a rule here gates.
+
+version = 1
+
+# The read verbs of D36, for every default-gated program.
+read_verbs = [
+    "get", "describe", "logs", "list", "ls", "view", "status", "diff", "top",
+    "version", "show", "search", "checks", "history", "explain",
+]
+
+# Options that may stand before the verb of any default-gated program and
+# take no value. Any other option before the verb that is not listed for the
+# program makes the verb impossible to place, and the call is gated.
+global_flags = ["--help", "-h", "--version"]
+
+# --- rules by default ------------------------------------------------------
+#
+# groups:        words that are not a verb themselves; the verb is the first
+#                word after them (`gh pr view`: group `pr`, verb `view`). A
+#                word that is not a listed group is taken as the verb, so an
+#                unknown group is gated.
+# value_options: options that take their value as the next word and may stand
+#                before the verb (`kubectl -n x get pods`).
+# flag_options:  options without a value that may stand before the verb.
+# skip_words:    words before the verb that can be anything (`aws <service>`).
+# read_verbs:    read verbs of this program only.
+# read_prefixes: a verb that starts with one of these is a read verb.
+
+[programs.kubectl]
+groups = ["rollout", "config", "auth", "certificate"]
+value_options = [
+    "-n", "--namespace", "--context", "--kubeconfig", "-s", "--server",
+    "--cluster", "--user", "--as", "--as-group", "--token", "--request-timeout",
+]
+# kubectl's own reads (a voice turn asking "any errors in my cluster?" first
+# lists the contexts, and that was sent to the desk).
+read_verbs = [
+    "get-contexts", "current-context", "get-clusters", "get-users",
+    "api-resources", "api-versions", "events", "can-i", "whoami",
+]
+
+[programs.helm]
+groups = ["plugin", "repo", "dependency", "registry"]
+value_options = ["-n", "--namespace", "--kube-context", "--kubeconfig"]
+
+[programs.argocd]
+groups = ["app", "proj", "repo", "cluster", "account", "appset"]
+value_options = ["--server", "--auth-token", "--config", "--argocd-context"]
+flag_options = ["--grpc-web", "--insecure", "--plaintext"]
+
+[programs.bao]
+groups = [
+    "kv", "secrets", "auth", "policy", "token", "lease", "audit", "namespace",
+    "plugin", "pki", "transit", "operator", "raft",
+]
+read_verbs = ["read"]
+
+[programs.vault]
+groups = [
+    "kv", "secrets", "auth", "policy", "token", "lease", "audit", "namespace",
+    "plugin", "pki", "transit", "operator", "raft",
+]
+read_verbs = ["read"]
+
+[programs.gh]
+groups = [
+    "pr", "issue", "repo", "release", "run", "workflow", "secret", "variable",
+    "gist", "auth", "label", "cache", "ruleset", "org", "project", "codespace",
+    "extension", "alias", "config", "gpg-key", "ssh-key", "deploy-key",
+]
+value_options = ["-R", "--repo"]
+
+[programs.docker]
+groups = [
+    "container", "image", "volume", "network", "compose", "system", "context",
+    "buildx", "builder", "manifest", "plugin", "secret", "service", "stack",
+    "swarm", "node", "config",
+]
+value_options = ["-H", "--host", "-c", "--context", "--config", "-l", "--log-level"]
+
+[programs.terraform]
+groups = ["state", "workspace", "providers"]
+
+[programs.tofu]
+groups = ["state", "workspace", "providers"]
+
+[programs.aws]
+skip_words = 1
+read_prefixes = ["describe-", "list-", "get-"]
+value_options = ["--region", "--profile", "--output", "--endpoint-url", "--query"]
+flag_options = ["--no-cli-pager", "--debug", "--no-paginate"]
+
+[programs.gcloud]
+groups = [
+    "compute", "instances", "disks", "networks", "firewall-rules", "container",
+    "clusters", "node-pools", "projects", "config", "configurations", "iam",
+    "service-accounts", "roles", "storage", "buckets", "objects", "run",
+    "services", "functions", "sql", "databases", "dns", "managed-zones",
+    "record-sets", "secrets", "versions", "auth", "artifacts", "repositories",
+    "builds", "logging", "pubsub", "topics", "subscriptions", "kms", "keys",
+    "keyrings", "app", "deployments", "organizations", "billing", "accounts",
+]
+value_options = ["--project", "--format", "--account", "--configuration", "--zone", "--region"]
+flag_options = ["--quiet", "-q"]
+
+[programs.az]
+groups = [
+    "vm", "group", "account", "storage", "container", "blob", "network",
+    "vnet", "nsg", "aks", "acr", "repository", "keyvault", "secret", "key",
+    "webapp", "functionapp", "sql", "server", "db", "ad", "sp", "user", "role",
+    "assignment", "definition", "resource", "deployment", "disk", "monitor",
+    "dns", "zone", "record-set", "appservice", "plan", "cosmosdb",
+]
+value_options = ["--subscription", "--output", "-o", "--query"]
+
+[programs.doctl]
+groups = [
+    "compute", "droplet", "volume", "firewall", "load-balancer", "domain",
+    "records", "kubernetes", "cluster", "node-pool", "registry", "repository",
+    "databases", "apps", "account", "projects", "vpcs", "ssh-key", "image",
+    "snapshot", "balance", "billing-history", "invoice", "auth",
+]
+value_options = ["--access-token", "-t", "--context", "--output", "-o", "--config", "-c"]
+
+[programs.hcloud]
+groups = [
+    "server", "volume", "network", "firewall", "load-balancer", "floating-ip",
+    "primary-ip", "image", "ssh-key", "certificate", "context", "datacenter",
+    "location", "server-type", "placement-group", "iso",
+]
+value_options = ["--config", "--context"]
+
+[programs.pulumi]
+groups = ["stack", "config", "plugin", "policy", "org", "state"]
+value_options = ["-C", "--cwd", "-s", "--stack"]
+
+# --- gh: the work that never needs a yes (D36) -----------------------------
+#
+# These subcommands are not gated when the call names, explicitly, a
+# repository whose owner is one of the configured `own_owners`. Without an
+# explicit repository, or on anyone else's, they are gated like every other
+# gh subcommand. Nothing is taken from the checkout here.
+[gh]
+own_repo_paths = [
+    ["pr", "create"], ["pr", "checkout"], ["pr", "comment"],
+    ["issue", "create"], ["issue", "comment"], ["repo", "clone"],
+]
+# The repository of these is their first argument, not --repo.
+positional_repo_paths = [["repo", "clone"]]
+repo_options = ["-R", "--repo"]
+# On a repository that is not the user's own these are class `message`.
+foreign_message_paths = [
+    ["pr", "create"], ["pr", "comment"], ["pr", "review"],
+    ["issue", "create"], ["issue", "comment"],
+]
+# `gh api` is gated with a method other than GET, or with one of these.
+api_method_options = ["-X", "--method"]
+api_field_options = ["-f", "-F", "--field", "--raw-field", "--input"]
+# Any group of short options that holds one of these letters gates `gh api`.
+api_short_letters = ["f", "F", "X"]
+
+# --- HTTP clients: class `api` (D36) ---------------------------------------
+#
+# short_letters: a single-dash word holding one of these letters gates (a
+#                grouped `-sd`, an attached `-XPOST`).
+# long_options:  a long option that is one of these, starts with one, or is
+#                an abbreviation of one, gates.
+# httpie:        `http METHOD url item…`: a method other than GET or HEAD, or
+#                a data item, gates.
+[http.curl]
+short_letters = ["d", "F", "T", "X"]
+long_options = ["--data", "--form", "--upload-file", "--json", "--request"]
+
+[http.wget]
+long_options = ["--post-data", "--post-file", "--body-data", "--body-file", "--method"]
+
+[http.http]
+httpie = true
+long_options = ["--raw", "--form", "--multipart"]
+
+[http.https]
+httpie = true
+long_options = ["--raw", "--form", "--multipart"]
+
+# --- git push ---------------------------------------------------------------
+#
+# The option grammar itself is in agent_host/classify.py (it is git's, not a
+# list of spellings). Data: which branch names count as a default branch when
+# the remote's own HEAD cannot be read (it is read too, when it can be).
+[git]
+default_branches = ["main", "master"]
+
+# --- copies to or from another host: class `outward` ------------------------
+[transfer]
+programs = ["scp", "rsync", "sftp"]
+# Every argument of these is a host.
+host_only = ["sftp"]
+
+# --- running as another user: class `root`, in any position ------------------
+[root]
+programs = ["sudo", "su", "pkexec", "doas"]
+
+# --- the shell ----------------------------------------------------------------
+[shell]
+# Unwrapped: the string after -c is judged by the same rules. A shell
+# without -c and without a script file reads its commands from stdin: gated.
+shells = ["bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"]
+# Programs that run their arguments, or other commands, in a way the gate
+# does not follow. A call of one of them is refused with "run it alone".
+indirect = [
+    "eval", "xargs", "source", ".", "trap", "coproc", "watch", "parallel",
+    "flock", "script", "strace", "ltrace", "chroot", "nsenter", "unshare",
+    "systemd-run", "busybox", "runuser", "setpriv", "chrt", "taskset",
+]
+# A command that is not one plain command (a pipe, a separator, a
+# substitution, a redirection to a file) runs only when every piece of it
+# is one of these: programs that read and print and never run another
+# program. Their arguments are data. Everything else is refused with "run
+# it alone": what the gate cannot fully understand does not get through.
+# `echo` and `printf` are not on it: they are how text is fed to something.
+harmless = [
+    "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "sort",
+    "uniq", "jq", "cut", "tr", "column", "nl", "tac", "rev", "diff", "cmp",
+    "stat", "file", "du", "df", "basename", "dirname", "realpath", "readlink",
+    "pwd", "cd", "true", "false", "test", "[", "date",
+    "which", "type", "id", "whoami", "uname", "sleep", "uptime", "free", "ps",
+    "nproc", "hostname",
+]
+# Three everyday forms of a compound command are read in full instead of
+# refused (agent_host/classify.py, `_everyday_form`): `cd <dir> && <one
+# command>`, `<one command> | <filter> | ...`, and a here-document into one
+# command. The filters of the second form: they read stdin and print. `tee`
+# may only write under the checkout or a temp root.
+filters = ["head", "tail", "grep", "rg", "sort", "uniq", "wc", "cut", "tr", "jq", "cat", "tee"]
+# Programs that run what they read from stdin, besides the shells and the
+# interpreters: a here-document into one of them is not "text for a program".
+stdin_runners = [
+    "ssh", "at", "batch", "crontab", "psql", "mysql", "sqlite3", "nc", "ncat",
+    "telnet", "ftp", "kubectl", "docker", "podman", "make", "sed", "awk", "gawk",
+]
+# `git <subcommand>` counts as harmless for these subcommands, with nothing
+# between the two words.
+harmless_git = ["status", "log", "diff", "show", "rev-parse", "ls-files", "describe", "blame"]
+
+# --- interpreters with inline code ---------------------------------------------
+# `python -c`, `node -e`, `perl -e`, a program read from stdin: code the gate
+# cannot read. Gated, and never nameable: it needs the desk. A script file
+# is not followed (D40) and runs.
+[interpreters]
+# Program names; `*` matches the rest of a name (python3.12).
+programs = [
+    "python*", "pypy*", "node", "nodejs", "deno", "bun", "perl", "ruby", "php",
+    "osascript", "lua*", "Rscript", "tclsh", "groovy",
+]
+# A short option group holding one of these letters, anywhere in the call.
+inline_letters = ["c", "e", "E", "p", "r"]
+# A word or long option that says "the code follows", anywhere in the call.
+inline_words = ["--eval", "--print", "--execute", "eval", "-"]
+
+# --- rm -r outside the worktree and the temp directory: class `delete` ------
+[rm]
+temp_roots = ["/tmp", "/var/tmp"]
+
+# --- connector tools ----------------------------------------------------------
+# Any mcp__* tool whose name contains one of these words is gated.
+[mcp]
+words = [
+    "send", "reply", "forward", "delete", "trash", "publish", "share", "post",
+    "message", "comment", "upload", "invite",
+    # Connectors that change a forge or a tracker (review of #43):
+    # mcp__github__merge_pull_request, push_files, create_or_update_file ...
+    "merge", "push", "create", "update", "write", "fork", "transfer",
+    "approve", "dismiss", "close", "reopen", "assign",
+]
+# The class of such a tool, by the first of these words in its name; a
+# gated connector tool with none of them is class `tool`. A class is what
+# `confirm_skip` and the `class` of a confirmation go by.
+delete = ["delete", "trash", "dismiss", "close"]
+merge = ["merge"]
+create = ["create", "fork"]
+message = ["send", "reply", "forward", "post", "message", "comment", "invite"]
+
+# --- built-in tools --------------------------------------------------------------
+# A tool that is neither `Bash`, a connector tool (`mcp__*`, above), nor on
+# one of these two lists is gated: a tool nobody decided about does not run
+# by voice. Such a call has no sentence, so it needs the desk.
+[tools]
+# Read, search, plan, and start or stop the agent's own work. A subagent's
+# tool calls come through the gate themselves.
+ungated = [
+    "Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch",
+    "TodoWrite", "TodoRead", "Task", "Agent", "TaskOutput", "TaskStop",
+    "BashOutput", "KillShell", "KillBash", "ExitPlanMode", "EnterPlanMode",
+    "AskUserQuestion", "ToolSearch", "ListMcpResourcesTool",
+    "ReadMcpResourceTool", "EnterWorktree", "ExitWorktree",
+]
+# Write a file: not gated, unless the file is one of Jarvis's own rules.
+write = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+# --- the class `self`: Jarvis's own rules (D36). Always desk-only. -------------
+#
+# The paths themselves come from the configuration (the gate, the wrapper,
+# their rules and settings, Claude Code's user and managed settings, every
+# file a configured hook runs) and from the two lists below.
+[self]
+# Relative to the home directory of the agent's user.
+home_paths = [
+    ".ssh/authorized_keys", ".ssh/authorized_keys2", ".claude.json",
+    ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
+    ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".config/fish/config.fish",
+]
+# Relative to Claude Code's user directory (where the user settings are).
+claude_dir_paths = ["CLAUDE.md", "agents", "skills", "plugins", "hooks", "settings.local.json"]
+# Directories that are protected as a place: a write INTO one of them (a
+# copy, an unpack, a download, whatever the program) is a write to Jarvis's
+# own rules, and so is a command that is not a plain read run from inside
+# one. Relative to the home directory; "" is the home directory itself. The
+# Claude Code user directory and every checkout's `.claude` are added.
+home_dirs = ["", ".ssh"]
+# A shell command that names a protected path is a write unless every
+# program in it is one of these and nothing is redirected.
+read_programs = [
+    "cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg",
+    "ls", "stat", "wc", "diff", "cmp", "file", "jq", "bat", "test", "[",
+    "md5sum", "sha256sum", "readlink", "realpath", "basename", "dirname",
+    "echo", "cd", "pwd", "du",
+]
+# These act on a whole tree: naming a directory that holds a protected path
+# is a write to it.
+tree_programs = ["rm", "mv", "find", "chmod", "chown", "chgrp"]
+
+# --- rules that name an action (D36's table) ---------------------------------
+#
+# class:    one of merge, deploy, delete, force, api, account, message,
+#           create, outward, root.
+# programs: the programs the rule is for.
+# paths:    the call's words up to and including its verb start with one of
+#           these (`["repo", "delete"]`).
+# verbs:    or the verb itself is one of these, behind whatever groups.
+# Neither paths nor verbs: every call of the program is the action. For a
+# program that is not under [programs], a matching action is what gates it.
+#
+# Host-local rules only (the repository's own actions have their sentences in
+# agent_host/naming.py):
+# sentence: the fixed read-back of the command, with one {} per argument
+#           behind the path ("Start a build of {}.").
+# kinds:    the kind of each such argument, checked for its strict shape:
+#           number, label, name, host, ref or mail. A call with an option, or
+#           with more or fewer arguments, has no sentence and needs the desk.
+#
+# And for a connector tool that sends to people ([[tool_actions]], host-local
+# only): `tool` (a name, `*` allowed), `class`, and `recipients`, the input
+# fields that hold the addresses, in the order to, cc, bcc. The read-back
+# names every address in them, or the call is not nameable.
+
+[[actions]]
+class = "merge"
+programs = ["gh"]
+paths = [["pr", "merge"]]
+
+[[actions]]
+class = "deploy"
+programs = ["kubectl"]
+paths = [["apply"], ["patch"], ["scale"], ["rollout"], ["replace"], ["edit"]]
+
+[[actions]]
+class = "deploy"
+programs = ["helm"]
+paths = [["install"], ["upgrade"], ["rollback"]]
+
+[[actions]]
+class = "deploy"
+programs = ["argocd"]
+paths = [["app", "sync"]]
+
+[[actions]]
+class = "deploy"
+programs = ["ansible-playbook", "ansible"]
+
+[[actions]]
+class = "deploy"
+programs = ["gh"]
+paths = [["workflow", "run"], ["release", "create"]]
+
+[[actions]]
+class = "delete"
+programs = ["gh"]
+paths = [["repo", "delete"], ["repo", "archive"], ["release", "delete"], ["issue", "delete"]]
+
+[[actions]]
+class = "delete"
+programs = ["kubectl"]
+paths = [["delete"]]
+
+[[actions]]
+class = "delete"
+programs = ["helm"]
+paths = [["uninstall"]]
+
+[[actions]]
+class = "delete"
+programs = ["argocd"]
+paths = [["app", "delete"]]
+
+[[actions]]
+class = "delete"
+programs = ["bao", "vault"]
+paths = [["operator"]]
+verbs = ["delete", "destroy", "revoke", "disable"]
+
+[[actions]]
+class = "account"
+programs = ["gh"]
+paths = [
+    ["secret", "set"], ["secret", "delete"], ["variable", "set"], ["variable", "delete"],
+    ["ssh-key"], ["repo", "deploy-key"], ["repo", "rename"], ["repo", "edit"],
+]
+
+[[actions]]
+class = "create"
+programs = ["gh"]
+paths = [["repo", "create"], ["repo", "fork"], ["gist", "create"]]
+
+[[actions]]
+class = "message"
+programs = ["mail", "mailx", "s-nail", "sendmail", "mutt", "msmtp", "swaks"]
+
+# A gated call of one of these programs with one of these options is also in
+# the class.
+[[option_classes]]
+class = "force"
+programs = ["kubectl", "helm", "argocd"]
+options = ["--force"]

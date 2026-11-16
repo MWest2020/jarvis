@@ -29,7 +29,13 @@ enum class FailureKind {
 data class TurnFailure(val kind: FailureKind, val message: String)
 
 sealed interface TurnOutcome {
-    class Reply(val wav: ByteArray, val summary: String, val sessionId: String?) : TurnOutcome
+    /** [projectsChanged]: the bridge says a new project is ready (`X-Jarvis-Projects-Changed: 1`). */
+    class Reply(
+        val wav: ByteArray,
+        val summary: String,
+        val sessionId: String?,
+        val projectsChanged: Boolean = false,
+    ) : TurnOutcome
     data class Failed(val failure: TurnFailure) : TurnOutcome
 }
 
@@ -46,6 +52,8 @@ object TurnErrors {
             FailureKind.BAD_REQUEST,
             "Nothing answers at this address as a Jarvis bridge. Check the address in Settings.",
         )
+        // The bridge serves a fixed number of connections at once and refuses the next.
+        503 -> TurnFailure(FailureKind.BUSY, "The bridge is busy with other connections. Try again in a moment.")
         502 -> TurnFailure(FailureKind.AGENT_FAILED, "The agent turn failed on the bridge. Try again; the bridge log has the details.")
         else -> TurnFailure(FailureKind.SERVER_ERROR, "The bridge answered with an error ($status).")
     }

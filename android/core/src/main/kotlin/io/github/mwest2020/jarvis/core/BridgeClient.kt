@@ -62,6 +62,7 @@ class BridgeClient(
                 wav = audio,
                 summary = TurnErrors.decodeSummary(connection.getHeaderField("X-Jarvis-Summary")),
                 sessionId = connection.getHeaderField("X-Jarvis-Session-Id"),
+                projectsChanged = connection.getHeaderField("X-Jarvis-Projects-Changed")?.trim() == "1",
             )
         } catch (error: IOException) {
             TurnOutcome.Failed(TurnErrors.fromException(error))

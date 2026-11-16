@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-15
+last_reviewed: 2026-11-16
 ---
 # The Android app: install, set up, use
 
@@ -66,9 +66,60 @@ settings again. A release key fixes this; see "The signing key" below.
    the next start. Or type the names the bridge knows, separated by commas: then the app shows
    exactly those and never asks. A bridge older than 2026-11-15 has no list route; type the
    names for it.
-5. Save. On the main screen pick a project.
-6. Press the button. The first time, Android asks for the microphone; allow it and press
+5. **Default project (optional):** the name of the project the app selects while you have
+   not picked one yourself. Leave it empty and the app selects General (below), or nothing
+   when General is off.
+6. **Home project (for General):** the project the **General** entry talks to, `jarvis-home`
+   unless you change it. General is shown when the project list has it. Leave it empty to
+   hide General.
+7. Save. With `jarvis-home` in the list the main screen opens with General selected; pick a
+   project to talk about that one instead (see "Which project is selected" below).
+8. Press the button. The first time, Android asks for the microphone; allow it and press
    again.
+
+### General: just talk
+
+The first entry on the main screen is **General** (change
+[`jarvis-general-conversation`](../../openspec/changes/jarvis-general-conversation/design.md),
+D50). It is not a mode: it sends your turns to the home project, `jarvis-home` by default,
+whose own `CLAUDE.md` makes Jarvis a sparring partner there. It is shown only when the
+project list has the home project (from the bridge, or typed); an app that was set up
+before, with a list without it, looks exactly as before. Think out loud, discuss an
+idea; when it is worth keeping Jarvis writes it down in that repository. Say you want to
+build it and Jarvis proposes a repository: you hear the read-back ("Create the private
+repository birdsong. Say yes to go ahead."), say yes, and with the bridge in `full` mode
+the agent host makes it a project at once: Jarvis ends with "It's ready. You can switch to
+it.", the app fetches its list again by itself once the reply has played, and the new
+project is there to tap. What you had selected stays selected. When setting it up takes
+longer, Jarvis says "I'm still setting it up at the desk." and the agent host tries again
+with your next questions; tap Refresh later. With project names typed in the settings, the
+app tells the bridge so with each question (header `X-Jarvis-Projects: typed`) and Jarvis
+says "It's ready. Add it to your project list in the app." instead.
+
+The home project is shown once, as General, and not again under its own name.
+
+### Which project is selected
+
+A list of exactly one project is selected: there is nothing to choose (General, when it is
+there, is that same project). With more than one, the app never takes the first of the list
+by itself. In this order:
+
+1. **The entry you tapped last** (General included). It is remembered across restarts and
+   refreshes. If it is missing from the bridge's list for a while, it is selected again once
+   it is back.
+2. Otherwise the **Default project** from the settings, when the list has it (upper and lower
+   case do not matter).
+3. Otherwise **General**, when the list has the home project.
+4. Otherwise **none**: the main screen says "Pick a project." and the button answers "Pick a
+   project first." until you tap one.
+
+The list from the bridge is shown alphabetically, upper and lower case together.
+`GET /projects` gives names only, so there is no "most recently pushed first" yet; that needs
+a date in the bridge's answer.
+
+A version of the app from before 2026-11-16 selected the first project by itself and stored
+that as if it were your pick. That stored value is ignored: after the update, pick your
+project once.
 
 ## Using it
 
@@ -76,6 +127,12 @@ settings again. A release key fixes this; see "The signing key" below.
 - A beep confirms the recording has gone out; a soft tick every three seconds means the
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
+- The summary (and an error) can be selected: long-press it to copy a link or a command.
+- When a reply says a new project is ready (the bridge's header
+  `X-Jarvis-Projects-Changed: 1`), the app fetches the project list again by itself once the
+  reply has played or you stopped it, if the list comes from the bridge (if a refresh is
+  already running, one more follows). The selection stays where it was, and a message on
+  screen from after the reply stays too.
 - A recording stops by itself after two minutes. Leaving the app while recording discards
   the recording.
 - The screen stays on while the app is in front.
@@ -96,6 +153,7 @@ settings again. A release key fixes this; see "The signing key" below.
 | The bridge's project list could not be read | The answer to `GET /projects` was not the expected JSON | Check the address; type the names meanwhile |
 | The bridge lists no projects | The bridge has no project (with `JARVIS_PROJECTS=*`: no checkout under its root) | Check the bridge's projects |
 | The recording is too large | 413 | Ask a shorter question |
+| The bridge is busy with other connections | 503: the bridge already serves its maximum of eight connections | Wait a few seconds, try again |
 | The agent turn failed on the bridge | 502 | Try again; details are in the bridge's log |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
 
@@ -113,8 +171,16 @@ app allows plain HTTP in exactly that case:
   name looked up through that network, and only to Tailscale addresses
   (100.64.0.0/10 or fd7a:115c:a1e0::/48) that the network routes. With Tailscale off there
   is no such network and nothing is sent. An address in the right range is not enough:
-  on a hostile Wi-Fi the resolver and the gateway can both pretend;
+  on a hostile Wi-Fi the resolver and the gateway can both pretend. "Routes" means the most
+  specific matching route sends packets into the tunnel: on Android 13 and newer a range
+  that the VPN app excluded from its tunnel does not count;
 - no proxy is ever used, so a proxy configured on the phone does not see the token.
+
+The app cannot tell Tailscale from another VPN. It takes the VPN network whose own address
+is in 100.64.0.0/10 or fd7a:115c:a1e0::/48, and 100.64.0.0/10 is a shared range: another VPN
+that gives the phone such an address (for example Cloudflare WARP Zero Trust) also
+qualifies, and its DNS and its tunnel are then trusted the way Tailscale's are. Run only a
+VPN you trust with the token.
 
 The token is sent to the address you enter, on every turn. Enter the address of your own
 bridge and nothing else.
@@ -144,6 +210,11 @@ The HTTP Shortcuts guide stays valid: both use the same `POST /turn`.
 - No Google Play services, Firebase, analytics, or any library besides AndroidX and Kotlin;
   the build fails if one is added. Three permissions: internet, microphone, and network
   state (to find the Tailscale network); CI fails the build on any other.
+- Nothing another app can call. In the APK as it ships, libraries included, only two
+  components are exported: the launcher activity, and AndroidX's `ProfileInstallReceiver`,
+  which only a holder of `android.permission.DUMP` (the adb shell, not an app) can reach.
+  CI fails the build on any other exported component (`android/ci/check_exported.py`; to
+  expose one on purpose, add it to the list there with the reason).
 - No log output at all.
 
 ## The app icon
@@ -185,6 +256,10 @@ cd android
   by checksum.
 - `:app:checkSovereignDependencies` fails the build on any runtime dependency outside
   AndroidX, Kotlin and kotlinx.
+- The workflow's step "Permissions and components in the APK" reads the merged manifest out
+  of the built APK and fails on an extra permission or an extra exported component. The
+  component check has its own tests, run with the bridge's: `uv run pytest
+  tests/test_check_exported.py`.
 
 ## Test record
 

@@ -12,7 +12,10 @@ import io.github.mwest2020.jarvis.core.Built
 import io.github.mwest2020.jarvis.core.ListOutcome
 import io.github.mwest2020.jarvis.core.ListRequest
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.ProjectEntry
 import io.github.mwest2020.jarvis.core.ProjectList
+import io.github.mwest2020.jarvis.core.ProjectMenu
+import io.github.mwest2020.jarvis.core.ProjectPick
 import io.github.mwest2020.jarvis.core.ProjectSetting
 import io.github.mwest2020.jarvis.core.TalkAction
 import io.github.mwest2020.jarvis.core.TalkGesture
@@ -35,7 +38,12 @@ import java.security.ProviderException
 data class UiState(
     val phase: Phase = Phase.IDLE,
     val projects: List<String> = emptyList(),
+    /** The selected project; empty until one is picked (never the first of a longer list by itself; a list of one is selected). */
     val project: String = "",
+    /** The "Default project" setting, used when no pick is remembered. */
+    val defaultProject: String = "",
+    /** The "Home project" setting: what General talks to; blank means no General entry. */
+    val homeProject: String = "",
     val summary: String = "",
     val error: String? = null,
     val bridgeUrl: String = "",
@@ -49,6 +57,9 @@ data class UiState(
     val loaded: Boolean = false,
 ) {
     val configured: Boolean get() = bridgeUrl.isNotBlank() && hasToken && (projects.isNotEmpty() || projectsFromBridge)
+
+    /** What the picker shows: General first (for the home project), then the projects. */
+    val entries: List<ProjectEntry> get() = ProjectMenu.entries(projects, homeProject)
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -67,6 +78,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    // Main thread only. A reply said a new project is ready: fetch the list once the reply has
+    // finished playing or was stopped (D56).
+    private var refreshAfterReply = false
+    // A refresh was asked for while one was running: one more follows it.
+    private var refreshAgain = false
+    // The message the last failed list fetch put on screen. A good fetch clears only that one,
+    // never an error that came after it (a turn's, a playback's).
+    private var listError: String? = null
+
     init {
         // App start: read the settings, then ask the bridge for its projects if that is the setting.
         viewModelScope.launch {
@@ -80,13 +100,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val stored = withContext(Dispatchers.IO) {
             val setting = settings.projectSetting
             val projects = when (setting) {
-                ProjectSetting.FromBridge -> settings.fetchedProjects
+                ProjectSetting.FromBridge -> ProjectPick.order(settings.fetchedProjects)
                 is ProjectSetting.Named -> setting.names
             }
+            val default = settings.defaultProject
+            val home = settings.homeProject
             UiState(
                 projects = projects,
                 projectsFromBridge = setting == ProjectSetting.FromBridge,
-                project = settings.project.takeIf { it in projects } ?: projects.firstOrNull().orEmpty(),
+                project = ProjectPick.choose(projects, settings.pickedProject, default, home),
+                defaultProject = default,
+                homeProject = home,
                 bridgeUrl = settings.bridgeUrl,
                 hasToken = tokens.hasToken(),
                 loaded = true,
@@ -102,7 +126,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun refreshProjects() {
         val current = state.value
-        if (!current.loaded || !current.projectsFromBridge || current.refreshing) return
+        if (!current.loaded || !current.projectsFromBridge) return
+        if (current.refreshing) {
+            refreshAgain = true
+            return
+        }
         if (current.bridgeUrl.isBlank() || !current.hasToken) return
         _state.update { it.copy(refreshing = true) }
         viewModelScope.launch {
@@ -114,24 +142,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             when (outcome) {
-                is ListOutcome.Failed -> _state.update { it.copy(refreshing = false, error = outcome.failure.message) }
+                is ListOutcome.Failed -> {
+                    listError = outcome.failure.message
+                    _state.update { it.copy(refreshing = false, error = outcome.failure.message) }
+                }
                 is ListOutcome.Projects -> {
-                    val names = outcome.names
-                    val pick = state.value.project.takeIf { it in names } ?: names.firstOrNull().orEmpty()
-                    withContext(Dispatchers.IO) {
+                    val names = ProjectPick.order(outcome.names)
+                    // The remembered pick is only read here, never overwritten: a project that
+                    // is missing from one answer is selected again when it is back.
+                    val stored = withContext(Dispatchers.IO) {
                         settings.fetchedProjects = names
-                        settings.project = pick
+                        Triple(settings.pickedProject, settings.defaultProject, settings.homeProject)
                     }
+                    val empty = if (names.isEmpty()) "The bridge lists no projects." else null
                     _state.update {
                         it.copy(
                             refreshing = false,
                             projects = names,
-                            // A turn in flight keeps its project; the pick changes only when idle.
-                            project = if (it.phase == Phase.IDLE) pick else it.project,
-                            error = if (names.isEmpty()) "The bridge lists no projects." else null,
+                            // What is selected stays selected while the list has it (D56); a turn
+                            // in flight keeps its project whatever the list says.
+                            project = if (it.phase == Phase.IDLE) {
+                                ProjectPick.keep(it.project, names, stored.first, stored.second, stored.third)
+                            } else {
+                                it.project
+                            },
+                            // Only the list's own earlier error is cleared, never a later one.
+                            error = empty ?: if (it.error != null && it.error == listError) null else it.error,
                         )
                     }
+                    listError = empty
                 }
+            }
+            if (refreshAgain) {
+                refreshAgain = false
+                refreshProjects()
             }
         }
     }
@@ -156,6 +200,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             TalkAction.STOP_PLAYBACK -> {
                 player.stop()
                 _state.update { it.copy(phase = Phase.IDLE) }
+                afterReply()
             }
             TalkAction.NONE -> Unit
         }
@@ -200,7 +245,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val outcome = withContext(Dispatchers.IO) {
                 // The token is read here, used for this one request, and not kept.
-                when (val built = TurnRequests.build(current.bridgeUrl, tokens.load(), current.project)) {
+                when (
+                    val built = TurnRequests.build(
+                        current.bridgeUrl, tokens.load(), current.project, typedList = !current.projectsFromBridge,
+                    )
+                ) {
                     is Built.Refused -> TurnOutcome.Failed(built.failure)
                     is Built.Ok -> send(built.value, Wav.encode(pcm))
                 }
@@ -210,6 +259,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 is TurnOutcome.Failed -> fail(outcome.failure.message)
                 is TurnOutcome.Reply -> {
                     _state.update { it.copy(phase = Phase.PLAYING, summary = outcome.summary, error = null) }
+                    // A new project is ready on the agent host (jarvis-general-conversation D56):
+                    // the list is fetched again once this reply has played.
+                    refreshAfterReply = outcome.projectsChanged
                     player.play(outcome.wav) { played ->
                         _state.update {
                             when {
@@ -218,10 +270,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 else -> it.copy(phase = Phase.IDLE, error = "The reply could not be played.")
                             }
                         }
+                        afterReply()
                     }
                 }
             }
         }
+    }
+
+    /** The reply has finished playing, or was stopped: the refresh it asked for, if any. */
+    private fun afterReply() {
+        if (!refreshAfterReply) return
+        refreshAfterReply = false
+        refreshProjects()
     }
 
     /**
@@ -253,7 +313,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectProject(name: String) {
         if (state.value.phase != Phase.IDLE) return
-        settings.project = name
+        settings.pickedProject = name
         _state.update { it.copy(project = name, summary = "", error = null) }
     }
 
@@ -262,7 +322,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * [newToken] keeps the stored one. The Keystore and the files are used off the main
      * thread; [onResult] runs on it.
      */
-    fun saveSettings(bridgeUrl: String, newToken: String, projectsText: String, onResult: (String?) -> Unit) {
+    fun saveSettings(
+        bridgeUrl: String,
+        newToken: String,
+        projectsText: String,
+        defaultProject: String,
+        homeProject: String,
+        onResult: (String?) -> Unit,
+    ) {
         val url = when (val checked = BridgeUrl.validate(bridgeUrl)) {
             is Built.Refused -> return onResult(checked.failure.message)
             is Built.Ok -> checked.value.toString()
@@ -278,9 +345,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (token.isNotEmpty()) tokens.save(token)
                     settings.bridgeUrl = url
                     settings.projectSetting = setting
-                    if (setting is ProjectSetting.Named && settings.project !in setting.names) {
-                        settings.project = setting.names.first()
-                    }
+                    settings.defaultProject = defaultProject
+                    settings.homeProject = homeProject
                     null
                 } catch (_: GeneralSecurityException) {
                     KEYSTORE_REFUSED

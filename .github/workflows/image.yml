@@ -21,7 +21,7 @@ jobs:
           version: "0.11.15"
       - run: uv sync --frozen
       - run: uv run --frozen pytest -q
-      - run: shellcheck deploy/sync-projects.sh
+      - run: shellcheck deploy/sync-projects.sh agent_host/install.sh
 
   image:
     needs: test
@@ -57,6 +57,10 @@ jobs:
           ro="--read-only --tmpfs /tmp --network none -e HOME=/tmp"
           # shellcheck disable=SC2086
           docker run --rm $ro jarvis-bridge:ci claude --version
+          # The ssh client of `full` mode is in the image; the bridge below runs in
+          # `readonly` mode (no JARVIS_AGENT_MODE) and never starts it.
+          # shellcheck disable=SC2086
+          docker run --rm $ro jarvis-bridge:ci ssh -V
           # shellcheck disable=SC2086
           docker run -d --name bridge $ro \
             -e JARVIS_STATE_DIR=/tmp/jarvis -e JARVIS_BIND_HOST=127.0.0.1 \

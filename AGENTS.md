@@ -10,7 +10,9 @@ the change is approved by Mark. Everything else is a GitHub issue.
 
 **Hard rules**
 - Reachable only over a private network (Tailscale by default) plus a shared token. Never public.
-- No unattended permission bypass: headless agent runs use an explicit tool allow-list.
+- No unattended permission bypass. In `readonly` mode headless agent runs use an explicit tool
+  allow-list; in `full` mode the user's own permission mode and hooks decide, and a bypass flag
+  is never passed.
 - Sovereign by default: local STT (faster-whisper) and TTS (Kokoro); hosted speech only as an
   opt-in setting. No Telegram, no agent platforms in the path. Not Piper.
 - Nothing of Mark's own setup (habitat, factory, machine names) in the plugin.
