@@ -161,6 +161,19 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
         derived, _ = _derive(stale.call, config, env)
         # The grant is the hash the bridge sent, and only when it equals the
         # hash of the pending call as it is derived now.
+        if derived is not None and derived.verdict.rule.startswith("push:") \
+                and derived.hash != req.confirm.sha256 \
+                and derived.base_hash == gatehash.call_hash(
+                    stale.call["tool"], stale.call["cwd"], stale.call["input"]):
+            # The pending call is a push and its hash is no longer the one
+            # that was read back: the address it resolves to has changed
+            # (or cannot be resolved any more). Nothing runs (D36).
+            _write_record(
+                config, turn_id=turn_id, project=req.project, session_id=None, prompt="",
+                reply_text="", duration_s=0.0, outcome="target_changed",
+                gated_actions=[{"outcome": "refused", "code": "target_changed"}],
+            )
+            return _reply(status="ok", notice="target_changed")
         if derived is None or not isinstance(derived.outcome, naming.Named) \
                 or derived.hash is None or derived.hash != req.confirm.sha256:
             return _reply(status="error", error="expired")
