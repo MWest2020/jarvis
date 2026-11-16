@@ -1170,6 +1170,9 @@ def _judge_find(args: list[str], ctx: Context) -> Verdict:
             index += 2
         elif re.fullmatch(r"-O\d*", args[index]):
             index += 1
+        elif args[index] == "--":
+            index += 1  # the end of find's own options: start paths follow
+            break
         else:
             break
     args = args[index:]

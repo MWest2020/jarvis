@@ -385,10 +385,12 @@ def test_6_find_options_before_the_start_paths(tmp_path):
     git_init(work)
     ctx = make_ctx(tmp_path, cwd=work)
     for command in ("find -L .. -delete", "find -H -L /srv -name x -delete", "find -P ../.. -delete",
-                    "find -D tree .. -delete", "find -O3 .. -delete", "find -L -O2 -D stat /srv -delete"):
+                    "find -D tree .. -delete", "find -O3 .. -delete", "find -L -O2 -D stat /srv -delete",
+                    "find -- .. -delete", "find -L -- /srv -delete"):
         verdict = bash(command, ctx)
         assert verdict.gated and verdict.classes in (("delete",), ("self",)), (command, verdict)
-    for command in ("find -L . -name '*.pyc' -delete", "find -O2 . -type f", "find -H . -delete"):
+    for command in ("find -L . -name '*.pyc' -delete", "find -O2 . -type f", "find -H . -delete",
+                    "find -- . -delete"):
         assert not bash(command, ctx).gated, command
     assert bash("find -L . -exec rm {} +", ctx).run_alone
 
