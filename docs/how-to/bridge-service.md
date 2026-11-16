@@ -182,7 +182,10 @@ the id means one did): it is treated as a turn that ran, so never answered read-
 **Confirmation.** When the agent on the agent host reaches a gated action (a merge, a
 deploy, a delete: design D36), the reply is a read-back and nothing else, with the header
 `X-Jarvis-Needs-Confirmation: 1`. The bridge keeps its id and hash for that project, in
-memory only, for 60 seconds (less when the agent host says it keeps the call for less).
+memory only, for 60 seconds from when the reply arrived (less when the agent host says it
+keeps the call for less). It keeps them only once the read-back has been synthesised and
+written to the phone: if text-to-speech or the write fails, nobody heard it, so the bridge
+sends answer `no` to the agent host and keeps nothing.
 The next utterance for that project decides, from the transcript of the driver's own audio
 and from nothing else:
 
@@ -205,8 +208,11 @@ nothing waiting is an ordinary utterance and releases nothing. A yes that passes
 bridge's 60 seconds but is too late on the agent host (`expired`) is answered "That took
 too long. Ask again." A "yes" in the agent's reply, a file or an issue is never looked at.
 The read-back is spoken as the agent host built it: it does not go through the filter for
-free text below and is never replaced by another sentence. One that is empty, has a line
-break or a control character, or is longer than 500 characters cannot be spoken: the bridge
+free text below and is never replaced by another sentence, and nothing is taken out of it
+or tidied. One that would have to be changed to be spoken cannot be spoken: empty, longer
+than 500 characters, white space at either end, anything that splits into lines, any
+control, format, private-use or unassigned character, or any separator other than the
+plain space (no line or paragraph separator, no no-break space). The bridge
 then cancels the call on the agent host (answer `no`), keeps nothing and says "That one
 needs the desk." Detected speech is measured with the voice activity detector inside
 faster-whisper (a file in the package, nothing is downloaded); if it cannot be measured,
@@ -224,13 +230,14 @@ most 64 KB with exactly `v`, `project`, `prompt`, `confirm`; `confirm` is `null`
 `{"id","sha256","answer"}`, and with a `confirm` the prompt is the empty string. The reply
 is one JSON object of at most 64 KB with exactly `v`, `status`, `error`, `turn`, `spoken`,
 `pending`, `readback`, `confirm`, `notice`. The bridge refuses a reply with a missing,
-extra or duplicate field or a value of the wrong type or shape, and then reports the turn
-as failed without running it again. `spoken` is the agent's marker line and goes through
+extra or duplicate field, a value of the wrong type or shape, or a `spoken` that holds half
+a surrogate pair, and then reports the turn as failed without running it again. `spoken` is the agent's marker line and goes through
 the same summary filter as a read-only reply; the full reply never leaves the agent host.
 
 | From the agent host | The phone hears |
 |---|---|
 | `busy` | "The agent host is busy. Try again in a moment." |
+| `busy` or `low_memory` in answer to a yes | "The agent host is busy. Say yes again in a moment." The read-back stays pending with the same id and the same deadline, and the reply has `X-Jarvis-Needs-Confirmation: 1` again. |
 | `low_memory` | "The agent host is busy: it is short of memory. Try again later." |
 | `timeout` | "The agent took too long on the agent host and was stopped. I did not run it again." |
 | (the bridge stopped waiting) | "It's still running at the desk. Ask me for the result in a bit." |
@@ -242,7 +249,7 @@ the same summary filter as a read-only reply; the full reply never leaves the ag
 | notice `settings_changed` | "The project settings changed. That needs the desk." |
 | notice `new_session` | "I started a new session for this project." |
 | notice `target_changed` | "The push target changed. That one needs the desk." |
-| notice `out_of_budget` (with `agent_failed`: the usage limit shared with the coding session) | "The agent is out of budget for now." |
+| notice `out_of_budget` (with `agent_failed`: the usage limit shared with the coding session) | "The agent is out of budget for now." After a yes followed by "I do not know whether it ran. Check at the desk." |
 
 A notice's sentence comes first, followed by the agent's summary when there is one that
 may be spoken. All of these are ordinary `200` replies with audio: the driver cannot read a
