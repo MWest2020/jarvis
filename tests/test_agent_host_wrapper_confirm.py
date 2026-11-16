@@ -556,6 +556,57 @@ def test_a_request_that_starts_no_turn_clears_it_too(host, monkeypatch):
     assert host.answer(asked)["error"] == "expired"
 
 
+def test_a_yes_that_meets_a_busy_host_leaves_the_pending_call_as_it_is(host, monkeypatch):
+    """The contract with the bridge: `busy` and `low_memory` answer a yes
+    before the pending call is touched, so the bridge can ask again."""
+    from agent_host.turnlock import acquire_turn_lock
+    host.agent(monkeypatch, [MERGE])
+    asked = host.ask()
+    before = host.pending_file().read_text()
+
+    started = _no_turn(host, monkeypatch)
+    with acquire_turn_lock(host.config.lock_path):
+        reply = host.answer(asked)
+    assert reply["error"] == "busy" and reply["turn"] is None
+    assert host.pending_file().read_text() == before        # same id, same expiry
+
+    monkeypatch.setattr(wrapper, "available_memory_mb", lambda: 1.0)
+    reply = host.answer(asked)
+    assert reply["error"] == "low_memory" and reply["turn"] is None
+    assert host.pending_file().read_text() == before
+    assert not started and host.notified() == []
+
+    # Said again when the host is free: the same yes still releases the call.
+    monkeypatch.setattr(wrapper, "available_memory_mb", lambda: 10_000.0)
+    host.agent(monkeypatch, [MERGE])
+    reply = host.answer(asked)
+    assert reply["status"] == "ok" and host.popens[-1].decisions[0].allow
+    assert len(host.notified()) == 1
+
+
+def test_a_busy_host_does_not_keep_an_expired_or_foreign_yes_alive(host, monkeypatch):
+    from agent_host.turnlock import acquire_turn_lock
+    host.agent(monkeypatch, [MERGE])
+    asked = host.ask()
+    stored = json.loads(host.pending_file().read_text())
+    stored["issued_at"] -= 61
+    host.pending_file().write_text(json.dumps(stored))
+    with acquire_turn_lock(host.config.lock_path):
+        assert host.answer(asked)["error"] == "busy"
+    started = _no_turn(host, monkeypatch)
+    assert host.answer(asked)["error"] == "expired"          # busy did not reset the clock
+    assert not started
+
+
+def test_a_no_is_never_held_up_by_a_busy_host(host, monkeypatch):
+    from agent_host.turnlock import acquire_turn_lock
+    host.agent(monkeypatch, [MERGE])
+    asked = host.ask()
+    with acquire_turn_lock(host.config.lock_path):
+        assert host.answer(asked, answer="no")["status"] == "ok"
+    assert not host.pending_file().exists()
+
+
 def test_a_request_for_another_project_leaves_it_alone(host, monkeypatch):
     other = host.tmp / "projects" / "other"
     git_init(other)

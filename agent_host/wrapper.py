@@ -25,7 +25,10 @@ One request is one of three things:
 
 Every request for a project clears its pending call first, whatever the
 request is: a pending call is single use and never survives the next
-request.
+request. One exception, which is part of the contract with the bridge: a
+yes that finds the host `busy` or `low_memory` is answered with that code
+before the pending call is touched. Nothing ran, the call stays pending
+with the same id and the same expiry, and the bridge asks for the yes again.
 
 The checkout settings rule (D36) holds around every turn, the confirming
 one included: refused with `unsafe_settings` before it, and when a key
@@ -127,8 +130,25 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
     except projects.ProjectError:
         return _reply(status="error", error="no_checkout")
 
-    # Every request for the project clears its pending call, whatever the
-    # request is (D36, step 4): read once here, gone afterwards.
+    if req.confirm is not None and req.confirm.answer == "yes":
+        # A yes that meets a busy or short-of-memory host is answered with
+        # that code BEFORE the pending call is touched: nothing ran, the
+        # pending call stays (same id, same expiry), and the bridge asks for
+        # the yes again. So the lock comes first here, and only here.
+        try:
+            with acquire_turn_lock(config.lock_path):
+                if available_memory_mb() < config.memory_floor_mb:
+                    return _reply(status="error", error="low_memory")
+                return _handle(req, working_dir, config, locked=True)
+        except Busy:
+            return _reply(status="error", error="busy")
+    return _handle(req, working_dir, config, locked=False)
+
+
+def _handle(req: request_mod.Request, working_dir: Path, config: AgentHostConfig, *,
+            locked: bool) -> dict:
+    # Every other request for the project clears its pending call, whatever
+    # the request is (D36, step 4): read once here, gone afterwards.
     stale = pending.take_pending(config.pending_dir, req.project)
 
     turn_id = str(uuid.uuid4())
@@ -182,6 +202,9 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
         env["JARVIS_GRANT"] = confirmed.grant
         env["JARVIS_GRANT_BASE"] = confirmed.base_hash
 
+    if locked:
+        return _run_turn(req.project, prompt, working_dir, config, turn_id=turn_id,
+                         env=env, confirmed=confirmed)
     try:
         with acquire_turn_lock(config.lock_path):
             if available_memory_mb() < config.memory_floor_mb:

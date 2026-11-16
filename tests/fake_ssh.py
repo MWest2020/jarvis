@@ -37,8 +37,11 @@ and `agent_failed` and none on the errors that come before a turn. Those parts
 match the wrapper that exists (phase 1a), and tests/test_contract_with_wrapper.py
 holds the bridge against that wrapper's own code.
 
-`"gate": true` is different: it SIMULATES the gate of phase 1b, which is not built
-yet. A pending call per project in `state.json`, 60 seconds, single use, cleared by
+`"gate": true` is different: it SIMULATES the gate of phase 1b. The real gate now
+exists (agent_host/gate, agent_host/decision.py), and
+tests/test_contract_with_wrapper.py drives the real wrapper's read-back and confirm
+path against the bridge's own parser; this fake stays for the tests that need a
+whole `ssh` process and no `claude`. A pending call per project in `state.json`, 60 seconds, single use, cleared by
 the next request for that project; `pending`, `readback` and `confirm` in the
 reply; a yes that releases it. That is the contract of D33 and D36 as written, not
 the behaviour of any wrapper that exists: the real phase 1a answers every `confirm`
