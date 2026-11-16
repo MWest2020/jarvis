@@ -10,18 +10,18 @@
   whether it can ever be read back;
 - must it be run alone (a gated command inside a compound `Bash` string).
 
-Phase 1b1 stops there. The gate (`agent_host.decision`) denies every gated
-call; nothing is pending and nothing is confirmable until 1b2 adds naming,
-the hash and the grant on top of this same function. The wrapper will call
-this module too, so that what is read back and what is released can never
-be judged by two sets of rules.
+Whether a gated call can be read back, and with which sentence, is
+`agent_host.naming`'s; what the gate then answers is `agent_host.decision`'s.
+The gate and the wrapper both come through this one function, so what is
+read back and what is released can never be judged by two sets of rules.
 
 The class `self` is Jarvis's own rules: the gate, the wrapper, their rules,
 settings and configuration, `authorized_keys`, Claude Code's user and
 managed settings, the user's instructions, agents, skills and plugins, the
 shell start-up files, every file a configured hook runs, and any checkout's
 `.claude/settings*.json`. A write to one of them, by `Edit`, `Write` or a
-shell command, is always desk-only and never pending.
+shell command, is always desk-only and never pending. The one exception is
+the fixed command `sudo <confirm program> on|off [class]`, matched exactly.
 
 Looking at the surroundings is allowed here and only here: *that* a bare
 `git push` is gated depends on where it would land. Naming a target from
