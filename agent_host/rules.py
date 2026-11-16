@@ -48,6 +48,10 @@ class Action:
     programs: frozenset[str]
     paths: tuple[tuple[str, ...], ...]
     verbs: frozenset[str]
+    # A host-local command with a read-back of its own (1b2): a fixed
+    # sentence with one `{}` per argument, and the kind of each argument.
+    sentence: str | None = None
+    kinds: tuple[str, ...] = ()
 
     def matches(self, program: str, subpath: tuple[str, ...], verb: str | None = None) -> bool:
         """`subpath` is the call's words up to and including its verb;
@@ -68,6 +72,19 @@ class OptionClass:
     cls: str
     programs: frozenset[str]
     options: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ToolAction:
+    """A connector tool that sends to people, named by a host-local rule:
+    the read-back names every address in the listed input fields (to, cc,
+    bcc, in that order)."""
+    tool: str  # a tool name, or a pattern with `*`
+    cls: str
+    recipients: tuple[str, ...]
+
+
+TARGET_KINDS = frozenset({"number", "label", "name", "host", "ref", "mail"})
 
 
 @dataclass(frozen=True)
@@ -108,6 +125,7 @@ class Rules:
     self_claude_dir_paths: tuple[str, ...]
     self_read_programs: frozenset[str]
     self_tree_programs: frozenset[str]
+    tool_actions: tuple[ToolAction, ...] = ()
 
     @property
     def action_programs(self) -> frozenset[str]:
@@ -214,7 +232,23 @@ def _action(index: int, data: object) -> Action:
     where = f"actions[{index}]."
     if not isinstance(data, dict):
         raise RulesError(f"actions[{index}] must be a table")
-    _known_keys(data, {"class", "programs", "paths", "verbs"}, f"actions[{index}]")
+    _known_keys(data, {"class", "programs", "paths", "verbs", "sentence", "kinds"},
+                f"actions[{index}]")
+    sentence = data.get("sentence")
+    kinds = _strings(data, "kinds", where)
+    if sentence is not None:
+        if not isinstance(sentence, str) or not sentence.strip():
+            raise RulesError(f"{where}sentence must be a non-empty string")
+        if set(kinds) - TARGET_KINDS:
+            raise RulesError(f"{where}kinds must be of {sorted(TARGET_KINDS)}")
+        try:
+            sentence.format(*["x"] * len(kinds))
+        except (IndexError, KeyError, ValueError) as exc:
+            raise RulesError(f"{where}sentence does not fit its kinds: {exc}") from exc
+        if sentence.count("{}") != len(kinds):
+            raise RulesError(f"{where}sentence needs exactly one {{}} per kind")
+    elif kinds:
+        raise RulesError(f"{where}kinds without a sentence")
     cls = data.get("class")
     if cls not in ACTION_CLASSES:
         raise RulesError(f"{where}class must be one of {sorted(ACTION_CLASSES)}")
@@ -226,7 +260,26 @@ def _action(index: int, data: object) -> Action:
         programs=frozenset(programs),
         paths=_paths(data, "paths", where),
         verbs=frozenset(_strings(data, "verbs", where)),
+        sentence=sentence,
+        kinds=kinds,
     )
+
+
+def _tool_action(index: int, data: object) -> ToolAction:
+    where = f"tool_actions[{index}]."
+    if not isinstance(data, dict):
+        raise RulesError(f"tool_actions[{index}] must be a table")
+    _known_keys(data, {"tool", "class", "recipients"}, f"tool_actions[{index}]")
+    tool = data.get("tool")
+    if not isinstance(tool, str) or not tool.startswith("mcp__"):
+        raise RulesError(f"{where}tool must be the name of a connector tool (mcp__...)")
+    cls = data.get("class")
+    if cls not in ACTION_CLASSES:
+        raise RulesError(f"{where}class must be one of {sorted(ACTION_CLASSES)}")
+    recipients = _strings(data, "recipients", where)
+    if not 1 <= len(recipients) <= 3:
+        raise RulesError(f"{where}recipients must name one to three input fields (to, cc, bcc)")
+    return ToolAction(tool=tool, cls=cls, recipients=recipients)
 
 
 def _option_class(index: int, data: object) -> OptionClass:
@@ -267,6 +320,7 @@ def rules_from_dict(data: dict) -> Rules:
     _known_keys(data, {
         "version", "read_verbs", "global_flags", "programs", "gh", "http", "git",
         "transfer", "root", "shell", "rm", "mcp", "self", "actions", "option_classes",
+        "tool_actions",
     }, "rules")
     if data.get("version") != 1:
         raise RulesError("rules: version must be 1")
@@ -290,6 +344,9 @@ def rules_from_dict(data: dict) -> Rules:
     option_classes_raw = data.get("option_classes", [])
     if not isinstance(option_classes_raw, list):
         raise RulesError("option_classes must be an array of tables")
+    tool_actions_raw = data.get("tool_actions", [])
+    if not isinstance(tool_actions_raw, list):
+        raise RulesError("tool_actions must be an array of tables")
 
     gh = _table(data, "gh", "")
     _known_keys(gh, {"own_repo_paths", "positional_repo_paths", "repo_options",
@@ -344,6 +401,7 @@ def rules_from_dict(data: dict) -> Rules:
         self_claude_dir_paths=_strings(self_, "claude_dir_paths", "self."),
         self_read_programs=frozenset(_strings(self_, "read_programs", "self.")),
         self_tree_programs=frozenset(_strings(self_, "tree_programs", "self.")),
+        tool_actions=tuple(_tool_action(i, raw) for i, raw in enumerate(tool_actions_raw)),
     )
 
 

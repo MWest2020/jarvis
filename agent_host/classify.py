@@ -41,7 +41,7 @@ from typing import Callable
 
 from agent_host import shell
 from agent_host.checkout_settings import git_top_level
-from agent_host.config import AgentHostConfig
+from agent_host.config import CONFIRM_CLASSES, AgentHostConfig
 from agent_host.rules import Program, Rules
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
@@ -72,6 +72,9 @@ _GIT_REDIRECTING = ("-C", "-c", "--git-dir", "--work-tree", "--config-env", "--n
 _PUSH_VALUE_OPTIONS = ("--repo", "--receive-pack", "--exec", "--push-option")
 
 
+RULE_CONFIRM_SWITCH = "self:confirm-switch"
+
+
 @dataclass(frozen=True)
 class Verdict:
     gated: bool = False
@@ -84,7 +87,9 @@ class Verdict:
 
     @property
     def desk_only(self) -> bool:
-        return "self" in self.classes
+        """The class `self` is never confirmable by voice, with one
+        exception: the fixed confirmation switch (D36)."""
+        return "self" in self.classes and self.rule != RULE_CONFIRM_SWITCH
 
 
 UNGATED = Verdict()
@@ -193,6 +198,7 @@ def protected_paths(
         config.prompt_path,
         config.user_settings_path,
         config.managed_settings_path,
+        config.confirm_program,
     }
     if config.second_prompt_path is not None:
         paths.add(config.second_prompt_path)
@@ -225,6 +231,8 @@ class Context:
     protected: Protected
     temp_roots: tuple[str, ...]
     git: GitRunner = field(default=run_git)
+    # The root-owned program that switches confirmation (D36).
+    confirm_program: str = ""
 
 
 def context_for(
@@ -240,6 +248,7 @@ def context_for(
         protected=protected_paths(config, rules, home=home, lib_dir=lib_dir),
         temp_roots=tuple(os.path.realpath(root) for root in roots if root),
         git=git,
+        confirm_program=str(config.confirm_program),
     )
 
 
@@ -281,6 +290,10 @@ def _resolve(path: str, ctx: Context) -> str:
 
 def _classify_bash(command: str, ctx: Context) -> Verdict:
     rules = ctx.rules
+    switch = _confirm_switch(command, ctx)
+    if switch is not None:
+        return Verdict(gated=True, classes=("self",), rule=RULE_CONFIRM_SWITCH,
+                       command=shell.Command(switch, (("root", "sudo"),)))
     if _shell_writes_protected(command, ctx):
         return Verdict(gated=True, classes=("self",), rule="self:shell")
 
@@ -311,6 +324,30 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
         return UNGATED
     return Verdict(gated=True, classes=tuple(classes), rule=verdict.rule or "root:any-position",
                    command=inner)
+
+
+def _confirm_switch(command: str, ctx: Context) -> tuple[str, ...] | None:
+    """The one fixed command of the class `self` that can be confirmed by
+    voice: exactly `sudo <confirm program> on|off [class]`, written out, with
+    nothing before, between or after. Every other form that names the
+    program is an ordinary write to Jarvis's own rules: desk-only.
+
+    Returns (program, program, state[, class]) shaped as the argv after
+    `sudo`, or None.
+    """
+    if not ctx.confirm_program or shell.has_separator(command):
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    if len(words) not in (3, 4) or words[0] != "sudo" or words[1] != ctx.confirm_program:
+        return None
+    if words[2] not in ("on", "off"):
+        return None
+    if len(words) == 4 and words[3] not in CONFIRM_CLASSES:
+        return None
+    return ("sudo", *words[1:])
 
 
 def _judge(argv: tuple[str, ...], ctx: Context) -> Verdict:
