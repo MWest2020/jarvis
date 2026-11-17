@@ -402,3 +402,12 @@ def test_nesting_deeper_than_the_limit_is_not_followed_as_one_command(ctx):
 ])
 def test_benign_redirects_are_taken_out_up_to_a_separator(text, reduced):
     assert shell.without_benign_redirects(text) == reduced
+
+
+@pytest.mark.parametrize("text", [
+    "echo x >\v/dev/null ~/.bashrc", "echo x >/dev/null\v~/.bashrc", "echo x >\f/dev/null",
+    "echo x >\u00a0/dev/null", "echo x >/dev/null\x1c",
+])
+def test_only_bash_word_separators_make_a_redirect_benign(text):
+    # bash splits words on space, tab and newline only (review of #63)
+    assert shell.without_benign_redirects(text) == text

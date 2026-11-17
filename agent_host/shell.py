@@ -57,7 +57,8 @@ _BRACE_RE = re.compile(r"\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}")
 # command is read, so `pytest -q 2>&1` is still one command. One may stand
 # right before a separator (`cd x 2>/dev/null; pwd`): the separator stays.
 _BENIGN_REDIRECT_RE = re.compile(
-    r"(?<![\w$])(?:\d?>&\d|&>>?\s*/dev/null|\d?>>?\s*/dev/null|<\s*/dev/null)(?=[\s;&|)]|$)")
+    r"(?<![\w$])(?:\d?>&\d|&>>?[ \t]*/dev/null|\d?>>?[ \t]*/dev/null|<[ \t]*/dev/null)"
+    r"(?=[ \t\n;&|)]|$)")  # bash's word separators only: not \v, \f or Unicode spaces
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?")
 _NICE_SHORT_RE = re.compile(r"-\d+")
 
