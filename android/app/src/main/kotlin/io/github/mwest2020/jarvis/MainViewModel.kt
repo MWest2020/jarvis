@@ -120,6 +120,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         },
         onRead = ::heard,
+        onFailed = {
+            viewModelScope.launch(Dispatchers.Main) {
+                if (state.value.phase == Phase.RECORDING) microphoneStopped()
+            }
+        },
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -284,18 +289,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** The two-minute limit: a hands-free recording without speech is dropped, any other is sent (H4). */
+    /**
+     * The two-minute limit: a hands-free recording without speech, or whose "speech" never
+     * paused (a room too loud to tell), is dropped; any other is sent (H4).
+     */
     private fun atLimit() {
         val heard = listening?.endpointer?.heardSpeech == true
-        when (SilenceSend.atLimit(state.value.handsFree, heard)) {
-            SilenceAction.DROP -> drop()
+        val paused = listening?.endpointer?.heardPause == true
+        when (SilenceSend.atLimit(state.value.handsFree, heard, paused)) {
+            SilenceAction.DROP -> drop(SilenceSend.droppedAtLimit(heard, endpoint))
             else -> stopAndSend()
         }
     }
 
+    /** The microphone stopped delivering in the middle of a recording: nothing is sent, the screen says so. */
+    private fun microphoneStopped() {
+        stopListening()
+        recorder.stop()
+        fail(MICROPHONE_STOPPED)
+    }
+
     /** A hands-free recording without speech: nothing is sent, a note says so; no error tone (H4). */
-    private fun drop() {
-        val note = SilenceSend.dropped(endpoint)
+    private fun drop(note: String = SilenceSend.dropped(endpoint)) {
         stopListening()
         recorder.stop()
         _state.update { it.copy(phase = Phase.IDLE, notice = note) }
@@ -339,7 +354,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         // With the setting on, the recording is measured from its first byte, so it can send by
         // itself after a tap; while the button is held it never does (jarvis-silence-send).
-        val yes = SilenceSend.yesExpected(readBackPlayedAt, SystemClock.elapsedRealtime())
+        // Only the first recording after a read-back may be a short yes (H5), and never while a
+        // read-back cancel is still due; whatever becomes of this recording (sent, dropped, too
+        // short), the next one needs the usual speech.
+        val now = SystemClock.elapsedRealtime()
+        val yes = SilenceSend.yesExpected(readBackPlayedAt, now, readBacks)
+        readBackPlayedAt = null
         endpoint = null
         listening = if (current.silenceSend) {
             Listening(Endpointer(Endpointing.forRecording(current.silenceSeconds, yesExpected = yes)))
@@ -371,8 +391,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val current = state.value
-        // The yes that a read-back waited for has now been said, or something else was asked.
-        readBackPlayedAt = null
         _state.update { it.copy(phase = Phase.WAITING, error = null) }
         tone.heard()
         viewModelScope.launch {
@@ -637,5 +655,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val MIN_RECORDING_MS = 300L
         const val TICK_EVERY_MS = 3_000L
         const val KEYSTORE_REFUSED = "The phone's key store refused to store the token."
+        const val MICROPHONE_STOPPED = "The microphone stopped, so nothing was sent. Tap to try again."
     }
 }

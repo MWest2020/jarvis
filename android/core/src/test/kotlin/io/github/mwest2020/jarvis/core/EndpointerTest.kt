@@ -69,6 +69,7 @@ class EndpointerTest {
         // Speech ends at 1.8 s; three seconds of silence later it sends.
         assertEquals(4_800L, steps.first(EndpointEvent.SEND))
         assertTrue(endpointer.heardSpeech)
+        assertTrue(endpointer.heardPause)
         // Up to the tail after the last speech: 1.8 s + 0.5 s.
         assertEquals(2_300 * Wav.BYTES_PER_SECOND / 1_000, endpointer.sendLength(pcm.size))
         // Once it has said SEND it keeps saying so.
@@ -111,6 +112,29 @@ class EndpointerTest {
         assertEquals(EndpointEvent.LISTENING, steps.at(3_000).event)
         assertEquals(800.0, endpointer.noiseFloor, 100.0)
         assertEquals(7_500L, steps.first(EndpointEvent.SEND))
+    }
+
+    @Test
+    fun aRoomLouderThanTheThresholdNeverPauses() {
+        // Noise at RMS 2500 from the start: the first floor is capped at 600, so every frame is
+        // "speech" and no pause is ever heard; the limit must not send this.
+        val endpointer = Endpointer()
+        val steps = run(endpointer, Pcm(noise = 2_500.0).silence(20_000).bytes())
+        assertNull(steps.first(EndpointEvent.SEND))
+        assertTrue(endpointer.heardSpeech)
+        assertFalse(endpointer.heardPause)
+        assertEquals(SilenceAction.DROP, SilenceSend.atLimit(handsFree = true, endpointer.heardSpeech, endpointer.heardPause))
+        assertEquals(SilenceSend.TOO_NOISY, SilenceSend.droppedAtLimit(endpointer.heardSpeech, steps.last().endpoint))
+    }
+
+    @Test
+    fun aPauseShorterThanHalfASecondIsNotAPause() {
+        val endpointer = Endpointer()
+        run(endpointer, Pcm().silence(300).speech(1_000).silence(400).speech(1_000).bytes())
+        assertTrue(endpointer.heardSpeech)
+        assertFalse(endpointer.heardPause)
+        run(endpointer, Pcm(seed = 9).silence(600).bytes())
+        assertTrue(endpointer.heardPause)
     }
 
     @Test
@@ -280,11 +304,14 @@ class SilenceSendTest {
     }
 
     @Test
-    fun theLimitDropsAHandsFreeRecordingWithoutSpeech() {
-        assertEquals(SilenceAction.DROP, SilenceSend.atLimit(handsFree = true, heardSpeech = false))
-        assertEquals(SilenceAction.SEND, SilenceSend.atLimit(handsFree = true, heardSpeech = true))
+    fun theLimitDropsAHandsFreeRecordingWithoutSpeechOrPause() {
+        assertEquals(SilenceAction.DROP, SilenceSend.atLimit(handsFree = true, heardSpeech = false, heardPause = false))
+        assertEquals(SilenceAction.DROP, SilenceSend.atLimit(handsFree = true, heardSpeech = true, heardPause = false))
+        assertEquals(SilenceAction.SEND, SilenceSend.atLimit(handsFree = true, heardSpeech = true, heardPause = true))
         // Held, or with the setting off, the limit sends as before.
-        assertEquals(SilenceAction.SEND, SilenceSend.atLimit(handsFree = false, heardSpeech = false))
+        assertEquals(SilenceAction.SEND, SilenceSend.atLimit(handsFree = false, heardSpeech = false, heardPause = false))
+        assertEquals(SilenceSend.NOTHING_HEARD, SilenceSend.droppedAtLimit(false, null))
+        assertEquals(SilenceSend.SHORT_SOUND_DROPPED, SilenceSend.droppedAtLimit(false, Endpoint(shortSound = true)))
     }
 
     @Test
@@ -296,10 +323,23 @@ class SilenceSendTest {
 
     @Test
     fun aYesIsExpectedForAMinuteAfterAReadBackPlayed() {
-        assertFalse(SilenceSend.yesExpected(null, 5_000))
-        assertTrue(SilenceSend.yesExpected(1_000, 1_000))
-        assertTrue(SilenceSend.yesExpected(1_000, 60_999))
-        assertFalse(SilenceSend.yesExpected(1_000, 61_000))
-        assertFalse(SilenceSend.yesExpected(5_000, 1_000))
+        val none = ReadBackCancels()
+        assertFalse(SilenceSend.yesExpected(null, 5_000, none))
+        assertTrue(SilenceSend.yesExpected(1_000, 1_000, none))
+        assertTrue(SilenceSend.yesExpected(1_000, 60_999, none))
+        assertFalse(SilenceSend.yesExpected(1_000, 61_000, none))
+        assertFalse(SilenceSend.yesExpected(5_000, 1_000, none))
+    }
+
+    @Test
+    fun neverTheYesMinimumWhileACancelIsDue() {
+        // An earlier read-back was stopped and its cancel has not reached the bridge.
+        val cancels = ReadBackCancels()
+        cancels.started("demo", "c-1", 1_000)
+        val item = cancels.notPlayed(2_000)!!
+        assertFalse(SilenceSend.yesExpected(10_000, 10_500, cancels))
+        // Once the bridge has answered the cancel, a read-back heard to its end may get a yes.
+        cancels.sent(item)
+        assertTrue(SilenceSend.yesExpected(10_000, 10_500, cancels))
     }
 }

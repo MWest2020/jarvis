@@ -23,6 +23,9 @@ updates `docs/` in the same commit (AGENTS.md).
 - [x] 2.2 View model: an endpointer per tapped recording, verdicts on the main thread for the
   current recording only, the send through `stopAndSend` (cancel queue first), the drop with
   a note, the 2-minute limit without speech dropped, the yes minimum after a read-back.
+- [x] 2.4 Review of #69: a microphone that stops delivering ends the recording; the yes
+  minimum only for the first recording after a read-back and never while a cancel is due;
+  at the limit a recording whose speech never paused is dropped as too noisy.
 - [x] 2.3 Screens: the countdown and its bar on the button, the short-sound note, the hint
   text; the setting (switch and slider) in Settings, stored in `SettingsStore`.
 

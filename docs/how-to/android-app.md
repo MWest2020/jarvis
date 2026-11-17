@@ -142,8 +142,8 @@ project once.
   - When the app hears no speech for 10 seconds after a tap, it stops and says "Nothing heard,
     so nothing was sent." (or "Only a short sound, so nothing was sent."). No error tone; tap
     to try again.
-  - Right after Jarvis read something back and asked for your yes, a short "yes" is enough:
-    tap, say yes, and it goes after the silence like any question. (The bridge still checks
+  - Right after Jarvis read something back and asked for your yes, a short "yes" is enough
+    for the next recording: tap, say yes, and it goes after the silence like any question. (The bridge still checks
     that the yes was real speech.)
   - Nothing listens while a reply plays or while the bridge works: listening only starts with
     your tap.
@@ -194,6 +194,8 @@ project once.
 | I couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a minute. | The queued cancel failed again before this question; the question was not sent | Check Tailscale and the bridge; after a minute the read-back has expired and questions go again |
 | The spoken reply broke off. Its text is above. | A streamed reply stopped before its end: speech failed on the bridge, or the connection went. What arrived has played; the summary on screen is the whole spoken text | Read it; if it happens often, check the bridge's log for `reply=stream_cut` |
 | Nothing heard, so nothing was sent. | After a tap the app heard no speech for 10 seconds (or a recording reached two minutes without speech); it stopped listening | Tap and talk again; in a loud place, hold the button or tap to send |
+| Too noisy to tell when you stopped, so nothing was sent. … | A hands-free recording reached two minutes and the app never heard a pause after speech: the room is too loud to tell speech from noise | Hold the button while you talk, or tap again when you are done |
+| The microphone stopped, so nothing was sent. Tap to try again. | The phone's microphone stopped delivering audio in the middle of a recording (the audio system restarted, or another app took it) | Tap and talk again; if it repeats, restart the phone |
 | Only a short sound, so nothing was sent. | As above, but a cough or a click was heard: too short to be a question | Tap and talk again; for a very short question tap again to send it |
 | The reply could not be played. | The phone could not play the audio (no audio output, or a format it does not take) | Try again; restart the app |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
@@ -338,6 +340,13 @@ decides from loudness alone; it is plain Kotlin, no library, nothing leaves the 
 - **Nothing heard:** no speech that counts for 10 s since the start or the last sound: the
   recording is dropped. At the 2-minute limit a hands-free recording without speech is
   dropped too.
+- **Too noisy:** in a room louder than about RMS 1800 (three times the highest first floor)
+  every frame counts as speech and no pause is ever heard. Such a recording is not sent by
+  itself: the app keeps listening, and at the 2-minute limit it is dropped ("Too noisy to
+  tell when you stopped") instead of sending two minutes of noise. In a place that loud, hold
+  the button, or tap again when you are done.
+- **The yes minimum** (0.3 s) applies only to the first recording after a read-back played to
+  its end, and never while a read-back cancel is still queued.
 - **What is sent:** the recording up to half a second after the last speech frame.
 - The constants are in `Endpointing`; the tests (`EndpointerTest.kt`) feed synthetic PCM:
   speech-silence-speech, a loud room, a muted microphone, zeros at the start, a cough, long silence first,

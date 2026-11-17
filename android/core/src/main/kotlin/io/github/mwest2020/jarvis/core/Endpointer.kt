@@ -116,6 +116,15 @@ class Endpointer(private val config: Endpointing = Endpointing()) {
     var heardSpeech = false
         private set
 
+    /**
+     * True once a pause of at least [Endpointing.countdownAfterMs] followed speech that counted:
+     * the endpointer can tell speech from the room. In a room louder than three times the
+     * floor every frame is speech and this stays false (H4).
+     */
+    @Volatile
+    var heardPause = false
+        private set
+
     /** The current noise floor (RMS); for tests. */
     val noiseFloor: Double get() = floorRms
 
@@ -187,6 +196,7 @@ class Endpointer(private val config: Endpointing = Endpointing()) {
             }
         } else {
             silenceRunMs += FRAME_MS
+            if (qualified && silenceRunMs >= config.countdownAfterMs) heardPause = true
             // The floor follows the room: quickly down, slowly up, on frames that are not speech.
             // Zeros (the start on some phones, a dropout) say nothing about the room.
             if (rms >= DIGITAL_SILENCE) {
@@ -227,6 +237,9 @@ object SilenceSend {
     const val SHORT_SOUND = "Only a short sound so far. Still listening."
     const val NOTHING_HEARD = "Nothing heard, so nothing was sent."
     const val SHORT_SOUND_DROPPED = "Only a short sound, so nothing was sent."
+    const val TOO_NOISY =
+        "Too noisy to tell when you stopped, so nothing was sent. Hold the button while you talk, " +
+            "or tap again when you are done."
 
     /**
      * Sending by itself is only for a recording started with a tap, with the setting on: while
@@ -241,14 +254,29 @@ object SilenceSend {
         }
     }
 
-    /** The recorder's two-minute limit: a hands-free recording without speech is dropped, never sent (H4). */
-    fun atLimit(handsFree: Boolean, heardSpeech: Boolean): SilenceAction =
-        if (handsFree && !heardSpeech) SilenceAction.DROP else SilenceAction.SEND
+    /**
+     * The recorder's two-minute limit. A hands-free recording is sent only when it had speech
+     * and a pause after it; without speech, or when "speech" never paused (a room so loud that
+     * every frame counts), it is dropped, never sent (H4). Held, or with the setting off, the
+     * limit sends as before.
+     */
+    fun atLimit(handsFree: Boolean, heardSpeech: Boolean, heardPause: Boolean): SilenceAction =
+        if (handsFree && !(heardSpeech && heardPause)) SilenceAction.DROP else SilenceAction.SEND
+
+    /** The note for a hands-free recording dropped at the limit. */
+    fun droppedAtLimit(heardSpeech: Boolean, endpoint: Endpoint?): String =
+        if (heardSpeech) TOO_NOISY else dropped(endpoint)
 
     /** The note for a dropped recording. */
     fun dropped(endpoint: Endpoint?): String = if (endpoint?.shortSound == true) SHORT_SOUND_DROPPED else NOTHING_HEARD
 
-    /** A yes is expected when a read-back played to its end less than a minute ago (H5). */
-    fun yesExpected(readBackPlayedAtMs: Long?, nowMs: Long): Boolean =
-        readBackPlayedAtMs != null && nowMs - readBackPlayedAtMs in 0 until ReadBack.PENDING_MS
+    /**
+     * A yes is expected, and the shorter minimum applies (H5), only when a read-back played to
+     * its end less than a minute ago and no read-back cancel is still due: a cancel that has not
+     * reached the bridge must never be followed by a recording that sends on less speech.
+     */
+    fun yesExpected(readBackPlayedAtMs: Long?, nowMs: Long, cancels: ReadBackCancels): Boolean =
+        readBackPlayedAtMs != null &&
+            nowMs - readBackPlayedAtMs in 0 until ReadBack.PENDING_MS &&
+            cancels.due(nowMs) == null
 }

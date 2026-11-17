@@ -56,8 +56,15 @@ the screen says "Only a short sound so far. Still listening.", and the recording
 a cough before a question does not cost another tap. When no speech has counted for 10 s
 since the start or since the last sound, the recording is dropped ("Nothing heard, so
 nothing was sent." or "Only a short sound, so nothing was sent."), the button is free again,
-and no error tone plays. The recorder's 2-minute limit drops a recording without speech too,
-instead of sending it. 10 s is longer than the longest silence setting, so a pause to think
+and no error tone plays. The recorder's 2-minute limit drops a hands-free recording without
+speech too, instead of sending it, and one whose speech never paused for half a second: in a
+room louder than three times the first floor (about RMS 1800) every frame counts as speech,
+so the endpointer cannot tell when Mark stopped, and two minutes of noise are not a question
+("Too noisy to tell when you stopped, so nothing was sent. Hold the button while you talk, or
+tap again when you are done."). A held recording, or one with the setting off, is sent at the
+limit as before. When the microphone stops delivering in the middle of a recording (the
+audio server restarted), the recording ends with "The microphone stopped, so nothing was
+sent." instead of waiting for bytes that never come. 10 s is longer than the longest silence setting, so a pause to think
 before speaking is not cut off.
 Alternative: stop at once after a short sound. Rejected: another tap for the most common
 noise, and the hands-free point is fewer taps.
@@ -66,6 +73,10 @@ noise, and the hands-free point is fewer taps.
 waits for a spoken yes) played to its end, and within the minute that the bridge keeps it,
 the minimum is 0.3 s: a "yes" has about that much loud sound, and the bridge refuses a yes
 with less detected speech anyway (D36), so a cough that does get through confirms nothing.
+Only that first recording: whatever becomes of it (sent, dropped, too short, discarded when
+the app left the screen), the next one needs the usual 0.6 s. And never while a read-back
+cancel is still due (`SilenceSend.yesExpected` asks `ReadBackCancels.due`): a cancel that has
+not reached the bridge is never followed by a recording that sends on less speech.
 
 **H6. A countdown.** Once speech has counted and the silence has lasted half a second, the
 button says "Sending in N s · tap to send now" and a bar under it runs down. Shorter pauses
@@ -98,7 +109,9 @@ recording only starts with a tap on an idle button.
 - **A noise that starts after the first 300 ms and stays loud** (a fan, the engine started)
   counts as speech until the floor has climbed past it, which it does only on frames that are
   not speech: the app then keeps listening until a tap or the 2-minute limit. The tap still
-  sends.
+  sends; at the limit the recording is sent only if a pause was heard after speech, else it
+  is dropped as too noisy (H4). In a room that loud from the start, hands-free use waits the
+  full two minutes before saying so: hold the button there.
 - **Someone else talking** keeps the recording open, and their words go into the turn. The
   same as a tapped recording today.
 - **A whisper** may stay under three times the floor in a loud car: it is then a short sound,
