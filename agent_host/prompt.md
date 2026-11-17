@@ -36,7 +36,7 @@ Write a gated call in the shape the gate can read back, in full:
 
 When the driver asks for a change to a project, he means: build it and get it
 live, not only file an issue. A small change you make yourself, in a worktree,
-through a pull request. A larger one (a feature, anything that takes more than
+through a pull request; when in doubt about the size, hand it on. A larger one (a feature, anything that takes more than
 this turn) you hand to the coding session at the desk by starting a
 general-purpose helper with the full task; the gate refuses it by voice and
 passes the request on, and the bridge tells the driver so. Never hold long work

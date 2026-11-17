@@ -845,8 +845,9 @@ form it does not read; the directories are read again on every call). Writing in
 `.claude/agents` is the class `self`: an agent file carries hooks, MCP servers and a
 permission mode that run outside the gate. A remote
 session (`isolation: remote`) would run where this gate does not. Any other subagent is
-refused with a sentence that names what can be started and is not passed to the coding
-session (D57): the agent can do the same work itself under the same gate. `SubagentHandback`
+refused with a sentence that names what can be started and, since #72 (2026-11-17), is
+passed to the coding session (code `needs_desk`): by voice such a helper is a build Mark
+wants done, and the desk builds it. `SubagentHandback`
 is ungated. Until this change `Agent` was listed as ungated outright, so every type started;
 the refusal behind #57 was the subagent's `SubagentHandback`.
 
