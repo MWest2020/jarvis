@@ -27,7 +27,7 @@ from bridge.config import (
     ProjectConfig,
     load_config,
 )
-from bridge.full_mode import FullMode
+from bridge.full_mode import FRAMING_SENTENCES, FullMode
 from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
 from bridge.logging_setup import configure as configure_logging
 from bridge.readonly_adapter import ReadonlyAdapter
@@ -440,8 +440,11 @@ class Handler(BaseHTTPRequestHandler):
                 typed_list=self.headers.get("X-Jarvis-Projects", "") == "typed")
             # The agent's part: the handling minus the speech measurement in it.
             timer.add("agent", time.monotonic() - handle_started - timer.ms.get("vad", 0) / 1000)
+            # The bridge's notice, fallback and news sentences may stand around the
+            # agent's own line: the tag is looked for on that line.
             spoken, song = self._song(outcome.spoken, transcript,
-                                      read_back=outcome.needs_confirmation)
+                                      read_back=outcome.needs_confirmation,
+                                      framing=FRAMING_SENTENCES)
             logger.info("project=%s summary=%r", project_name, spoken)
             try:
                 complete = self._speak(spoken, outcome.ref, song=song,
@@ -467,12 +470,13 @@ class Handler(BaseHTTPRequestHandler):
         logger.info("project=%s summary=%r", project_name, summary)
         self._speak(summary, turn.ref, song=song, timer=timer, project=project_name)
 
-    def _song(self, spoken: str, transcript: str, *,
-              read_back: bool) -> tuple[str, singing.SongRequest | None]:
+    def _song(self, spoken: str, transcript: str, *, read_back: bool,
+              framing: tuple[str, ...] = ()) -> tuple[str, singing.SongRequest | None]:
         """jarvis-sing: the agent's reply, and the song when it is to be sung. Only
         for an agent's reply the driver asked to be sung, never for a read-back."""
         text, song = singing.choose(spoken, transcript=transcript,
-                                    enabled=self.config.sing, read_back=read_back)
+                                    enabled=self.config.sing, read_back=read_back,
+                                    framing=framing)
         if song is not None:
             logger.info("sung: %s", song.tune.id)
         return text, song

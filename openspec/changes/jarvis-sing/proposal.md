@@ -20,6 +20,11 @@ so it is built in the same PR as this proposal; the PR is the approval point.
   agent's line and names a known tune, the driver's own words in that turn ask for a song,
   the reply is not a read-back, and `JARVIS_SING` is not `0`. Otherwise every tag is
   removed and the lyrics are spoken as words. A read-back is never changed.
+- **After a notice.** In `full` mode the bridge's fixed sentences (a notice of the agent
+  host, the read-only fallback, news of a new project) can stand around the agent's line;
+  the tag counts as first when only such sentences come before it, and they are spoken
+  before (or, for news, after) the song. Found live after #78: a song after "I started a
+  new session for this project." was spoken instead of sung.
 - A sung line may be 240 characters instead of 160.
 
 ## Impact

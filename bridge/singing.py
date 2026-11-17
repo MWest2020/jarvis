@@ -115,11 +115,48 @@ TUNES: dict[str, Tune] = {t.id: t for t in (
 class SongRequest:
     tune: Tune
     lyrics: str          # as the agent wrote them, syllables joined by hyphens
+    # The bridge's own fixed sentences around the agent's line (a notice of the agent
+    # host, the read-only fallback, news of a new project): spoken before and after
+    # the song, never sung.
+    before: str = ""
+    after: str = ""
 
     @property
     def text(self) -> str:
-        """The lyrics as words: what the phone shows (X-Jarvis-Summary)."""
-        return plain(self.lyrics)
+        """What the phone shows (X-Jarvis-Summary): the sentences around the song and
+        the lyrics as words."""
+        return _join(self.before, plain(self.lyrics), self.after)
+
+
+def _join(*parts: str) -> str:
+    return " ".join(part for part in parts if part)
+
+
+def peel(spoken: str, framing: tuple[str, ...] = ()) -> tuple[str, str, str]:
+    """(fixed sentences before, the agent's own line, fixed sentences after).
+
+    `framing` is the closed list of sentences the bridge itself puts around an agent's
+    line (bridge.full_mode.FRAMING_SENTENCES). Only whole sentences from that list are
+    taken off, as many as there are, so the tag of a line that follows a notice
+    ("I started a new session for this project. [sing: twinkle] ...") is still first
+    on the agent's own line.
+    """
+    before: list[str] = []
+    after: list[str] = []
+    core = spoken.strip()
+    taken = True
+    while taken:
+        taken = False
+        for sentence in framing:
+            if core.startswith(sentence + " "):
+                before.append(sentence)
+                core = core[len(sentence):].lstrip()
+                taken = True
+            elif core.endswith(" " + sentence):
+                after.insert(0, sentence)
+                core = core[:-len(sentence)].rstrip()
+                taken = True
+    return " ".join(before), core, " ".join(after)
 
 
 def plain(lyrics: str) -> str:
@@ -142,22 +179,25 @@ def asked_to_sing(transcript: str) -> bool:
     return bool(ASKED.search(transcript or ""))
 
 
-def choose(spoken: str, *, transcript: str, enabled: bool,
-           read_back: bool) -> tuple[str, SongRequest | None]:
+def choose(spoken: str, *, transcript: str, enabled: bool, read_back: bool,
+           framing: tuple[str, ...] = ()) -> tuple[str, SongRequest | None]:
     """What to say, and the song when this reply is sung.
 
     A read-back is returned exactly as built and never sung. A reply without a tag is
-    returned unchanged. A tagged reply that is not sung loses its tags and hyphens and
-    is spoken as words.
+    returned unchanged. The tag must be first on the agent's own line: after the
+    bridge's fixed sentences in `framing` (see peel), never after anything else. A
+    tagged reply that is not sung loses its tags, and its lyrics their hyphens, and is
+    spoken as words; the fixed sentences stay exactly as they are.
     """
     if read_back:
         return spoken, None
-    tune, rest, tagged = split_tag(spoken)
+    before, core, after = peel(spoken, framing)
+    tune, rest, tagged = split_tag(core)
     if not tagged:
         return spoken, None
     if tune is None or not enabled or not asked_to_sing(transcript) or not words(rest):
-        return plain(rest), None
-    song = SongRequest(tune, rest)
+        return _join(before, plain(rest), after), None
+    song = SongRequest(tune, rest, before, after)
     return song.text, song
 
 
