@@ -6,12 +6,39 @@ name: image
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "openspec/**", "**/*.md", "android/**"]
   pull_request:
+    paths-ignore: ["docs/**", "openspec/**", "**/*.md", "android/**"]
+
+# GitHub Actions minutes on private repos are limited (2026-11-17: ~1800 of 2000
+# used, mostly by this workflow on every PR push). A newer push to the same PR
+# cancels the older run.
+concurrency:
+  group: image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.diff.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then echo "image=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          base="${{ github.event.pull_request.base.sha }}"
+          if git diff --name-only "$base" HEAD | grep -qE '^(deploy/|pyproject\.toml|uv\.lock|bridge/)'; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +51,10 @@ jobs:
       - run: shellcheck deploy/sync-projects.sh agent_host/install.sh
 
   image:
-    needs: test
+    needs: [changes, test]
+    # On a PR the image is only built when something that goes into it changed;
+    # on main it is always built (deployments pin its digest).
+    if: github.event_name == 'push' || needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

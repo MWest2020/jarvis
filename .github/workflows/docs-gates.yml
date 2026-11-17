@@ -2,6 +2,10 @@ name: docs-gates
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+concurrency:
+  group: docs-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gates:
     uses: MWest2020/handbook/.github/workflows/docs-gates.yml@main
