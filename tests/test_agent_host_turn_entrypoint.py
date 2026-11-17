@@ -21,14 +21,20 @@ with open(record_path, "w") as fh:
     json.dump({"argv": sys.argv[1:], "stdin": stdin_text,
                "turn_id": os.environ.get("JARVIS_TURN_ID", ""),
                "ident": os.environ.get("IDENT", "")}, fh)
+# A test may script the reply and the session id: one JSON file next to the record.
+try:
+    with open(record_path + ".reply") as fh:
+        scripted = json.load(fh)
+except OSError:
+    scripted = {}
 print(json.dumps({
-    "result": "work done.\\nSPOKEN SUMMARY: all set.",
-    "session_id": "44444444-4444-4444-4444-444444444444",
+    "result": scripted.get("result", "work done.\\nSPOKEN SUMMARY: all set."),
+    "session_id": scripted.get("session_id", "44444444-4444-4444-4444-444444444444"),
 }))
 """
 
 
-def _write_setup(tmp_path, *, enabled=True):
+def _write_setup(tmp_path, *, enabled=True, extra=""):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_claude = bin_dir / "claude"
@@ -62,6 +68,7 @@ turn_settings = "{turn_settings}"
 prompt_file = "{prompt_file}"
 session_identity = "jarvis"
 user_settings_path = "{user_settings}"
+{extra}
 """
     )
     return config_toml, record_path

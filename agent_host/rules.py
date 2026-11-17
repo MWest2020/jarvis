@@ -145,6 +145,12 @@ class Rules:
     tool_actions: tuple[ToolAction, ...] = ()
     # The class a gated connector tool is in, by the word in its name.
     mcp_classes: tuple[tuple[str, str], ...] = ()
+    # The tools that start a subagent, and what such a call may hold to run
+    # by voice (#57): see [subagents] in gate_rules.toml.
+    subagent_tools: frozenset[str] = frozenset()
+    subagent_types: tuple[str, ...] = ()
+    subagent_fields: frozenset[str] = frozenset()
+    subagent_off_fields: frozenset[str] = frozenset()
 
     @property
     def action_programs(self) -> frozenset[str]:
@@ -340,7 +346,7 @@ def rules_from_dict(data: dict) -> Rules:
         "version", "read_verbs", "global_flags", "programs", "gh", "http", "git",
         "transfer", "root", "shell", "rm", "mcp", "self", "actions", "option_classes",
         "tool_actions",
-        "interpreters", "tools",
+        "interpreters", "tools", "subagents",
     }, "rules")
     if data.get("version") != 1:
         raise RulesError("rules: version must be 1")
@@ -385,6 +391,8 @@ def rules_from_dict(data: dict) -> Rules:
     _known_keys(interpreters, {"programs", "inline_letters", "inline_words"}, "interpreters")
     tools = _table(data, "tools", "")
     _known_keys(tools, {"ungated", "write"}, "tools")
+    subagents = _table(data, "subagents", "")
+    _known_keys(subagents, {"tools", "read_only_types", "fields", "off_fields"}, "subagents")
     rm = _table(data, "rm", "")
     _known_keys(rm, {"temp_roots"}, "rm")
     mcp = _table(data, "mcp", "")
@@ -405,6 +413,16 @@ def rules_from_dict(data: dict) -> Rules:
     mcp_words = _strings(mcp, "words", "mcp.")
     if not mcp_words:
         raise RulesError("mcp.words must not be empty")
+    subagent_tools = frozenset(_strings(subagents, "tools", "subagents."))
+    # A tool that starts a subagent is judged by its input, never listed as
+    # ungated: a host-local file that lists it there is a mistake, said
+    # out loud rather than silently ignored or silently obeyed.
+    listed = subagent_tools & (set(_strings(tools, "ungated", "tools."))
+                               | set(_strings(tools, "write", "tools.")))
+    if listed:
+        raise RulesError(
+            f"tools: {sorted(listed)} start a subagent and are judged by [subagents]; "
+            "do not list them under [tools]")
 
     return Rules(
         programs=programs,
@@ -444,6 +462,10 @@ def rules_from_dict(data: dict) -> Rules:
         self_read_programs=frozenset(_strings(self_, "read_programs", "self.")),
         self_tree_programs=frozenset(_strings(self_, "tree_programs", "self.")),
         tool_actions=tuple(_tool_action(i, raw) for i, raw in enumerate(tool_actions_raw)),
+        subagent_tools=subagent_tools,
+        subagent_types=_strings(subagents, "read_only_types", "subagents."),
+        subagent_fields=frozenset(_strings(subagents, "fields", "subagents.")),
+        subagent_off_fields=frozenset(_strings(subagents, "off_fields", "subagents.")),
     )
 
 

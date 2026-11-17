@@ -112,7 +112,8 @@ def test_tools_that_are_not_gated_are_let_through(setup):
         ("Edit", {"file_path": str(checkout / "x.py"), "old_string": "a", "new_string": "b"}),
         ("Grep", {"pattern": "x"}),
         ("mcp__x__get_thing", {"id": 1}),
-        ("Task", {"prompt": "x"}),
+        ("Agent", {"description": "d", "prompt": "x", "subagent_type": "Explore"}),
+        ("SubagentHandback", {"message": "the report"}),
     ):
         assert _denied(_run(config_path, checkout, _payload(tool, tool_input, checkout))) is None
 

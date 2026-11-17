@@ -65,8 +65,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent_host import (
-    checkout_settings, classify, clones, command, decision, gatehash, identity, naming,
-    pending, projects, prstatus, trusted,
+    checkout_settings, classify, clones, command, decision, gatehash, identity, lifetime,
+    naming, pending, projects, prstatus, trusted,
 )
 from agent_host import record as record_mod
 from agent_host import request as request_mod
@@ -504,6 +504,7 @@ def _write_record(
     prompt: str, reply_text: str, duration_s: float, outcome: str,
     settings_changed: str | None = None, gated_actions: list[dict] | None = None,
     timing: dict | None = None, claude_ended: float | None = None,
+    session: dict | None = None,
 ) -> None:
     if timing is not None and claude_ended is not None:
         timing = {**timing, "wrapper_post_ms": timing_mod.ms(time.monotonic() - claude_ended)}
@@ -519,8 +520,23 @@ def _write_record(
         settings_changed=settings_changed,
         gated_actions=gated_actions or [],
         timing=timing,
+        session=session,
     )
     record_mod.write_record(config.records_dir, rec)
+
+
+def _start_session(config: AgentHostConfig, project: str, sessions: SessionStore,
+                   clock: lifetime.TurnClock) -> lifetime.Start:
+    """Which session the turn resumes, if any, and why (agent_host.lifetime)."""
+    stored_id, discarded = sessions.get(project)
+    # Called on every turn, as before: the rotation fallback keeps its own day.
+    rotated_id = _resolve_session_id(config, project, stored_id, now=datetime.now())
+    return lifetime.choose(
+        stored_id=stored_id, discarded=discarded, rotated_id=rotated_id,
+        idle_seconds=clock.idle_seconds(project, datetime.now(timezone.utc)),
+        idle_limit_minutes=config.session_idle_minutes,
+        was_closed=clock.was_closed(project),
+    )
 
 
 def _after_turn(
@@ -614,11 +630,10 @@ def _run_turn(
     except Exception:  # noqa: BLE001 - a retry never stops a turn
         pass
     sessions = SessionStore(config.sessions_dir / "sessions.json")
-    stored_id, discarded = sessions.get(project)
-    rotated_id = _resolve_session_id(config, project, stored_id, now=datetime.now())
-    if rotated_id != stored_id:
-        discarded = True
-    stored_id = rotated_id
+    clock = lifetime.TurnClock(config.sessions_dir / "last_turn.json")
+    start = _start_session(config, project, sessions, clock)
+    stored_id = start.session_id
+    session_field = start.recorded()
 
     inline = _uses_inline_prompt(config)
     argv = command.build_command(
@@ -666,7 +681,7 @@ def _run_turn(
         _write_record(
             config, turn_id=turn_id, project=project, session_id=stored_id, prompt=prompt,
             reply_text=f"the turn could not start: {exc}", duration_s=0.0,
-            outcome="agent_failed",
+            outcome="agent_failed", session=session_field,
         )
         return _reply(status="error", error="agent_failed", turn=turn_id)
     timed_out = False
@@ -711,14 +726,32 @@ def _run_turn(
         config, project, turn_id, working_dir, env, confirmed,
         changed=changed, ok=outcome == "ok",
     )
+    # The agent may end its reply with `SESSION: close` when the driver asked
+    # to close the conversation. It is never spoken (it is cut off here,
+    # before the marker line is taken) and it acts on this turn's own project
+    # only: the marker has no argument, and `project` is the request's.
+    spoken_text, closing = lifetime.split_close_marker(reply_text) if outcome == "ok" \
+        else (reply_text, False)
     if outcome == "ok":
-        sessions.set(project, new_session_id)
+        if closing and pending_fields is not None:
+            # A call waits for the driver's yes: the conversation is not
+            # over, and the confirming turn resumes this session.
+            session_field["end"] = "close_ignored"
+            closing = False
+        if closing:
+            sessions.drop(project)
+            clock.closed(project)
+            session_field["end"] = "closed"
+        else:
+            sessions.set(project, new_session_id)
+            clock.ended(project, datetime.now(timezone.utc))
     _write_record(
         config, turn_id=turn_id, project=project, session_id=new_session_id,
         prompt=prompt, reply_text=reply_text, duration_s=duration, outcome=outcome,
         settings_changed=changed, gated_actions=actions, timing=timing,
-        claude_ended=claude_ended,
+        claude_ended=claude_ended, session=session_field,
     )
+    new_session = "new_session" if start.announced else None
 
     # What became of a new repository goes with every reply below (D53).
     if outcome != "ok":
@@ -728,9 +761,8 @@ def _run_turn(
         # While a confirmation is pending, the agent's own line is not sent.
         # A notice still is: that a new session started must not be lost.
         return _reply(status="ok", turn=turn_id, spoken="", pending=True,
-                      notice="new_session" if discarded else None, project=project_field,
-                      **pending_fields)
-    spoken = last_marker_line(reply_text)
-    notice = most_important_notice([notice, "new_session" if discarded else None])
+                      notice=new_session, project=project_field, **pending_fields)
+    spoken = last_marker_line(spoken_text)
+    notice = most_important_notice([notice, new_session])
     return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice,
                   project=project_field)

@@ -69,6 +69,12 @@ class TurnRecord:
     # Where the turn's time went (agent_host.timing): the wrapper's clock and
     # what claude's JSON says about itself. None for a turn with no agent run.
     timing: dict | None = None
+    # How the turn's session started and ended (agent_host.lifetime):
+    # {"start": "resumed" | "new" | "closed" | "idle" | "discarded" | "rotated",
+    #  "idle_minutes": minutes since the project's last turn, when known,
+    #  "end": "closed" | "close_ignored" when the agent closed the conversation}.
+    # None for a turn with no agent run.
+    session: dict | None = None
 
     def redacted(self) -> "TurnRecord":
         return TurnRecord(
@@ -83,6 +89,7 @@ class TurnRecord:
             gated_actions=self.gated_actions,
             settings_changed=self.settings_changed,
             timing=self.timing,
+            session=self.session,
         )
 
 
