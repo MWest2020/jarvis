@@ -71,7 +71,7 @@ def test_rejects_a_non_tailscale_bind_host(monkeypatch, tmp_path, host):
         load_config()
 
 
-@pytest.mark.parametrize("host", ["100.90.159.10", "fd7a:115c:a1e0::1", "127.0.0.1"])
+@pytest.mark.parametrize("host", ["100.101.102.103", "fd7a:115c:a1e0::1", "127.0.0.1"])
 def test_accepts_tailscale_and_loopback(monkeypatch, tmp_path, host):
     _set_minimal_env(monkeypatch, tmp_path, JARVIS_BIND_HOST=host)
     assert load_config().bind_host == host

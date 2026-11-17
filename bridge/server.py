@@ -18,7 +18,7 @@ import urllib.parse
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from bridge import claude_adapter, remote_adapter, stt, tts
+from bridge import claude_adapter, remote_adapter, singing, stt, tts
 from bridge.config import (
     BEHIND_PROXY_WARNING,
     MODE_FULL,
@@ -27,7 +27,7 @@ from bridge.config import (
     ProjectConfig,
     load_config,
 )
-from bridge.full_mode import FullMode
+from bridge.full_mode import FRAMING_SENTENCES, FullMode
 from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
 from bridge.logging_setup import configure as configure_logging
 from bridge.readonly_adapter import ReadonlyAdapter
@@ -440,9 +440,14 @@ class Handler(BaseHTTPRequestHandler):
                 typed_list=self.headers.get("X-Jarvis-Projects", "") == "typed")
             # The agent's part: the handling minus the speech measurement in it.
             timer.add("agent", time.monotonic() - handle_started - timer.ms.get("vad", 0) / 1000)
-            logger.info("project=%s summary=%r", project_name, outcome.spoken)
+            # The bridge's notice, fallback and news sentences may stand around the
+            # agent's own line: the tag is looked for on that line.
+            spoken, song = self._song(outcome.spoken, transcript,
+                                      read_back=outcome.needs_confirmation,
+                                      framing=FRAMING_SENTENCES)
+            logger.info("project=%s summary=%r", project_name, spoken)
             try:
-                complete = self._speak(outcome.spoken, outcome.ref,
+                complete = self._speak(spoken, outcome.ref, song=song,
                                        needs_confirmation=outcome.needs_confirmation,
                                        projects_changed=outcome.projects_changed,
                                        confirmation_id=outcome.confirmation_id,
@@ -461,12 +466,24 @@ class Handler(BaseHTTPRequestHandler):
 
         with timer.stage("agent"):
             turn = self.readonly.run_turn(project=project, prompt=transcript)
-        summary = turn.spoken
+        summary, song = self._song(turn.spoken, transcript, read_back=False)
         logger.info("project=%s summary=%r", project_name, summary)
-        self._speak(summary, turn.ref, timer=timer, project=project_name)
+        self._speak(summary, turn.ref, song=song, timer=timer, project=project_name)
+
+    def _song(self, spoken: str, transcript: str, *, read_back: bool,
+              framing: tuple[str, ...] = ()) -> tuple[str, singing.SongRequest | None]:
+        """jarvis-sing: the agent's reply, and the song when it is to be sung. Only
+        for an agent's reply the driver asked to be sung, never for a read-back."""
+        text, song = singing.choose(spoken, transcript=transcript,
+                                    enabled=self.config.sing, read_back=read_back,
+                                    framing=framing)
+        if song is not None:
+            logger.info("sung: %s", song.tune.id)
+        return text, song
 
     def _speak(self, text: str, session_id: str, *, needs_confirmation: bool = False,
                projects_changed: bool = False, confirmation_id: str = "",
+               song: singing.SongRequest | None = None,
                timer: TurnTimer, project: str) -> bool:
         """Render `text` and send it: as a WAV, or as a stream to a client that asked
         for one (jarvis-streaming-speech).
@@ -474,8 +491,29 @@ class Handler(BaseHTTPRequestHandler):
         Raises when the failure came before anything was sent (do_POST then answers
         500, as before). Returns False when a streamed reply broke off after its
         headers (S6), True when the whole reply was written.
+
+        `song`: sing it instead (jarvis-sing), rendered whole before the status line.
+        When that fails, `text` is spoken as usual.
         """
         voice = self.config.kokoro_voice
+        if song is not None and not needs_confirmation:
+            try:
+                with timer.stage("tts"):
+                    samples = tts.sing(song, voice=voice)
+            except Exception:  # noqa: BLE001 - an easter egg never costs the reply
+                logger.exception("project=%s: the song could not be rendered; spoken instead",
+                                 project)
+            else:
+                if not getattr(self, "_stream_reply", False):
+                    timer.reply = "wav"
+                    self._respond_audio(tts.wav_bytes(samples), text, session_id,
+                                        projects_changed=projects_changed,
+                                        timer=timer, project=project)
+                    return True
+                timer.reply = "stream"
+                return self._respond_stream(iter(tts.pcm_pieces(samples)), text, session_id,
+                                            projects_changed=projects_changed,
+                                            timer=timer, project=project, rendered=True)
         if not getattr(self, "_stream_reply", False):
             timer.reply = "wav"
             with timer.stage("tts"):

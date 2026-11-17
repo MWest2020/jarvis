@@ -107,8 +107,8 @@ reviewed.
 
 ## License
 
-No license yet: until one is chosen, all rights are reserved. The choice is open in
-[#74](https://github.com/MWest2020/jarvis/issues/74).
+SOLAIRE-1.0, the Jolly Co-operation License: the [MIT License](LICENSE), word for word,
+with one non-binding wish on top. Use it, change it, ship it.
 
 ## Support
 

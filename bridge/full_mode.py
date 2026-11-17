@@ -129,6 +129,13 @@ def _with_news(spoken: str, news: ProjectNews | None, *, typed_list: bool,
     return f"{sentence} {spoken}" if before else f"{spoken} {sentence}"
 
 
+# jarvis-sing: every fixed sentence the bridge puts before or after an agent's own
+# line (remote_adapter._spoken, FullMode._fallback, _with_news). A song's tag is first
+# on the agent's line, which may come after these.
+FRAMING_SENTENCES = (tuple(NOTICE_SENTENCES.values()) + tuple(FALLBACK_SENTENCES.values())
+                     + (PROJECT_READY, PROJECT_READY_TYPED) + tuple(PROJECT_SENTENCES.values()))
+
+
 # A turn started, or may have: said together with the promise of D30.
 STARTED_LINES = {
     "timeout": "The agent took too long on the agent host and was stopped. "

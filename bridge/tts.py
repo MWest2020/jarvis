@@ -69,6 +69,61 @@ def to_l16(audio) -> bytes:
     return (samples * 32767.0).round().astype(">i2").tobytes()
 
 
+def word_audio(word: str, *, voice: str = DEFAULT_VOICE):
+    """A word (or a sentence) as Kokoro's float samples at SAMPLE_RATE, for singing."""
+    import numpy as np
+
+    pipeline = _pipeline(lang_code(voice))
+    chunks = [np.asarray(audio, dtype=np.float32)
+              for _graphemes, _phonemes, audio in pipeline(word, voice=voice)
+              if audio is not None]
+    return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+
+
+# The pause between a spoken sentence and the song, in seconds.
+SONG_PAUSE_S = 0.3
+
+
+def sing(song, *, voice: str = DEFAULT_VOICE):
+    """The song (bridge.singing.SongRequest) rendered with the bridge's own voice:
+    float samples at SAMPLE_RATE. The song itself is at most singing.MAX_SECONDS long;
+    the bridge's sentences around it (`before`, `after`, a notice say) are spoken
+    before and after it, as in a spoken reply."""
+    import numpy as np
+
+    from bridge import singing
+
+    sung = singing.render(song.tune, song.lyrics,
+                          lambda word: word_audio(word, voice=voice)).samples
+    pause = np.zeros(int(SONG_PAUSE_S * SAMPLE_RATE), dtype=np.float32)
+    parts = []
+    if song.before:
+        parts += [word_audio(song.before, voice=voice), pause]
+    parts.append(np.asarray(sung, dtype=np.float32))
+    if song.after:
+        parts += [pause, word_audio(song.after, voice=voice)]
+    return np.concatenate(parts)
+
+
+def wav_bytes(samples) -> bytes:
+    """Float samples as the WAV synthesize() returns."""
+    import soundfile as sf
+
+    buffer = io.BytesIO()
+    sf.write(buffer, samples, samplerate=SAMPLE_RATE, format="WAV")
+    return buffer.getvalue()
+
+
+# A sung reply is rendered whole and then sent in pieces of this many samples.
+SONG_PIECE_SAMPLES = SAMPLE_RATE // 2
+
+
+def pcm_pieces(samples) -> list[bytes]:
+    """Float samples as big-endian L16, in pieces of half a second."""
+    return [to_l16(samples[i:i + SONG_PIECE_SAMPLES])
+            for i in range(0, len(samples), SONG_PIECE_SAMPLES)]
+
+
 def stream_pcm(text: str, *, voice: str = DEFAULT_VOICE, whole: bool = False) -> Iterator[bytes]:
     """The spoken reply as big-endian L16 at SAMPLE_RATE, one piece per sentence (see
     pieces()), each rendered only when the previous one has been taken (S4).

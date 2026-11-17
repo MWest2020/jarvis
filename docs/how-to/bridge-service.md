@@ -55,6 +55,7 @@ your process manager.
 | `JARVIS_WHISPER_BEAM_SIZE` | no (default `5`) | Whisper's beam width, 1 to 10. `1` (greedy) took another 0.05-0.2 s off with the same transcripts on the test recordings. |
 | `JARVIS_KOKORO_VOICE` | no (default `bm_george`) | A Kokoro voice name. The default is a British male voice; the image also carries `af_heart` (American female). Pick one by ear once the service runs (see below). |
 | `JARVIS_STREAM_REPLIES` | no (default on) | `0`: every client gets the whole WAV, also one that asks for a streamed reply. Unset or `1`: a client that asks gets the reply as it is rendered (see "Streamed replies"). Anything else is refused at start. |
+| `JARVIS_SING` | no (default on) | `0`: Jarvis never sings; a reply meant to be sung is spoken as words. Unset or `1`: the easter egg is on (see "Singing (easter egg)"). Anything else is refused at start. |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
@@ -466,7 +467,8 @@ all: the reply goes out at once with `Connection: close`. The log and the sessio
 are created owner-only (`0600`, in a `0700` directory, rotated logs too): the log
 holds full replies, which can quote file contents.
 
-Only the summary is spoken, at most 160 characters of it (Claude Code is asked for
+Only the summary is spoken, at most 160 characters of it (240 for a sung line, see
+"Singing (easter egg)"; Claude Code is asked for
 one sentence, two at most, of about 100 to 150 characters, because speech is the slow
 part of a turn; a longer one is cut at its last sentence end within 160 characters,
 or else at a word, with "…"), and only when it contains nothing that looks like code or a path (backticks, slashes, file
@@ -594,6 +596,96 @@ Play `/tmp/voice-test.wav` and try other voice names (see the Kokoro project's
 voice list) until one sounds right for spoken replies in a car. In the cluster image
 only the baked voices work (`bm_george` and `af_heart`); see
 [`run-in-cluster.md`](run-in-cluster.md).
+
+## Singing (easter egg)
+
+Change [`jarvis-sing`](../../openspec/changes/jarvis-sing/proposal.md) (Mark,
+2026-11-17: "make jarvis able to sing"). Ask "Jarvis, sing a song", "zing iets" or
+"sing happy birthday" and Jarvis sings a short tune in its own voice instead of speaking.
+
+**How a reply becomes a song.** The bridge owns the melodies, in a small table in
+`bridge/singing.py`. The agent picks one and writes only the words: it starts its spoken
+line with a tag and its own lyrics, one syllable per note, syllables joined by hyphens
+(`agent_host/prompt.md` in `full` mode, the appended prompt in `bridge/summary.py` in
+`readonly` mode):
+
+```
+SPOKEN SUMMARY: [sing: twinkle] Lit-tle build, you're green at last, all the tests have fi-nal-ly passed
+```
+
+| Tag | Tune | Syllables (per line) | Tempo, length |
+|---|---|---|---|
+| `[sing: happy-birthday]` | Good Morning to All (Hill sisters, 1893) | 25 (6, 6, 7, 6) | 110 bpm, about 14.5 s |
+| `[sing: twinkle]` | Ah! vous dirai-je, maman (18th century), the first two lines | 14 (7, 7) | 100 bpm, about 10 s |
+| `[sing: frere-jacques]` | Frère Jacques / Vader Jacob (18th century) | 32 (4, 4, 3, 3, 6, 6, 3, 3) | 120 bpm, about 16 s |
+
+The bridge then renders it, with the Kokoro it already has and numpy, nothing else:
+
+1. Every word is rendered once by Kokoro, its silence trimmed, and cut into its syllables
+   at the quietest point near each equal division (hyphens give the count; a word without
+   them is counted by its vowel groups).
+2. The key follows the voice: the tune's middle note is put two semitones above the voice's
+   median speaking pitch, measured on those words (`bm_george` about 146 Hz, so happy
+   birthday is sung in E flat, from B flat 2 to B flat 3).
+3. Each syllable is moved onto its note with a pitch-synchronous overlap-add (TD-PSOLA):
+   grains of two pitch periods, cut at the voice's own pitch marks, are laid down at the
+   note's period, so the pitch is the note's and held steady, with a light vibrato
+   (5.5 Hz, 0.3 semitone) after 0.18 s. The vowel is stretched to the note's length; the
+   consonants keep theirs. More syllables than notes share a note; fewer hold several.
+4. A soft organ (the chord tones an octave below the tonic, the root two below, four
+   harmonics) goes under the voice at about a third of its loudness; the song is
+   normalised and faded out. At most 20 s: a tune that would take longer is sung faster.
+
+A sung reply is rendered whole before the status line, in both forms: a WAV, or the same
+L16 stream as a spoken reply, in pieces of half a second. `X-Jarvis-Summary` carries the
+lyrics as words. Rendering took 4 to 9 s on `agent-lxc` (2026-11-17, Kokoro warm: about
+0.6 s per distinct word), so a song starts later than a spoken reply of the same length.
+When rendering fails, the lyrics are spoken instead.
+
+A notice or fallback sentence is spoken before the song, news of a new project after it,
+with 0.3 s between, and `X-Jarvis-Summary` carries them too. They are not dropped, not
+even the informational `new_session`: the others say that something was refused or passed
+to the desk, `new_session` that the earlier conversation is gone, and one rule for all of
+them is simpler than a list of which may be left out. It costs two or three seconds of
+speech; the 20 s cap is for the song alone.
+
+**When it sings, and when not.** All four must hold; otherwise every tag is removed and
+the words are spoken:
+
+- the tag is the very first thing on the agent's own spoken line and names a tune in the
+  table. In `full` mode the bridge's own fixed sentences can stand around that line: a
+  notice of the agent host ("I started a new session for this project."), the read-only
+  fallback sentence, news of a new project. Only those sentences, from their closed list
+  (`FRAMING_SENTENCES` in `bridge/full_mode.py`), are looked past; anything else before
+  the tag means it is not first;
+- the driver's own words in this turn ask for it: "sing", "song", "serenade", "zing",
+  "zingen", "lied", "liedje" (a "yes" to a read-back never does);
+- the reply is not a read-back: a read-back is spoken exactly as built, tag or not;
+- `JARVIS_SING` is not `0`.
+
+In `full` mode the agent host needs the new `prompt.md` (`agent_host/install.sh`, see
+[`agent-host.md`](agent-host.md)); until then its agent never writes the tag and nothing
+changes. A sung line may be 240 characters instead of 160 (tag included). The agent is asked for
+English lyrics: Kokoro's English voices cannot pronounce Dutch words.
+
+**Rights.** The table holds melodies only, all in the public domain: Good Morning to All
+(1893; the Hills died in 1916 and 1946), Ah! vous dirai-je, maman and Frère Jacques
+(18th century). The words are the agent's own. ("Happy birthday to you" itself is in the
+public domain in the US since the 2016 settlement of *Marya v. Warner/Chappell* and in the
+EU since 2017, but nothing here depends on it.) "Lang zal ze leven" is not in the table:
+its melody could not be checked against a reliable score.
+
+Hear one without the phone (loads Kokoro; nothing else heavy should run):
+
+```sh
+uv run python -c "
+import soundfile as sf
+from bridge import singing, tts
+_, song = singing.choose('[sing: twinkle] Lit-tle build, you are green at last, all the tests have fi-nal-ly passed',
+                         transcript='sing', enabled=True, read_back=False)
+sf.write('/tmp/sing-test.wav', tts.sing(song, voice='bm_george'), 24000)
+"
+```
 
 ## Manual end-to-end check on the tailnet (task 4.1)
 
