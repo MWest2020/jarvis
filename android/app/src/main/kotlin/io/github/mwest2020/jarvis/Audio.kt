@@ -26,10 +26,19 @@ import kotlin.concurrent.thread
  * Records 16 kHz mono 16-bit PCM into memory. Raw PCM in a WAV header is the one format the
  * bridge decodes without guessing (faster-whisper reads it through PyAV, `bridge/stt.py`).
  * A recording stops by itself at [MAX_SECONDS], far below the bridge's 10 MB limit.
+ * [onRead] gets each read on the recorder's own thread, after it was kept (the end of speech,
+ * change jarvis-silence-send); it must not block. [onFailed] runs on that thread when the
+ * microphone stops delivering (the audio server restarted, the device was taken away) while
+ * this recording was still meant to run; the caller then stops it.
  */
-class Recorder(private val onLimitReached: () -> Unit) {
+class Recorder(
+    private val onLimitReached: () -> Unit,
+    private val onRead: (ByteArray, Int) -> Unit = { _, _ -> },
+    private val onFailed: () -> Unit = {},
+) {
     @Volatile
     private var recording = false
+    @Volatile
     private var record: AudioRecord? = null
     private var worker: Thread? = null
     private val pcm = ByteArrayOutputStream()
@@ -74,12 +83,21 @@ class Recorder(private val onLimitReached: () -> Unit) {
             val chunk = ByteArray(minBuffer)
             while (recording) {
                 val read = created.read(chunk, 0, chunk.size)
-                if (read < 0) break
+                if (read < 0) {
+                    // Not a stop of ours (that clears `recording` first, or starts another
+                    // recording): without this the recording would wait for bytes forever.
+                    if (recording && record === created) {
+                        recording = false
+                        onFailed()
+                    }
+                    break
+                }
                 if (read == 0) continue
                 val full = synchronized(pcm) {
                     pcm.write(chunk, 0, read)
                     pcm.size() >= MAX_SECONDS * Wav.BYTES_PER_SECOND
                 }
+                onRead(chunk, read)
                 if (full) {
                     recording = false
                     onLimitReached()

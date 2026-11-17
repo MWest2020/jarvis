@@ -25,15 +25,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -54,9 +58,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.mwest2020.jarvis.core.Endpointing
 import io.github.mwest2020.jarvis.core.Phase
 import io.github.mwest2020.jarvis.core.ProjectMenu
 import io.github.mwest2020.jarvis.core.ProjectSetting
+import io.github.mwest2020.jarvis.core.SilenceSend
 
 private val Background = Color(0xFF0B0F14)
 private val Panel = Color(0xFF16202B)
@@ -65,6 +71,7 @@ private val Recording = Color(0xFFD9483B)
 private val Working = Color(0xFF8A6D1F)
 private val Speaking = Color(0xFF2E8B57)
 private val ErrorText = Color(0xFFFF8A80)
+private val Hint = Color(0xFF9FB0C0)
 
 @Composable
 fun JarvisTheme(content: @Composable () -> Unit) {
@@ -144,7 +151,7 @@ fun TalkScreen(
             }
         }
 
-        TalkButton(state.phase, onPress, onRelease, Modifier.weight(1f))
+        TalkButton(state, onPress, onRelease, Modifier.weight(1f))
 
         Column(
             modifier = Modifier
@@ -156,17 +163,27 @@ fun TalkScreen(
                 .padding(16.dp),
         ) {
             val error = state.error
+            // A gentle note, not an error: a recording without speech was dropped, or a short
+            // sound was set aside while the app keeps listening (jarvis-silence-send H4).
+            val notice = state.notice
+                ?: if (state.phase == Phase.RECORDING && state.shortSound) SilenceSend.SHORT_SOUND else null
             when {
                 // Selectable, so a reply (a link, a command) can be copied.
                 error != null -> SelectionContainer {
                     Text(error, color = ErrorText, fontSize = 20.sp, lineHeight = 26.sp)
                 }
+                notice != null -> Text(notice, color = Hint, fontSize = 20.sp, lineHeight = 26.sp)
                 state.summary.isNotEmpty() -> SelectionContainer {
                     Text(state.summary, fontSize = 20.sp, lineHeight = 26.sp)
                 }
                 else -> Text(
-                    "Hold the button while you talk, or tap to start and tap again to send.",
-                    color = Color(0xFF9FB0C0),
+                    if (state.silenceSend) {
+                        "Hold the button while you talk, or tap it and talk: it sends when you stop " +
+                            "talking, or when you tap again."
+                    } else {
+                        "Hold the button while you talk, or tap to start and tap again to send."
+                    },
+                    color = Hint,
                     fontSize = 18.sp,
                     lineHeight = 24.sp,
                 )
@@ -176,12 +193,18 @@ fun TalkScreen(
 }
 
 @Composable
-private fun TalkButton(phase: Phase, onPress: () -> Unit, onRelease: () -> Unit, modifier: Modifier = Modifier) {
+private fun TalkButton(state: UiState, onPress: () -> Unit, onRelease: () -> Unit, modifier: Modifier = Modifier) {
     val press by rememberUpdatedState(onPress)
     val release by rememberUpdatedState(onRelease)
-    val (color, label, hint) = when (phase) {
+    val countdown = state.countdownMs?.takeIf { state.phase == Phase.RECORDING && state.handsFree }
+    val (color, label, hint) = when (state.phase) {
         Phase.IDLE -> Triple(Accent, "Talk", "hold, or tap")
-        Phase.RECORDING -> Triple(Recording, "Listening", "let go or tap to send")
+        Phase.RECORDING -> when {
+            // The silence is being counted (jarvis-silence-send H6); a tap still sends at once.
+            countdown != null -> Triple(Recording, "Listening", "sending in ${(countdown + 999) / 1_000} s, tap to send now")
+            state.handsFree -> Triple(Recording, "Listening", "sends when you stop talking, or tap")
+            else -> Triple(Recording, "Listening", "let go or tap to send")
+        }
         Phase.WAITING -> Triple(Working, "Working", "the reply takes about 20 seconds")
         Phase.PLAYING -> Triple(Speaking, "Speaking", "tap to stop")
     }
@@ -208,6 +231,21 @@ private fun TalkButton(phase: Phase, onPress: () -> Unit, onRelease: () -> Unit,
             Text(label, fontSize = 44.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Spacer(Modifier.height(8.dp))
             Text(hint, fontSize = 18.sp, color = Color.White, textAlign = TextAlign.Center)
+            if (state.phase == Phase.RECORDING && state.handsFree) {
+                // The bar runs down while the silence is counted; the space stays, so nothing jumps.
+                Spacer(Modifier.height(16.dp))
+                val total = (state.silenceSeconds * 1_000).toFloat()
+                if (countdown != null) {
+                    LinearProgressIndicator(
+                        progress = { (countdown / total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(0.6f).height(8.dp),
+                        color = Color.White,
+                        trackColor = Color.White.copy(alpha = 0.3f),
+                    )
+                } else {
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
         }
     }
 }
@@ -221,6 +259,7 @@ fun SettingsScreen(
     state: UiState,
     onSave: (url: String, token: String, projects: String, defaultProject: String, homeProject: String, done: (String?) -> Unit) -> Unit,
     onForgetToken: () -> Unit,
+    onSilenceSend: (enabled: Boolean, seconds: Double) -> Unit,
     onClose: (() -> Unit)?,
 ) {
     var url by rememberSaveable { mutableStateOf(state.bridgeUrl) }
@@ -312,6 +351,8 @@ fun SettingsScreen(
             color = Color(0xFF9FB0C0),
         )
 
+        SilenceSetting(state.silenceSend, state.silenceSeconds, onSilenceSend)
+
         error?.let { Text(it, color = ErrorText, fontSize = 18.sp) }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -332,4 +373,37 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+/**
+ * "Send when I stop talking" and the silence before sending (change jarvis-silence-send, H8).
+ * Stored as soon as it changes; the Save button is not needed for it.
+ */
+@Composable
+private fun SilenceSetting(enabled: Boolean, seconds: Double, onChange: (Boolean, Double) -> Unit) {
+    var shown by remember(seconds) { mutableFloatStateOf(seconds.toFloat()) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Send when I stop talking", fontSize = 18.sp, modifier = Modifier.weight(1f))
+        Switch(checked = enabled, onCheckedChange = { onChange(it, seconds) })
+    }
+    if (enabled) {
+        Text("Silence before sending: ${Endpointing.label(shown.toDouble())}", fontSize = 18.sp)
+        Slider(
+            value = shown,
+            onValueChange = { shown = it },
+            onValueChangeFinished = { onChange(true, shown.toDouble()) },
+            valueRange = Endpointing.MIN_SILENCE_SECONDS.toFloat()..Endpointing.MAX_SILENCE_SECONDS.toFloat(),
+            // The values between the ends, in half seconds: 2, 2.5, ... 5.5.
+            steps = ((Endpointing.MAX_SILENCE_SECONDS - Endpointing.MIN_SILENCE_SECONDS) / Endpointing.SILENCE_STEP_SECONDS).toInt() - 1,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "Silence before sending" },
+        )
+    }
+    Text(
+        "After a tap, the question is sent by itself once you have stopped talking for this " +
+            "long; a tap still sends at once, and holding the button works as before. A cough " +
+            "or a click alone is never sent. Changes apply at once.",
+        color = Hint,
+    )
 }

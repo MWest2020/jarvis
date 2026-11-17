@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onForgetToken = viewModel::forgetToken,
+                        onSilenceSend = viewModel::setSilenceSend,
                         onClose = if (state.configured) ({ showSettings = false }) else null,
                     )
                 } else {
