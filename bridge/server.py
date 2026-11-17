@@ -476,7 +476,7 @@ class Handler(BaseHTTPRequestHandler):
         for an agent's reply the driver asked to be sung, never for a read-back."""
         text, song = singing.choose(spoken, transcript=transcript,
                                     enabled=self.config.sing, read_back=read_back,
-                                    framing=framing)
+                                    framing=framing, parody=self.config.sing_parody)
         if song is not None:
             logger.info("sung: %s", song.tune.id)
         return text, song
