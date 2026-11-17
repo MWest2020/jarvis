@@ -179,7 +179,11 @@ class StreamedReplyTest {
     @Test
     fun playsAStreamWhoseChunksCutSamplesInTwo() {
         val base = rawBridge { out ->
-            out.write(streamHead("X-Jarvis-Projects-Changed: 1\r\nX-Jarvis-Needs-Confirmation: 1\r\n"))
+            out.write(
+                streamHead(
+                    "X-Jarvis-Projects-Changed: 1\r\nX-Jarvis-Needs-Confirmation: 1\r\nX-Jarvis-Confirmation-Id: c-42\r\n",
+                ),
+            )
             // Chunks of 3, 1 and the rest: two samples are cut by a chunk boundary.
             out.write(chunk(bigEndian.copyOfRange(0, 3)))
             out.write(chunk(bigEndian.copyOfRange(3, 4)))
@@ -194,6 +198,7 @@ class StreamedReplyTest {
         assertEquals(24_000, reply.sampleRate)
         assertTrue(reply.projectsChanged)
         assertTrue(reply.needsConfirmation)
+        assertEquals("c-42", reply.confirmationId)
         val got = mutableListOf<Short>()
         val into = ShortArray(2)
         while (true) {
@@ -215,6 +220,7 @@ class StreamedReplyTest {
         }
         val reply = (client.turn(built(base), ByteArray(100)) as TurnOutcome.Streamed).reply
         assertFalse(reply.needsConfirmation)
+        assertNull(reply.confirmationId)
         val into = ShortArray(16)
         val got = mutableListOf<Short>()
         try {
@@ -247,13 +253,16 @@ class StreamedReplyTest {
         val base = rawBridge { out ->
             out.write(
                 ("HTTP/1.0 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: ${wav.size}\r\n" +
-                    "X-Jarvis-Summary: Four.\r\n\r\n").toByteArray(Charsets.US_ASCII),
+                    "X-Jarvis-Summary: Four.\r\nX-Jarvis-Needs-Confirmation: 1\r\nX-Jarvis-Confirmation-Id: c-7\r\n\r\n")
+                    .toByteArray(Charsets.US_ASCII),
             )
             out.write(wav)
         }
         val reply = client.turn(built(base), ByteArray(100)) as TurnOutcome.Reply
         assertArrayEquals(wav, reply.wav)
         assertEquals("Four.", reply.summary)
+        assertTrue(reply.needsConfirmation)
+        assertEquals("c-7", reply.confirmationId)
     }
 
     @Test
@@ -266,5 +275,65 @@ class StreamedReplyTest {
         }
         val outcome = client.turn(built(base), ByteArray(100)) as TurnOutcome.Failed
         assertEquals(FailureKind.BAD_REPLY, outcome.failure.kind)
+    }
+
+    // --- cancelling a read-back that was not played to its end (S6) --------------------
+
+    @Test
+    fun aReadBackIsCancelledUnlessItPlayedToItsEnd() {
+        assertFalse(ReadBack.mustCancel(true, "c-1", PlaybackEnd.PLAYED))
+        assertTrue(ReadBack.mustCancel(true, "c-1", PlaybackEnd.STOPPED))
+        assertTrue(ReadBack.mustCancel(true, "c-1", PlaybackEnd.BROKE_OFF))
+        assertTrue(ReadBack.mustCancel(true, "c-1", PlaybackEnd.FAILED))
+        // Not a read-back, or a bridge that sends no id: nothing to cancel.
+        assertFalse(ReadBack.mustCancel(false, "c-1", PlaybackEnd.STOPPED))
+        assertFalse(ReadBack.mustCancel(true, null, PlaybackEnd.STOPPED))
+        assertFalse(ReadBack.mustCancel(true, "", PlaybackEnd.BROKE_OFF))
+    }
+
+    @Test
+    fun onlyAnIdOfTheBridgesShapeIsSent() {
+        assertTrue(ReadBack.isValidId("a1_B-2"))
+        assertFalse(ReadBack.isValidId(""))
+        assertFalse(ReadBack.isValidId("x".repeat(65)))
+        assertFalse(ReadBack.isValidId("a b"))
+        assertFalse(ReadBack.isValidId("a&id=b"))
+        assertFalse(ReadBack.isValidId("é"))
+        val refused = TurnRequests.cancel("http://jarvis.example.ts.net:8787", "s3cret-token", "demo", "a&b")
+        assertTrue(refused is Built.Refused)
+    }
+
+    @Test
+    fun theCancelRequestNamesTheProjectAndTheId() {
+        val built = TurnRequests.cancel("http://jarvis.example.ts.net:8787", "s3cret-token", "my app", "c-42") as Built.Ok
+        assertEquals("http://jarvis.example.ts.net:8787/turn/cancel?project=my%20app&id=c-42", built.value.url.toString())
+        assertEquals(mapOf("Authorization" to "Bearer s3cret-token"), built.value.headers)
+        assertFalse(built.value.toString().contains("s3cret-token"))
+    }
+
+    private fun cancelRequest(base: String): TurnRequest {
+        val ok = TurnRequests.cancel("http://jarvis.example.ts.net:8787", "s3cret-token", "demo", "c-42") as Built.Ok
+        return TurnRequest(BridgeUrl.cancelUrl(URI(base), "demo", "c-42"), ok.value.headers)
+    }
+
+    private fun jsonReply(status: String, body: String) = (
+        "HTTP/1.0 $status\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n$body"
+        ).toByteArray(Charsets.US_ASCII)
+
+    @Test
+    fun theBridgeSaysWhetherItCancelled() {
+        var base = rawBridge { it.write(jsonReply("200 OK", "{\"cancelled\": true}")) }
+        assertEquals(CancelOutcome.Done(true), client.cancel(cancelRequest(base)))
+        assertTrue(seenHead.startsWith("POST /turn/cancel?project=demo&id=c-42 HTTP/1.1"))
+        assertTrue(seenHead.contains("Authorization: Bearer s3cret-token"))
+        base = rawBridge { it.write(jsonReply("200 OK", "{\"cancelled\": false}")) }
+        assertEquals(CancelOutcome.Done(false), client.cancel(cancelRequest(base)))
+    }
+
+    @Test
+    fun aRefusedCancelIsAFailure() {
+        val base = rawBridge { it.write(jsonReply("401 Unauthorized", "no")) }
+        val outcome = client.cancel(cancelRequest(base)) as CancelOutcome.Failed
+        assertEquals(FailureKind.UNAUTHORIZED, outcome.failure.kind)
     }
 }

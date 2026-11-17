@@ -72,6 +72,14 @@ object BridgeUrl {
         return URI("${base.scheme}://${base.rawAuthority}$path?$query").toURL()
     }
 
+    /** `<base>/turn/cancel?project=<name>&id=<confirmation id>` (jarvis-streaming-speech S6). */
+    fun cancelUrl(base: URI, project: String, confirmationId: String): URL {
+        val path = (base.rawPath ?: "").trimEnd('/') + "/turn/cancel"
+        val query = "project=" + URLEncoder.encode(project, Charsets.UTF_8).replace("+", "%20") +
+            "&id=" + URLEncoder.encode(confirmationId, Charsets.UTF_8)
+        return URI("${base.scheme}://${base.rawAuthority}$path?$query").toURL()
+    }
+
     private fun refuse(kind: FailureKind, message: String) = Built.Refused(TurnFailure(kind, message))
 }
 
@@ -112,6 +120,20 @@ object TurnRequests {
             if (typedList) put(TYPED_LIST_HEADER, TYPED_LIST_VALUE)
         }
         return Built.Ok(TurnRequest(BridgeUrl.turnUrl(base, project.trim()), headers))
+    }
+
+    /** `POST /turn/cancel` for a read-back that was not played to its end; the same checks as a turn. */
+    fun cancel(baseUrl: String, token: String?, project: String?, confirmationId: String): Built<TurnRequest> {
+        val turn = when (val built = build(baseUrl, token, project)) {
+            is Built.Refused -> return built
+            is Built.Ok -> built.value
+        }
+        if (!ReadBack.isValidId(confirmationId)) {
+            return refuse(FailureKind.BAD_REPLY, "The bridge sent a read-back id the app does not accept.")
+        }
+        val base = (BridgeUrl.validate(baseUrl) as Built.Ok).value
+        val headers = mapOf("Authorization" to turn.headers.getValue("Authorization"))
+        return Built.Ok(TurnRequest(BridgeUrl.cancelUrl(base, project!!.trim(), confirmationId), headers))
     }
 
     fun isValidToken(token: String): Boolean =

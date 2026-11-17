@@ -389,8 +389,30 @@ the next sentence renders). The words and their order are never changed
 - **An error after the headers** (Kokoro fails, or the phone stops reading): the bridge logs
   it, writes no terminating zero-length chunk and closes the connection. A client sees a cut
   chunked body (`IncompleteRead` in Python, an `IOException` on Android), never a complete
-  one. In `full` mode a read-back whose stream broke off is cancelled on the agent host, as
-  one that could not be written before.
+  one. In `full` mode a read-back whose stream broke off on the bridge's side is cancelled
+  on the agent host, as one that could not be written before. That rarely happens: a
+  read-back fits in the socket buffers, so the bridge has usually written it, and kept it
+  pending, before the phone plays it. The phone cancels it itself (below).
+
+### Cancelling a read-back the phone did not play to its end
+
+A read-back reply (WAV or stream) carries `X-Jarvis-Confirmation-Id`, the id the agent host
+gave the pending call. When the phone did not play it to its end (a tap, a cut stream, a
+playback error, the screen closed), it sends:
+
+```
+POST /turn/cancel?project=<name>&id=<confirmation id>
+Authorization: Bearer <token>
+```
+
+The bridge answers `no` to the agent host for that call, as for a read-back it could not
+write, and replies `200` with `{"cancelled": true}`. An id that is not pending (already
+answered or cancelled, expired, another read-back, or `readonly` mode) changes nothing:
+`{"cancelled": false}`, also on a second call. A cancel that comes while the bridge is still
+writing the read-back is remembered for 60 seconds and applied when the write ends. 401
+without the token, 400 for a missing project or an id that is not 1 to 64 letters, digits,
+`_` or `-`. The route takes no project lock. If the phone cannot send it (killed, offline),
+the call expires on the agent host after its `expires_s`, at most 60 seconds.
 - `X-Jarvis-Timing` on a streamed reply has no `tts` (nothing is rendered yet when it goes
   out, except for a read-back); the log line has it.
 

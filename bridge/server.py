@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -88,6 +89,13 @@ def _parse_content_length(value: str | None) -> int | None:
         return int(value)
     except ValueError:   # more digits than int() converts
         return None
+
+
+# jarvis-streaming-speech S6: the phone cancels a read-back it did not play to the end.
+CANCEL_PATH = "/turn/cancel"
+CONFIRMATION_HEADER = "X-Jarvis-Confirmation-Id"
+# The shape the remote adapter accepts for a confirmation id (remote_adapter._CONFIRM_ID).
+_CONFIRMATION_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def accepts_stream(accept: str | None) -> bool:
@@ -296,7 +304,7 @@ class Handler(BaseHTTPRequestHandler):
         self._body_length = _parse_content_length(self.headers.get("Content-Length"))
 
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/turn":
+        if parsed.path not in ("/turn", CANCEL_PATH):
             self._reject(404, "not found")
             return
 
@@ -305,6 +313,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         query = urllib.parse.parse_qs(parsed.query)
+        if parsed.path == CANCEL_PATH:
+            self._cancel_read_back(query)
+            return
         project_name = query.get("project", [None])[0]
         if not project_name:
             self._reject(400, "project query parameter is required")
@@ -349,6 +360,53 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             _release_project_lock(project_name)
 
+    def _cancel_read_back(self, query: dict) -> None:
+        """`POST /turn/cancel?project=<name>&id=<confirmation id>` (S6): the phone did not
+        play a read-back to its end, so it is not heard and the agent host gets a `no`.
+        Idempotent: `{"cancelled": false}` when nothing with that id is pending (answered,
+        expired, cancelled before, another read-back, or `readonly` mode). No project
+        lock: the cancel can come while the read-back's turn is still writing."""
+        length = self._body_length
+        if length is None or length > MAX_AUDIO_BYTES:
+            self._reject(400, "Content-Length is not a valid number")
+            return
+        if length and not self._drain(length):
+            self._respond_error(400, "the body did not arrive", close=True)
+            return
+        project_name = query.get("project", [None])[0]
+        confirmation_id = query.get("id", [None])[0]
+        if not project_name:
+            self._respond_error(400, "project query parameter is required")
+            return
+        if not confirmation_id or not _CONFIRMATION_ID.fullmatch(confirmation_id):
+            self._respond_error(400, "id query parameter is missing or not a confirmation id")
+            return
+        try:
+            project = self.config.project_for_turn(project_name)
+        except ConfigError as exc:
+            self._respond_error(400, str(exc))
+            return
+        try:
+            cancelled = (self.full is not None
+                         and self.full.cancel_read_back(project, confirmation_id))
+        except Exception:  # noqa: BLE001 - never a traceback to the phone
+            logger.exception("cancelling a read-back for %s failed", project_name)
+            self._respond_error(500, "internal error")
+            return
+        logger.info("project=%s read-back cancel from the phone: %s", project_name,
+                    "cancelled" if cancelled else "nothing pending with that id")
+        body = json.dumps({"cancelled": bool(cancelled)}).encode("utf-8")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as exc:
+            self.close_connection = True
+            logger.info("could not send the cancel answer to %s: %s", self.address_string(), exc)
+
     def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes,
                      timer: TurnTimer | None = None) -> None:
         timer = timer if timer is not None else TurnTimer()
@@ -383,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
                 complete = self._speak(outcome.spoken, outcome.ref,
                                        needs_confirmation=outcome.needs_confirmation,
                                        projects_changed=outcome.projects_changed,
+                                       confirmation_id=outcome.confirmation_id,
                                        timer=timer, project=project_name)
             except BaseException:
                 # A read-back that was not spoken, or did not reach the phone, was
@@ -403,7 +462,8 @@ class Handler(BaseHTTPRequestHandler):
         self._speak(summary, turn.ref, timer=timer, project=project_name)
 
     def _speak(self, text: str, session_id: str, *, needs_confirmation: bool = False,
-               projects_changed: bool = False, timer: TurnTimer, project: str) -> bool:
+               projects_changed: bool = False, confirmation_id: str = "",
+               timer: TurnTimer, project: str) -> bool:
         """Render `text` and send it: as a WAV, or as a stream to a client that asked
         for one (jarvis-streaming-speech).
 
@@ -418,7 +478,8 @@ class Handler(BaseHTTPRequestHandler):
                 audio_reply = tts.synthesize(text, voice=voice)
             self._respond_audio(audio_reply, text, session_id,
                                 needs_confirmation=needs_confirmation,
-                                projects_changed=projects_changed, timer=timer, project=project)
+                                projects_changed=projects_changed,
+                                confirmation_id=confirmation_id, timer=timer, project=project)
             return True
         timer.reply = "stream"
         if needs_confirmation:
@@ -430,19 +491,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._respond_stream(iter(pieces), text, session_id,
                                         needs_confirmation=True,
                                         projects_changed=projects_changed,
+                                        confirmation_id=confirmation_id,
                                         timer=timer, project=project, rendered=True)
         return self._respond_stream(tts.stream_pcm(text, voice=voice), text, session_id,
                                     projects_changed=projects_changed,
                                     timer=timer, project=project, rendered=False)
 
     def _reply_headers(self, summary: str, session_id: str, *, needs_confirmation: bool,
-                       projects_changed: bool, timer: TurnTimer | None) -> None:
+                       projects_changed: bool, timer: TurnTimer | None,
+                       confirmation_id: str = "") -> None:
         """The X-Jarvis-* headers of a reply, the same for a WAV and a stream."""
         self.send_header("X-Jarvis-Session-Id", session_id)
         self.send_header("X-Jarvis-Summary", urllib.parse.quote(summary))
         if needs_confirmation:
             # D36: this reply is a read-back; the next utterance is the answer.
             self.send_header("X-Jarvis-Needs-Confirmation", "1")
+            if confirmation_id:
+                # S6: what the phone sends to POST /turn/cancel when it did not play
+                # the read-back to its end.
+                self.send_header(CONFIRMATION_HEADER, confirmation_id)
         if projects_changed:
             # jarvis-general-conversation D56: a new project is ready; the phone
             # fetches GET /projects again.
@@ -453,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
                        needs_confirmation: bool = False,
-                       projects_changed: bool = False,
+                       projects_changed: bool = False, confirmation_id: str = "",
                        timer: TurnTimer | None = None, project: str = "") -> None:
         if timer is not None:
             timer.audio_out_s = wav_seconds(audio_reply)
@@ -462,7 +529,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(audio_reply)))
         self._reply_headers(summary, session_id, needs_confirmation=needs_confirmation,
-                            projects_changed=projects_changed, timer=timer)
+                            projects_changed=projects_changed, timer=timer,
+                            confirmation_id=confirmation_id)
         self.end_headers()
         if timer is None:
             self.wfile.write(audio_reply)
@@ -475,6 +543,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _respond_stream(self, pieces: Iterator[bytes], summary: str, session_id: str, *,
                         needs_confirmation: bool = False, projects_changed: bool = False,
+                        confirmation_id: str = "",
                         timer: TurnTimer, project: str, rendered: bool) -> bool:
         """The headers at once, then each piece of audio as one chunk of a chunked
         HTTP/1.1 body (S2, S3). `rendered`: the pieces are ready (a read-back, S5);
@@ -496,7 +565,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self._reply_headers(summary, session_id, needs_confirmation=needs_confirmation,
-                                projects_changed=projects_changed, timer=timer)
+                                projects_changed=projects_changed, timer=timer,
+                                confirmation_id=confirmation_id)
             self._headers_out = True
             self.end_headers()
             while True:

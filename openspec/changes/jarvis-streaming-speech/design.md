@@ -72,19 +72,49 @@ sentences.
 - Rendering fails, or the phone stops reading, after the headers: the bridge logs it, writes
   no terminating chunk and closes the connection. In `full` mode `undelivered` is called (it
   cancels a read-back; an ordinary reply has nothing pending).
-- A write error on a read-back, for instance because Mark stopped it with a tap and the
-  connection closed before the bridge had written it all: cancelled, as today for a WAV that
-  could not be written. A later yes is an ordinary utterance.
+- A write error on a read-back on the bridge: cancelled, as for a WAV that could not be
+  written. But a read-back is one or two sentences and fits in the socket and proxy buffers:
+  the bridge has usually written all of it, and kept it pending (`delivered`), before the
+  phone has played its first word. A write error therefore says almost nothing about what
+  was heard. This was already so for the WAV reply.
+- **So the phone cancels a read-back it did not play to its end.** A read-back reply carries
+  `X-Jarvis-Confirmation-Id` (the id the agent host issued; WAV and stream alike). When it
+  ends any other way than played to its end (a tap, a cut stream, a playback error, the
+  screen closed while it played), the app sends
+  `POST /turn/cancel?project=<name>&id=<id>` with the token and shows "Cancelled. Nothing
+  was confirmed." The bridge answers `no` to the agent host for that pending call, exactly
+  as for a read-back that could not be written (`ConfirmAnswer`, `ANSWER_NO`), and replies
+  `{"cancelled": true}`. It is idempotent: an id that is not pending (answered, expired,
+  cancelled before, another read-back, `readonly` mode) changes nothing and gets
+  `{"cancelled": false}`. A cancel that arrives while the bridge is still writing the
+  read-back is remembered for 60 seconds, and `delivered` then cancels instead of keeping.
+  The route takes no project lock.
+- **What still holds:** a read-back is pending only from the moment the bridge has written
+  it to the moment the phone reports it was not played to its end. A yes in that window
+  (the phone stops, the cancel is in flight, Mark says yes at once) cannot come from the
+  app: the button takes no new question until the bridge has answered the cancel. **The residual:**
+  when the app is killed, or the phone loses the network, before the cancel goes out, nothing
+  tells the bridge; the pending call then expires on the agent host after its `expires_s`
+  (at most 60 seconds) and on the bridge after the same deadline. A yes within that minute
+  still confirms a read-back that was only partly heard. When the cancel fails the app says
+  "The read-back was stopped, but the bridge could not be told. Do not say yes; it expires
+  within a minute."
 - The phone sees a cut body as an `IOException` on read. It stops after what it played, keeps
-  the summary on screen and says "The spoken reply broke off. Its text is above."
+  the summary on screen and says "The spoken reply broke off. Its text is above." (for a
+  read-back: "Cancelled. Nothing was confirmed.", above).
 
 **S7. The app.** `TurnRequests` sends `Accept: audio/L16;rate=24000;channels=1, audio/wav;q=0.5`.
 `BridgeClient` returns a streamed reply when the `Content-Type` is that format, and the old
 in-memory reply for `audio/wav`. A reader in `:core` turns the body into 16-bit samples
 (a sample may be split across two reads), caps the reply at 32 MB and reports a cut body.
-The player writes to an `AudioTrack` in `MODE_STREAM` with a one-second buffer and starts
-after 300 ms of audio, or at the end of a shorter reply: the jitter buffer. A tap pauses and
-flushes the track and closes the connection. The waiting tick stops when the headers arrive.
+The player writes to an `AudioTrack` in `MODE_STREAM` that starts once 300 ms of audio is
+buffered: the jitter buffer. From Android 12 that is the track's start threshold and the
+buffer holds one second; before, a streaming track starts only when its buffer is full, so
+the buffer is the 300 ms. A reply shorter than that is followed by a threshold of silence,
+which is never heard: the player waits until the reply's own frames have played, then
+empties the track. One worker thread owns the track; a tap sets a flag and closes the
+connection, and the worker pauses, empties and releases the track within one read or write.
+The waiting tick stops when the headers arrive.
 No permission, component or dependency is added (D9; the CI checks stay as they are).
 
 **S8. Timing.** The log line gets `first_audio_ms`, from the request's head to the first audio

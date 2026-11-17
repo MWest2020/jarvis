@@ -21,7 +21,9 @@ STREAM_CONTENT_TYPE = f"audio/L16;rate={SAMPLE_RATE};channels=1"
 # This splits at a line break, or at the white space after ".", "!", "?" or "…" when
 # the next word does not start in lower case ("e.g. this" stays one piece). The words
 # themselves are never changed.
-SENTENCE_SPLIT = r"\n+|(?<=[.!?…])\s+(?![a-z])"
+# The look-ahead also refuses white space, so a run of spaces cannot backtrack to a
+# shorter match that ends before a lower-case word ("e.g.  this" stays one piece).
+SENTENCE_SPLIT = r"\n+|(?<=[.!?…])\s+(?!\s|[a-z])"
 # Kokoro's default split_pattern: what synthesize() uses, and a read-back (S5).
 KOKORO_SPLIT = r"\n+"
 # A sentence shorter than this is rendered together with the next one. Kokoro renders
@@ -87,7 +89,7 @@ def stream_pcm(text: str, *, voice: str = DEFAULT_VOICE, whole: bool = False) ->
 
 def sentences(text: str) -> list[str]:
     """The text cut at SENTENCE_SPLIT, empty pieces skipped."""
-    return [piece for piece in re.split(SENTENCE_SPLIT, text.strip()) if piece.strip()]
+    return [piece.strip() for piece in re.split(SENTENCE_SPLIT, text.strip()) if piece.strip()]
 
 
 def pieces(text: str) -> list[str]:

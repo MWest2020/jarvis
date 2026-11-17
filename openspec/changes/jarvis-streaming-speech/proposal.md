@@ -26,6 +26,10 @@ pull request is the approval point.
 - **A broken stream is visible as broken.** A rendering or write error after the headers ends
   the body without its terminating chunk and closes the connection; the phone keeps the text
   on screen and says the spoken reply broke off.
+- **A read-back that was not heard to its end is cancelled.** A read-back reply carries its
+  id; when the phone did not play it to its end it sends `POST /turn/cancel` and the bridge
+  answers `no` to the agent host. Before, a read-back stayed pending as soon as the bridge had
+  written it, heard or not (design S6).
 - **The app plays the stream** with `AudioTrack` in streaming mode and a short pre-roll, stops
   on a tap, and falls back to the WAV player when the bridge answers with a WAV.
 - **Timing:** the log line gets `first_audio_ms` (from the request's head to the first audio

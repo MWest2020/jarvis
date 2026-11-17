@@ -4,6 +4,7 @@ before the headers, and the WAV unchanged for every client that does not ask.
 
 Real HTTP server on loopback, faked speech and agent (no Kokoro is loaded here)."""
 import http.client
+import json
 import logging
 import socket
 import threading
@@ -15,6 +16,7 @@ import pytest
 from bridge import claude_adapter, server, stt, tts
 from bridge.config import BridgeConfig, ProjectConfig
 from tests.test_server_full_mode import READBACK, Bridge
+from tests.test_timing import timing_lines
 
 STREAM_ACCEPT = "audio/L16;rate=24000;channels=1"
 SUMMARY = "The answer to your question is four. Nothing else in the repository changed!"
@@ -267,19 +269,18 @@ def test_the_first_sentence_is_sent_before_the_second_is_rendered(stream_server)
 
 
 def test_a_rendering_error_mid_stream_cuts_the_body(stream_server, caplog):
+    caplog.set_level(logging.INFO, logger="bridge")
     stream_server.speech.fail_at = 1
     raw = Raw(stream_server.port, _request())
-    with caplog.at_level(logging.INFO, logger="bridge"):
-        try:
-            status, _ = raw.head()
-            assert status == "HTTP/1.1 200 OK"
-            assert raw.chunk() == b"The answer to your question is four."
-            # No terminating chunk and no error status after the headers: closed.
-            assert raw.rest() == b""
-        finally:
-            raw.close()
-        stream_server.httpd.shutdown()      # the handler has finished and logged
-    lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
+    try:
+        status, _ = raw.head()
+        assert status == "HTTP/1.1 200 OK"
+        assert raw.chunk() == b"The answer to your question is four."
+        # No terminating chunk and no error status after the headers: closed.
+        assert raw.rest() == b""
+    finally:
+        raw.close()
+    lines = timing_lines(caplog, 1)
     assert len(lines) == 1 and "reply=stream_cut" in lines[0]
     assert "first_audio_ms=" in lines[0]
 
@@ -372,18 +373,19 @@ def test_silence_is_streamed_too(stream_server, monkeypatch):
 
 
 def test_the_log_line_has_the_time_to_the_first_audio_byte(stream_server, caplog):
-    with caplog.at_level(logging.INFO, logger="bridge"):
-        conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
-        conn.request("POST", "/turn?project=demo", body=b"fake-audio",
-                     headers={"Authorization": "Bearer test-token", "Accept": STREAM_ACCEPT})
-        conn.getresponse().read()
-        conn.close()
-        conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
-        conn.request("POST", "/turn?project=demo", body=b"fake-audio",
-                     headers={"Authorization": "Bearer test-token"})
-        conn.getresponse().read()
-        conn.close()
-    lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
+    caplog.set_level(logging.INFO, logger="bridge")
+    conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+    conn.request("POST", "/turn?project=demo", body=b"fake-audio",
+                 headers={"Authorization": "Bearer test-token", "Accept": STREAM_ACCEPT})
+    conn.getresponse().read()
+    conn.close()
+    timing_lines(caplog, 1)                       # in this order: streamed, then WAV
+    conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+    conn.request("POST", "/turn?project=demo", body=b"fake-audio",
+                 headers={"Authorization": "Bearer test-token"})
+    conn.getresponse().read()
+    conn.close()
+    lines = timing_lines(caplog, 2)
     assert len(lines) == 2
     streamed, wav = lines
     for field in ("tts_ms=", "write_ms=", "first_audio_ms=", "total_ms=",
@@ -496,3 +498,143 @@ def test_an_ordinary_full_reply_is_split_and_a_cut_leaves_nothing_pending(full):
     assert response.status == 200 and data == b""
     assert full.voice.calls == [("Done on the agent host.", False)]   # not whole
     assert full.kinds() == ["agent"]                                   # no cancel needed
+
+
+# --- cancelling a read-back the phone did not play to the end (S6) ----------------------
+
+def _cancel(bridge, confirmation_id, *, project="demo", token="test-token"):
+    conn = http.client.HTTPConnection("127.0.0.1", bridge.httpd.server_address[1], timeout=30)
+    query = urllib.parse.urlencode({k: v for k, v in
+                                    {"project": project, "id": confirmation_id}.items() if v})
+    headers = {"Content-Length": "0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    conn.request("POST", "/turn/cancel?" + query, headers=headers)
+    response = conn.getresponse()
+    data = response.read()
+    conn.close()
+    return response, data
+
+
+def _read_back(full):
+    full.host.scenario(mode="wrapper", gate=True)
+    response, _ = _say(full, "merge the jarvis pull request")
+    confirmation_id = response.getheader("X-Jarvis-Confirmation-Id")
+    assert response.getheader("X-Jarvis-Needs-Confirmation") == "1" and confirmation_id
+    full.host.scenario(mode="wrapper")
+    _wait_pending(confirmation_id)
+    return confirmation_id
+
+
+def _wait_pending(confirmation_id):
+    """delivered() keeps the read-back after its last byte is written, on the handler's
+    thread: a client can have read it all just before. Wait until it is kept."""
+    import time
+    pending = server.Handler.full._pending._pending
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        entry = pending.get("demo")
+        if entry is not None and entry[0].id == confirmation_id:
+            return
+        time.sleep(0.01)
+    raise AssertionError("the read-back was never kept")
+
+
+def test_a_read_back_the_phone_stopped_is_cancelled_and_a_yes_confirms_nothing(full):
+    confirmation_id = _read_back(full)
+    response, data = _cancel(full, confirmation_id)
+    assert response.status == 200 and json.loads(data) == {"cancelled": True}
+    assert full.kinds() == ["agent", "cancel"]
+    assert full.host.requests()[-1]["confirm"]["answer"] == "no"
+    _say(full, "yes")
+    assert full.host.requests()[-1]["confirm"] is None     # an ordinary utterance
+    assert "confirmed" not in full.kinds()
+
+
+def test_cancelling_twice_changes_nothing_the_second_time(full):
+    confirmation_id = _read_back(full)
+    _cancel(full, confirmation_id)
+    response, data = _cancel(full, confirmation_id)
+    assert response.status == 200 and json.loads(data) == {"cancelled": False}
+    assert full.kinds() == ["agent", "cancel"]
+
+
+def test_a_cancel_with_another_id_leaves_the_read_back_pending(full):
+    _read_back(full)
+    response, data = _cancel(full, "not-this-one")
+    assert response.status == 200 and json.loads(data) == {"cancelled": False}
+    _say(full, "yes")
+    assert full.kinds() == ["agent", "confirmed"]
+
+
+def test_a_cancel_after_the_yes_changes_nothing(full):
+    confirmation_id = _read_back(full)
+    _say(full, "yes")
+    response, data = _cancel(full, confirmation_id)
+    assert json.loads(data) == {"cancelled": False}
+    assert full.kinds() == ["agent", "confirmed"]
+
+
+def test_a_cancel_that_comes_while_the_read_back_is_written_still_cancels(full, monkeypatch):
+    real = server.Handler._respond_stream
+
+    def cancel_first(self, *args, **kwargs):
+        # The phone stopped before the bridge finished writing: its cancel arrives
+        # before delivered() could keep the read-back.
+        assert self.full.cancel_read_back(
+            self.config.project_for_turn("demo"), kwargs["confirmation_id"]) is False
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(server.Handler, "_respond_stream", cancel_first)
+    full.host.scenario(mode="wrapper", gate=True)
+    _say(full, "merge the jarvis pull request")
+    full.host.scenario(mode="wrapper")
+    # delivered() runs after the last byte is written, on the handler's thread.
+    import time
+    deadline = time.monotonic() + 5
+    while full.kinds() != ["agent", "cancel"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert full.kinds() == ["agent", "cancel"]
+    _say(full, "yes")
+    assert "confirmed" not in full.kinds()
+
+
+def test_the_cancel_route_needs_the_token(full):
+    confirmation_id = _read_back(full)
+    response, _ = _cancel(full, confirmation_id, token=None)
+    assert response.status == 401
+    response, _ = _cancel(full, confirmation_id, token="wrong")
+    assert response.status == 401
+    assert full.kinds() == ["agent"]
+
+
+@pytest.mark.parametrize("project, confirmation_id", [
+    ("demo", None), (None, "abc"), ("demo", "has space"), ("demo", "x" * 65), ("../etc", "abc")])
+def test_the_cancel_route_refuses_a_bad_request(full, project, confirmation_id):
+    response, _ = _cancel(full, confirmation_id, project=project)
+    assert response.status == 400
+
+
+def test_the_wav_reply_of_a_read_back_carries_its_id_too(full):
+    full.host.scenario(mode="wrapper", gate=True)
+    response, _ = _say(full, "merge it", accept=None)
+    assert response.getheader("Content-Type") == "audio/wav"
+    confirmation_id = response.getheader("X-Jarvis-Confirmation-Id")
+    assert confirmation_id
+    full.host.scenario(mode="wrapper")
+    _wait_pending(confirmation_id)
+    _, data = _cancel(full, confirmation_id)
+    assert json.loads(data) == {"cancelled": True}
+
+
+def test_an_ordinary_reply_has_no_confirmation_id(full):
+    response, _ = _say(full, "what is open?")
+    assert response.getheader("X-Jarvis-Confirmation-Id") is None
+
+
+def test_readonly_mode_has_nothing_to_cancel(stream_server):
+    conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+    conn.request("POST", "/turn/cancel?project=demo&id=abc",
+                 headers={"Authorization": "Bearer test-token", "Content-Length": "0"})
+    response = conn.getresponse()
+    assert response.status == 200 and json.loads(response.read()) == {"cancelled": False}
+    conn.close()

@@ -35,6 +35,8 @@ sealed interface TurnOutcome {
         val summary: String,
         val sessionId: String?,
         val projectsChanged: Boolean = false,
+        val needsConfirmation: Boolean = false,
+        val confirmationId: String? = null,
     ) : TurnOutcome
     /** The bridge streams the audio (jarvis-streaming-speech); the player closes [reply]. */
     class Streamed(val reply: StreamedReply) : TurnOutcome

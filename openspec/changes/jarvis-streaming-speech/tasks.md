@@ -27,6 +27,16 @@ Built in the same pull request as the proposal (Mark asked for it). Every step u
 - [x] 2.3 Tests in `:core` against a loopback server that sends chunked bodies, cut bodies
   and odd chunk boundaries.
 
+## 2b. Read-backs that were not heard to the end (review of #66)
+
+- [x] 2.4 Bridge: `X-Jarvis-Confirmation-Id` on read-back replies; `POST /turn/cancel`
+  (token, idempotent, a cancel during the write applied by `delivered`) answering `no` to the
+  agent host (S6).
+- [x] 2.5 App: cancel a read-back that ended any other way than played (tap, cut stream,
+  playback error, screen closed); "Cancelled. Nothing was confirmed."
+- [x] 2.6 Tests: the route (token, twice, another id, after the yes, during the write, bad
+  requests, `readonly`), the app's decision and request in `:core`.
+
 ## 3. Docs and evidence
 
 - [x] 3.1 `bridge-service.md` (the reply formats, the switch, the log fields),

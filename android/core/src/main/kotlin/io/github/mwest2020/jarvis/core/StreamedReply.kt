@@ -97,6 +97,8 @@ class StreamedReply(
     val sessionId: String?,
     val projectsChanged: Boolean,
     val needsConfirmation: Boolean,
+    /** The read-back's id (`X-Jarvis-Confirmation-Id`), for [ReadBack]; null on other replies. */
+    val confirmationId: String?,
     val sampleRate: Int,
     private val reader: PcmReader,
     private val onClose: () -> Unit,
@@ -110,14 +112,40 @@ class StreamedReply(
     }
 }
 
-/** How playing a streamed reply ended. */
-enum class PlaybackEnd { PLAYED, BROKE_OFF, FAILED }
+/** How playing a reply ended. [STOPPED]: Mark tapped, or the app closed. */
+enum class PlaybackEnd { PLAYED, STOPPED, BROKE_OFF, FAILED }
 
 object Playback {
     /** What the screen says after playback, next to the summary; null when it played. */
     fun message(end: PlaybackEnd): String? = when (end) {
-        PlaybackEnd.PLAYED -> null
+        PlaybackEnd.PLAYED, PlaybackEnd.STOPPED -> null
         PlaybackEnd.BROKE_OFF -> "The spoken reply broke off. Its text is above."
         PlaybackEnd.FAILED -> "The reply could not be played."
     }
+}
+
+/**
+ * A read-back that was not played to its end was not heard, so it may not stay pending
+ * (change jarvis-streaming-speech, S6): the app sends `POST /turn/cancel` and the bridge
+ * answers `no` to the agent host. Without it, the bridge has kept the read-back as soon as
+ * its last byte was written, which is before the phone has played it.
+ */
+object ReadBack {
+    const val CANCELLED = "Cancelled. Nothing was confirmed."
+    const val NOT_CANCELLED =
+        "The read-back was stopped, but the bridge could not be told. Do not say yes; it expires within a minute."
+
+    /** True when a reply that asked for a spoken yes ended any other way than played to its end. */
+    fun mustCancel(needsConfirmation: Boolean, confirmationId: String?, end: PlaybackEnd): Boolean =
+        needsConfirmation && !confirmationId.isNullOrEmpty() && end != PlaybackEnd.PLAYED
+
+    /** The same id shape the bridge accepts; anything else is never sent. */
+    fun isValidId(id: String): Boolean = id.length in 1..64 && id.all { it.isLetterOrDigit() && it.code < 128 || it == '_' || it == '-' }
+}
+
+/** The answer to `POST /turn/cancel`. */
+sealed interface CancelOutcome {
+    /** [cancelled]: a pending read-back was cancelled now; false when nothing with that id was pending. */
+    data class Done(val cancelled: Boolean) : CancelOutcome
+    data class Failed(val failure: TurnFailure) : CancelOutcome
 }
