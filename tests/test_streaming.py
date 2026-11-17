@@ -17,7 +17,7 @@ from bridge.config import BridgeConfig, ProjectConfig
 from tests.test_server_full_mode import READBACK, Bridge
 
 STREAM_ACCEPT = "audio/L16;rate=24000;channels=1"
-SUMMARY = "The answer is four. Nothing else changed!"
+SUMMARY = "The answer to your question is four. Nothing else in the repository changed!"
 
 
 # --- the Accept match (S1) -----------------------------------------------------------
@@ -46,16 +46,18 @@ def test_anything_else_keeps_the_wav(accept):
 # --- the stream's pieces (S4, S5), without a model ---------------------------------------
 
 class FakePipeline:
-    """Stands for KPipeline: splits like it (re.split of the stripped text) and yields
-    one float array per piece, so the conversion and the split pattern are real."""
+    """Stands for KPipeline: a string is split like it does (re.split of the stripped
+    text at its default pattern), a list is rendered element by element; one float array
+    per piece, so the conversion is real."""
 
     def __init__(self):
-        self.patterns = []
+        self.inputs = []
 
-    def __call__(self, text, voice, split_pattern):
+    def __call__(self, text, voice, split_pattern=r"\n+"):
         import re
-        self.patterns.append(split_pattern)
-        for piece in re.split(split_pattern, text.strip()):
+        self.inputs.append(text)
+        parts = re.split(split_pattern, text.strip()) if isinstance(text, str) else text
+        for piece in parts:
             if piece.strip():
                 yield piece, "", np.full(len(piece), 0.5, dtype=np.float32)
 
@@ -68,17 +70,32 @@ def test_to_l16_is_big_endian_and_clipped():
 def test_an_ordinary_reply_is_rendered_one_sentence_at_a_time(monkeypatch):
     fake = FakePipeline()
     monkeypatch.setattr(tts, "_pipeline", lambda code: fake)
-    pieces = list(tts.stream_pcm(SUMMARY, voice="bm_george"))
-    assert fake.patterns == [tts.SENTENCE_SPLIT]
-    assert [len(p) // 2 for p in pieces] == [len("The answer is four."), len("Nothing else changed!")]
+    text = "Done. The branch is pushed and the build started. Yes."
+    pieces = list(tts.stream_pcm(text, voice="bm_george"))
+    # "Done." alone would leave a gap while the next sentence renders: it goes with it.
+    assert fake.inputs == [["Done. The branch is pushed and the build started.", "Yes."]]
+    assert [len(p) // 2 for p in pieces] == [49, 4]
 
 
 def test_a_read_back_is_rendered_with_kokoros_own_split(monkeypatch):
     fake = FakePipeline()
     monkeypatch.setattr(tts, "_pipeline", lambda code: fake)
     pieces = list(tts.stream_pcm(READBACK, voice="bm_george", whole=True))
-    assert fake.patterns == [tts.KOKORO_SPLIT] == [r"\n+"]
+    assert fake.inputs == [READBACK]                 # the string, as synthesize() passes it
     assert len(pieces) == 1 and len(pieces[0]) == 2 * len(READBACK)
+
+
+def test_pieces_join_short_sentences_and_keep_the_words():
+    assert tts.pieces("The answer is four. Nothing else changed!") == [
+        "The answer is four. Nothing else changed!"]
+    long_text = ("I can't search the web from here. I can read the repository and run "
+                 "commands at the desk, so ask me about the code.")
+    assert tts.pieces(long_text) == [
+        "I can't search the web from here.",
+        "I can read the repository and run commands at the desk, so ask me about the code."]
+    text = "Done. Merged the change into main today. It is live. OK."
+    assert tts.pieces(text) == ["Done. Merged the change into main today.", "It is live. OK."]
+    assert " ".join(tts.pieces(text)) == text
 
 
 def test_the_sentence_split_never_changes_the_words():
@@ -103,7 +120,7 @@ class Speech:
 
     def __call__(self, text, *, voice, whole=False):
         self.calls.append((text, whole))
-        parts = [text] if whole else tts.sentences(text)
+        parts = [text] if whole else tts.pieces(text)
         for index, part in enumerate(parts):
             if index == 1:
                 self.release.wait(5)
@@ -224,8 +241,8 @@ def test_headers_come_first_and_each_sentence_is_one_chunk(stream_server):
         # The timing so far: the agent has answered, nothing is rendered yet (S3).
         names = [part.split("=")[0] for part in headers["x-jarvis-timing"].split(";")]
         assert names == ["read", "stt", "agent", "total"]
-        assert raw.chunk() == b"The answer is four."
-        assert raw.chunk() == b"Nothing else changed!"
+        assert raw.chunk() == b"The answer to your question is four."
+        assert raw.chunk() == b"Nothing else in the repository changed!"
         assert raw.chunk() == b""                      # the terminating chunk
         assert raw.rest() == b""                       # and the connection closes
     finally:
@@ -239,10 +256,10 @@ def test_the_first_sentence_is_sent_before_the_second_is_rendered(stream_server)
     raw = Raw(stream_server.port, _request())
     try:
         raw.head()
-        assert raw.chunk() == b"The answer is four."
-        assert speech.rendered == ["The answer is four."]   # the second waits
+        assert raw.chunk() == b"The answer to your question is four."
+        assert speech.rendered == ["The answer to your question is four."]   # the second waits
         speech.release.set()
-        assert raw.chunk() == b"Nothing else changed!"
+        assert raw.chunk() == b"Nothing else in the repository changed!"
         assert raw.chunk() == b""
     finally:
         speech.release.set()
@@ -256,7 +273,7 @@ def test_a_rendering_error_mid_stream_cuts_the_body(stream_server, caplog):
         try:
             status, _ = raw.head()
             assert status == "HTTP/1.1 200 OK"
-            assert raw.chunk() == b"The answer is four."
+            assert raw.chunk() == b"The answer to your question is four."
             # No terminating chunk and no error status after the headers: closed.
             assert raw.rest() == b""
         finally:
@@ -295,7 +312,7 @@ def test_http_client_reads_a_whole_stream(stream_server):
     conn.request("POST", "/turn?project=demo", body=b"fake-audio",
                  headers={"Authorization": "Bearer test-token", "Accept": STREAM_ACCEPT})
     response = conn.getresponse()
-    assert response.read() == b"The answer is four.Nothing else changed!"
+    assert response.read() == b"The answer to your question is four.Nothing else in the repository changed!"
     conn.close()
 
 
@@ -373,7 +390,7 @@ def test_the_log_line_has_the_time_to_the_first_audio_byte(stream_server, caplog
                   f"spoken_chars={len(SUMMARY)}"):
         assert field in streamed and field in wav
     assert "reply=stream " in streamed and "reply=wav " in wav
-    # 40 bytes of fake audio: 20 samples at 24 kHz.
+    # A few bytes of fake audio: well under a tenth of a second at 24 kHz.
     assert "audio_out_s=0.0" in streamed
     assert SUMMARY not in streamed
 

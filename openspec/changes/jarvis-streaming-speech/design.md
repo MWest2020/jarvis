@@ -50,12 +50,16 @@ header it knows: `X-Jarvis-Summary`, `X-Jarvis-Session-Id`, `X-Jarvis-Needs-Conf
 `X-Jarvis-Projects-Changed`, `X-Jarvis-Timing` (the stages so far, so without `tts`), and
 `Cache-Control: no-store`. The phone can show the summary before the first sound.
 
-**S4. Sentence by sentence.** For an ordinary reply the bridge calls Kokoro with a split
-pattern at a sentence end (`.`, `!`, `?` or `…` followed by white space) and at line breaks.
-Kokoro yields one piece per sentence; each is converted and written as one chunk before the
-next is rendered. The text itself is not changed: only the white space between sentences is
-dropped, which Kokoro drops anyway. Each sentence is rendered on its own, so the melody across
-a sentence boundary can differ slightly from the WAV reply.
+**S4. Sentence by sentence.** For an ordinary reply the bridge cuts the text at a sentence end
+(`.`, `!`, `?` or `…` followed by white space and a word that does not start in lower case)
+and at line breaks, joins a sentence shorter than 30 characters to the next one, and gives
+Kokoro the pieces as a list. Kokoro yields one result per piece; each is converted and written
+as one chunk before the next is rendered. The words and their order are the text's; only the
+white space between sentences can differ. The join is there because Kokoro renders at about
+0.045 s per character and speaks at about 0.078: a short lead sentence ("Done.", 0.6 s of
+speech) followed by a long one (3 s to render) was a gap of more than two seconds in the
+measurement. Each piece is rendered on its own, so the melody across a piece boundary can
+differ slightly from the WAV reply.
 
 **S5. Read-backs whole, before the headers.** A reply with `needs_confirmation` is rendered
 with Kokoro's own default split (the same call as the WAV reply, so the same audio), before

@@ -24,6 +24,12 @@ STREAM_CONTENT_TYPE = f"audio/L16;rate={SAMPLE_RATE};channels=1"
 SENTENCE_SPLIT = r"\n+|(?<=[.!?…])\s+(?![a-z])"
 # Kokoro's default split_pattern: what synthesize() uses, and a read-back (S5).
 KOKORO_SPLIT = r"\n+"
+# A sentence shorter than this is rendered together with the next one. Kokoro renders
+# at about 0.045 s per character and speaks at about 0.078 s per character (measured on
+# agent-lxc, 2026-11-17), so the next piece is ready before the previous one has been
+# spoken unless it is much longer: "Done." alone (0.6 s of speech) followed by a
+# sentence of 70 characters (3 s to render) left a gap of over two seconds.
+MIN_PIECE_CHARS = 30
 
 
 def lang_code(voice: str) -> str:
@@ -62,15 +68,16 @@ def to_l16(audio) -> bytes:
 
 
 def stream_pcm(text: str, *, voice: str = DEFAULT_VOICE, whole: bool = False) -> Iterator[bytes]:
-    """The spoken reply as big-endian L16 at SAMPLE_RATE, one piece per sentence, each
-    rendered only when the previous one has been taken (S4).
+    """The spoken reply as big-endian L16 at SAMPLE_RATE, one piece per sentence (see
+    pieces()), each rendered only when the previous one has been taken (S4).
 
-    `whole`: Kokoro's own split, exactly the call synthesize() makes, so the audio is
+    `whole`: exactly the call synthesize() makes, Kokoro's own split, so the audio is
     that of the WAV reply. For a read-back (S5), which must not be split by us.
     """
     pipeline = _pipeline(lang_code(voice))
-    pattern = KOKORO_SPLIT if whole else SENTENCE_SPLIT
-    for _graphemes, _phonemes, audio in pipeline(text, voice=voice, split_pattern=pattern):
+    # A list is rendered element by element; a string is split by Kokoro (KOKORO_SPLIT).
+    results = pipeline(text, voice=voice) if whole else pipeline(pieces(text), voice=voice)
+    for _graphemes, _phonemes, audio in results:
         if audio is None:
             continue
         piece = to_l16(audio)
@@ -79,9 +86,24 @@ def stream_pcm(text: str, *, voice: str = DEFAULT_VOICE, whole: bool = False) ->
 
 
 def sentences(text: str) -> list[str]:
-    """How SENTENCE_SPLIT cuts a text, as Kokoro applies it (re.split of the stripped
-    text, empty pieces skipped). For tests and the docs; Kokoro does the real split."""
+    """The text cut at SENTENCE_SPLIT, empty pieces skipped."""
     return [piece for piece in re.split(SENTENCE_SPLIT, text.strip()) if piece.strip()]
+
+
+def pieces(text: str) -> list[str]:
+    """What a streamed reply is rendered in: its sentences, a sentence shorter than
+    MIN_PIECE_CHARS joined to the next with one space. The words and their order are
+    the text's; only the white space between sentences can differ."""
+    out: list[str] = []
+    pending = ""
+    for sentence in sentences(text):
+        pending = f"{pending} {sentence}" if pending else sentence
+        if len(pending) >= MIN_PIECE_CHARS:
+            out.append(pending)
+            pending = ""
+    if pending:
+        out.append(pending)
+    return out
 
 
 def warm_up(voice: str | None = None) -> None:

@@ -29,9 +29,9 @@ Built in the same pull request as the proposal (Mark asked for it). Every step u
 
 ## 3. Docs and evidence
 
-- [ ] 3.1 `bridge-service.md` (the reply formats, the switch, the log fields),
+- [x] 3.1 `bridge-service.md` (the reply formats, the switch, the log fields),
   `android-app.md` (playback, the new error), the roadmap item.
-- [ ] 3.2 Kokoro measured once on `agent-lxc`: time to the first sentence of a typical
+- [x] 3.2 Kokoro measured once on `agent-lxc`: time to the first sentence of a typical
   summary against the whole line.
 - [ ] 3.3 (Mark) A turn on the phone with the new APK and bridge: `first_audio_ms` from the
   log next to the old `tts_ms`, and how it sounds at sentence boundaries.

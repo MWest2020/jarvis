@@ -374,7 +374,10 @@ as soon as the agent has answered, with every `X-Jarvis-*` header a WAV reply wo
 16-bit linear PCM, mono, 24 kHz, **big-endian** (that is what `audio/L16` means, RFC 2586),
 no header, one chunk per sentence. Kokoro renders the next sentence while the phone plays the
 first. A sentence ends at `.`, `!`, `?` or `…` followed by white space and a word that does
-not start in lower case, or at a line break; the words are never changed.
+not start in lower case, or at a line break; a sentence shorter than 30 characters is
+rendered together with the next one ("Done." alone would leave a gap of two seconds while
+the next sentence renders). The words and their order are never changed
+(`bridge/tts.py`, `pieces`).
 
 - **Who gets the WAV instead:** a request without that `Accept` value (`*/*`, `audio/wav`,
   `audio/L16` without `rate=24000`, `channels=2`, `q=0`), an HTTP/1.0 request, and everyone
@@ -523,6 +526,30 @@ than it plays. That needs a streamed response (a WAV header without a length, or
 and a player on the phone that starts on the first bytes (`AudioTrack` instead of the
 in-memory `MediaPlayer`): about half a day on the bridge and a day in the app, for about 3
 seconds off the time to the first word of every turn.
+
+### Streaming measured (2026-11-17)
+
+Kokoro run once on `agent-lxc` (4 vCPUs, the pod's size), voice `bm_george`, after a warm-up,
+with summaries of the usual length. "WAV" is the whole line rendered, the moment the old
+reply could start to go out; "first piece" is when the streamed reply's first chunk is ready.
+
+| Summary | Characters | WAV | First piece | All pieces | Speech |
+|---|---|---|---|---|---|
+| "I can't search the web from here. I can read the repository …" | 115 | 4.22 s | **1.68 s** | 4.64 s | 8.8 s |
+| "The pull request is green and has one approving review. Two comments …" | 116 | 5.43 s | **3.15 s** | 6.19 s | 9.1 s |
+| "Done. The branch is pushed and the build started; it takes about four minutes. …" | 117 | 5.74 s | 1.04 s ("Done." alone) | 7.42 s | 9.6 s |
+
+- The first word comes 2.3 to 2.5 s sooner on the bridge, plus the download of a WAV of about
+  400 KB that the phone no longer waits for.
+- Rendering in pieces costs 0.4 to 1.7 s more in all, but that time falls while the phone is
+  already speaking: each later piece was ready before the one before it had been spoken, except
+  after "Done.". There the next sentence took about 3 s to render after 0.6 s of speech, a gap
+  of over two seconds. So a sentence shorter than 30 characters now goes with the next one; for
+  the third summary the first piece is then "Done. The branch is pushed …" (78 characters), by
+  the rate above about 3.3 s, still about 2.4 s before the WAV (estimated, not run again).
+- On the phone the time to the first word is `first_audio_ms` in the log line plus the
+  tailnet and the 300 ms pre-roll; it is measured on the first turns with the new APK (task 3.3
+  of the change).
 
 ## Picking a Kokoro voice
 
