@@ -128,6 +128,18 @@ def reason_missing(parts) -> str:
     )
 
 
+def reason_subagent(rules) -> str:
+    """A subagent that is not a read-only helper (#57, D58). Not a trip to
+    the desk: whatever that subagent would have done, the agent can do
+    itself, under this same gate, or hand to a read-only helper."""
+    return (
+        "[subagent] By voice only a read-only helper subagent can be started: subagent_type "
+        + ", ".join(rules.subagent_types) + ", in the foreground, with no isolation, name,"
+        " team or mode, and not one an agent file redefines. Do the step yourself, or"
+        " start one of those for a read. Nothing was run."
+    )
+
+
 REASON_ERROR = (
     "[needs_desk] The gate could not decide about this call, so it is refused. That"
     " one needs the desk." + _STOP
@@ -345,6 +357,10 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
             return deny(REASON_NOT_UNDERSTOOD, None)
         if verdict.run_alone:
             return deny(REASON_RUN_ALONE, "run_alone")
+        if verdict.rule.startswith("subagent:"):
+            # Refused, with what can be started instead. No notice: the agent
+            # goes on without that subagent.
+            return deny(reason_subagent(ctx.rules), None)
         if confirmation_off_for(verdict, config):
             state.note("not_confirmed", code=None, verdict=verdict)
             state.save()
