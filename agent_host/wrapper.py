@@ -70,6 +70,7 @@ from agent_host import (
 )
 from agent_host import record as record_mod
 from agent_host import request as request_mod
+from agent_host import timing as timing_mod
 from agent_host.config import PENDING_SECONDS, AgentHostConfig, hook_config_path, load_config
 from agent_host.sessions import KeyValueStore, SessionStore
 from agent_host.turnlock import Busy, acquire_turn_lock, available_memory_mb
@@ -170,6 +171,8 @@ def list_reply(names: list[str]) -> dict:
 
 
 def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
+    # The start of the wrapper's own part of the turn (agent_host.timing).
+    request_started = time.monotonic()
     if not config.enabled:
         return disabled_reply()
 
@@ -204,14 +207,15 @@ def handle_request(raw: bytes, config: AgentHostConfig) -> dict:
             with acquire_turn_lock(config.lock_path):
                 if available_memory_mb() < config.memory_floor_mb:
                     return _reply(status="error", error="low_memory")
-                return _handle(req, working_dir, config, locked=True)
+                return _handle(req, working_dir, config, locked=True,
+                               request_started=request_started)
         except Busy:
             return _reply(status="error", error="busy")
-    return _handle(req, working_dir, config, locked=False)
+    return _handle(req, working_dir, config, locked=False, request_started=request_started)
 
 
 def _handle(req: request_mod.Request, working_dir: Path, config: AgentHostConfig, *,
-            locked: bool) -> dict:
+            locked: bool, request_started: float | None = None) -> dict:
     # Every other request for the project clears its pending call, whatever
     # the request is (D36, step 4): read once here, gone afterwards.
     stale = pending.take_pending(config.pending_dir, req.project)
@@ -271,7 +275,7 @@ def _handle(req: request_mod.Request, working_dir: Path, config: AgentHostConfig
 
     if locked:
         return _run_turn(req.project, prompt, working_dir, config, turn_id=turn_id,
-                         env=env, confirmed=confirmed)
+                         env=env, confirmed=confirmed, request_started=request_started)
     try:
         with acquire_turn_lock(config.lock_path):
             # The checkout settings rule, before the turn (D36, check 1),
@@ -283,7 +287,7 @@ def _handle(req: request_mod.Request, working_dir: Path, config: AgentHostConfig
             if available_memory_mb() < config.memory_floor_mb:
                 return _reply(status="error", error="low_memory")
             return _run_turn(req.project, prompt, working_dir, config, turn_id=turn_id,
-                             env=env, confirmed=confirmed)
+                             env=env, confirmed=confirmed, request_started=request_started)
     except Busy:
         return _reply(status="error", error="busy")
 
@@ -499,7 +503,10 @@ def _write_record(
     config: AgentHostConfig, *, turn_id: str, project: str, session_id: str | None,
     prompt: str, reply_text: str, duration_s: float, outcome: str,
     settings_changed: str | None = None, gated_actions: list[dict] | None = None,
+    timing: dict | None = None, claude_ended: float | None = None,
 ) -> None:
+    if timing is not None and claude_ended is not None:
+        timing = {**timing, "wrapper_post_ms": timing_mod.ms(time.monotonic() - claude_ended)}
     rec = record_mod.TurnRecord(
         turn_id=turn_id,
         time=datetime.now(timezone.utc).isoformat(),
@@ -511,6 +518,7 @@ def _write_record(
         outcome=outcome,
         settings_changed=settings_changed,
         gated_actions=gated_actions or [],
+        timing=timing,
     )
     record_mod.write_record(config.records_dir, rec)
 
@@ -596,7 +604,10 @@ def _after_turn(
 def _run_turn(
     project: str, prompt: str, working_dir: Path, config: AgentHostConfig, *,
     turn_id: str, env: dict[str, str], confirmed: _Confirmed | None = None,
+    request_started: float | None = None,
 ) -> dict:
+    if request_started is None:
+        request_started = time.monotonic()
     # Pending clones first (D53): the turn lock is held here.
     try:
         clones.retry_pending(config, env)
@@ -616,6 +627,8 @@ def _run_turn(
         session_id=stored_id,
         append_prompt_inline=inline,
         prompt_text=_prompt_text(config) if inline else "",
+        model=config.voice_model,
+        effort=config.voice_effort,
     )
 
     started = time.monotonic()
@@ -670,12 +683,14 @@ def _run_turn(
             stdout = stderr = ""
     finally:
         trusted.remove_for(gate_dir, proc.pid)
-    duration = time.monotonic() - started
+    claude_ended = time.monotonic()
+    duration = claude_ended - started
     # The checkout settings rule, after the turn (D36, check 3): the files
     # were safe when the turn started, so a problem now appeared during it.
     changed = _checkout_settings_problem(working_dir, config)
 
     reply_text, new_session_id, outcome = "", stored_id, "ok"
+    payload = None
     if timed_out:
         outcome = "timeout"
     elif proc.returncode != 0:
@@ -689,6 +704,8 @@ def _run_turn(
                 raise TypeError
         except (json.JSONDecodeError, KeyError, TypeError):
             reply_text, new_session_id, outcome = stdout, stored_id, "agent_failed"
+    timing = timing_mod.turn_timing(pre_s=started - request_started, wall_s=duration,
+                                    payload=payload, profile=config.voice_profile)
 
     actions, pending_fields, notice, project_field = _after_turn(
         config, project, turn_id, working_dir, env, confirmed,
@@ -699,7 +716,8 @@ def _run_turn(
     _write_record(
         config, turn_id=turn_id, project=project, session_id=new_session_id,
         prompt=prompt, reply_text=reply_text, duration_s=duration, outcome=outcome,
-        settings_changed=changed, gated_actions=actions,
+        settings_changed=changed, gated_actions=actions, timing=timing,
+        claude_ended=claude_ended,
     )
 
     # What became of a new repository goes with every reply below (D53).

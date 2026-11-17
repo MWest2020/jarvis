@@ -450,9 +450,10 @@ def test_readonly_mode_never_connects_and_has_no_new_header(tmp_path, monkeypatc
         assert said == "WAV:It is a voice bridge."
         assert b.decoded == [] and b.transcribed_from == b"audio"   # the bytes, as before
         assert response.getheader("X-Jarvis-Needs-Confirmation") is None
+        # No header of `full` mode; the timing header is in both modes (bridge.timing).
         assert [k for k, _ in response.getheaders()] == [
             "Server", "Date", "Content-Type", "Content-Length", "X-Jarvis-Session-Id",
-            "X-Jarvis-Summary"]
+            "X-Jarvis-Summary", "X-Jarvis-Timing"]
         assert b.host.calls() == [] and server.Handler.full is None
     finally:
         b.stop()

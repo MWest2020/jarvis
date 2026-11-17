@@ -11,6 +11,7 @@ agent_host.wrapper) a daily session rotation instead of relying on
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 # Never on the command line (D34): the first three would lift the rules, the
@@ -25,6 +26,15 @@ FORBIDDEN_OPTIONS: tuple[str, ...] = (
     "--strict-mcp-config",
 )
 
+# The voice profile (voice-and-speed): the model and the effort of a turn,
+# from the root-owned configuration only (agent_host.config). The effort
+# levels are the ones `claude --help` lists (2.1.322); a model is an alias
+# (`sonnet`, `opus`) or a full name (`claude-sonnet-4-6`, `opus[1m]`), and
+# never starts with `-`. Each goes on the line as one `--option=value`
+# token, as `--resume=` does.
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}")
+
 
 def build_command(
     *,
@@ -33,12 +43,19 @@ def build_command(
     session_id: str | None,
     append_prompt_inline: bool = False,
     prompt_text: str = "",
+    model: str | None = None,
+    effort: str | None = None,
 ) -> list[str]:
     """argv for one headless turn, fixed by a test (D34):
 
         claude -p --output-format json --permission-mode auto --permission-prompts none
                --system-prompt-snapshot off --append-system-prompt-file <prompt>
+               [--model=<model>] [--effort=<level>]
                --settings <turn-settings> [--resume=<uuid>]
+
+    `model` and `effort` are the voice profile; without them the line is the
+    one of D34, byte for byte, and Claude Code takes both from the user's
+    own settings, as at the desk.
 
     `session_id`, if given, must already be validated as a canonical UUID
     (agent_host.sessions.is_canonical_uuid): it is passed as one token,
@@ -58,6 +75,14 @@ def build_command(
         "--system-prompt-snapshot",
         "off",
     ]
+    if model is not None:
+        if not MODEL_NAME.fullmatch(model):
+            raise ValueError(f"not a model name: {model!r}")
+        command.append(f"--model={model}")
+    if effort is not None:
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"not an effort level: {effort!r}")
+        command.append(f"--effort={effort}")
     if append_prompt_inline:
         command += ["--append-system-prompt", prompt_text]
     else:

@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-15
+last_reviewed: 2026-11-17
 ---
 # Running the bridge service (weekend slice)
 
@@ -51,6 +51,8 @@ your process manager.
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |
 | `JARVIS_STATE_DIR` | no (default `~/.jarvis`) | Where the per-project session id and the log file are stored. Outside the repo, never in git. |
 | `JARVIS_WHISPER_MODEL` | no (default `base`) | faster-whisper model size; CPU-friendly sizes are `tiny`, `base`, `small`. |
+| `JARVIS_WHISPER_LANGUAGE` | no (default: detected per recording) | A language code (`en`, `nl`) to skip Whisper's language detection, which costs a second pass over the recording: on `agent-lxc` (base, int8) 0.8 s of the 1.7-1.9 s a short question takes. Set it only when you speak one language to Jarvis: Dutch speech with `en` comes out as a rough English translation. See "Where a turn's time goes". |
+| `JARVIS_WHISPER_BEAM_SIZE` | no (default `5`) | Whisper's beam width, 1 to 10. `1` (greedy) took another 0.05-0.2 s off with the same transcripts on the test recordings. |
 | `JARVIS_KOKORO_VOICE` | no (default `bm_george`) | A Kokoro voice name. The default is a British male voice; the image also carries `af_heart` (American female). Pick one by ear once the service runs (see below). |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
@@ -337,7 +339,7 @@ recorded audio as the body. Replies:
 
 | Status | When |
 |---|---|
-| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
+| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken), `X-Jarvis-Session-Id` and `X-Jarvis-Timing` (milliseconds per stage, see "Where a turn's time goes"). Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
 | 400 | No project, an unknown project (in `full` mode: a name the agent host would not accept by its shape), an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
 | 409 | That project is still busy with another turn (one turn per session at a time). The lock lives only while that turn runs, so names asked for in `full` mode leave nothing behind. |
@@ -394,6 +396,81 @@ or else at a word, with "…"), and only when it contains nothing that looks lik
 names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
 letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
 details."
+
+## Where a turn's time goes
+
+Every answered turn writes one INFO line, in the file and on stdout, with numbers only
+(no transcript, no summary):
+
+```
+project=jarvis-home timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=5420 write_ms=3 total_ms=14840 audio_in_s=5.5 audio_out_s=9.9 spoken_chars=143
+```
+
+| Field | What |
+|---|---|
+| `read_ms` | Reading the upload after the head arrived |
+| `stt_ms` | Decoding the recording and Whisper's transcript |
+| `vad_ms` | `full` mode only: the detected-speech measurement (D36, step 5) |
+| `agent_ms` | The agent: in `full` mode the ssh round trip to the agent host (the turn record there splits it further, see [the agent host's records](agent-host.md#reading-the-records)); in `readonly` mode the local Claude Code turn |
+| `tts_ms` | Kokoro rendering the spoken line |
+| `write_ms` | Writing the WAV to the phone |
+| `total_ms` | From the request's head to the last byte written |
+| `audio_in_s`, `audio_out_s` | Seconds of the recording and of the reply, from their WAV headers (absent when the upload is not WAV) |
+| `spoken_chars` | Length of the spoken line |
+
+The same stages, without `write_ms` and with the total up to the moment the headers go
+out, are in the reply header `X-Jarvis-Timing`, e.g.
+`read=4;stt=1702;vad=61;agent=7650;tts=5420;total=14837`. A client may show it; the app
+does not need it.
+
+```sh
+grep ' timing ' "$JARVIS_STATE_DIR/bridge.log" | tail          # on a workstation
+kubectl -n jarvis logs deploy/jarvis -c bridge | grep ' timing ' # in the cluster
+```
+
+### Where the 20 seconds went (2026-11-17, before this timing existed)
+
+Mark: "why is the response 20 sec, for either long or short interactions?" Put together
+from the pod's log (the agent host's answer and the reply's request line are logged with
+timestamps), the agent host's records, and the speech models run on `agent-lxc` (4 vCPUs,
+the same size as the pod's limit on node-03):
+
+| Stage | Trivial question ("can you do web searches?", 09:47) | Where the number comes from |
+|---|---|---|
+| Transcript (whisper base, int8, beam 5, language detected) | about 1.7-1.9 s | Measured on `agent-lxc` with 4.4-9.3 s recordings |
+| Agent host, ssh round trip | 7.6 s, of which about 1 s Claude Code's start and 59,000 tokens written to the prompt cache: a resumed session after a night | The turn record; the bridge logged its answer 0.02 s after the record was written |
+| Speech (Kokoro, 143 characters) | 5.4 s | The pod's log: agent answer at 09:47:13.57, reply sent at 09:47:18.99. The next two turns: 6.0 s for 159 and 161 characters. About 0.038 s per character, half of real time |
+| **On the bridge** | **about 15 s** | |
+| The phone | upload, a 10 s WAV (about 480 KB) back over the tailnet, start of playback | not measured |
+
+So the fixed part is about 7 s (transcript, Claude Code's start, speech), and the agent's
+own part is 4 s for a trivial answer and 15-80 s for one that searches or reads. That is
+why a short turn does not feel much faster than a long one.
+
+What the bridge itself can save, measured on `agent-lxc` with English test recordings
+(three runs each, best time):
+
+| Whisper setting | 5.5 s recording | 6.8 s | 9.3 s |
+|---|---|---|---|
+| Current: beam 5, language detected | 1.72 s | 1.75 s | 1.93 s |
+| `JARVIS_WHISPER_BEAM_SIZE=1` | 1.61 s | 1.64 s | 1.68 s |
+| `JARVIS_WHISPER_LANGUAGE=en` | 0.94 s | 1.01 s | 1.15 s |
+| both | 0.88 s | 0.91 s | 0.97 s |
+
+The transcripts were identical in every row. Whisper's VAD filter saved nothing on
+recordings this short (Whisper pads to 30 s anyway). A Dutch recording with `en` came out
+as a loose English translation, so `en` is for an English-only driver.
+
+Only the summary line is spoken (at most 160 characters), so speech is already as short
+as the bridge can make it without saying less. Kokoro's `speed=1.15` rendered 7 % faster.
+**Speech cannot start sooner** without streaming: the agent host answers once, at the end
+of the turn, and the WAV goes out with a `Content-Length` after it is complete. Streaming
+is the next step: Kokoro yields audio per sentence, and the first sentence of a summary
+(about 70 characters) is ready after about 2.5 s instead of 5.5 s; the rest renders faster
+than it plays. That needs a streamed response (a WAV header without a length, or raw PCM)
+and a player on the phone that starts on the first bytes (`AudioTrack` instead of the
+in-memory `MediaPlayer`): about half a day on the bridge and a day in the app, for about 3
+seconds off the time to the first word of every turn.
 
 ## Picking a Kokoro voice
 

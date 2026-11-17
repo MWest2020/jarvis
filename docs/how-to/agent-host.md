@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-17
 ---
 # The agent host: installing the side that runs `full` turns
 
@@ -194,6 +194,8 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
 | `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name> <destination> -- --depth 1`. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
 | `clone_timeout_s` | no (default `45`, at most `90`) | How long one clone attempt may take before it is stopped and removed. |
+| `voice_model` | no (default none) | The voice profile's model: `--model=<value>` on every turn, an alias (`sonnet`, `opus`) or a full name. Unset: Claude Code's own choice from `user_settings_path`, as at the desk. A wrong name is only noticed when a turn runs (it fails as `agent_failed`); run host check 4 again before setting a model, since it is not proven that `--model` leaves the hook environment unchanged. See [The voice profile](#the-voice-profile). |
+| `voice_effort` | no (default none) | The voice profile's effort: `--effort=<value>`, one of `low`, `medium`, `high`, `xhigh`, `max`. Unset: the user's settings decide (on `agent-lxc`: `high` for Opus, `modelSettings`). |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
 directly under the root, and it must be a git repository with a work tree. **This list is
@@ -282,6 +284,93 @@ call. Give it the coding session user's `HOME` and a
 nothing a shell rc file sets reaches the turn. **Run `install.sh` again after editing this
 file**: it pins `PATH` and `HOME` in the turn settings to the file's values (a checkout's
 `env` cannot change a pinned name), and only an install writes them there.
+
+## The voice profile
+
+Every turn on this host is a voice turn, and by default it runs as the desk does: the
+model and effort of `user_settings_path` (on `agent-lxc`, Opus at effort `high`). Two
+keys change that for Jarvis only, without touching the user's settings:
+
+```toml
+voice_model = "sonnet"   # --model=sonnet
+voice_effort = "low"     # --effort=low
+```
+
+The wrapper passes each as one `--option=value` token; a value that is not a model name
+or one of the five effort levels is refused when the configuration is read. Nothing else
+about the turn changes: the same prompt, settings, hooks and gate. Claude Code gives the
+effort to every hook process as `CLAUDE_EFFORT`, a name the gate already leaves out of its
+environment comparison (`agent_host/trusted.py`, `CLAUDE_ADDED`), so the gate behaves the
+same with any profile. The record's `timing.profile` says which profile a turn ran with.
+
+### Measured on `agent-lxc`, 2026-11-17
+
+Claude Code 2.1.322, through this branch's real wrapper and gate (a scratch `state_dir`
+and configuration, `projects` = `jarvis-home` and `jarvis-sandbox`, the installed turn
+settings with the hooks pointing at the checkout), a fresh session per turn, 33 `claude`
+runs in all. Seconds are `claude_wall_ms`; the wrapper adds about 0.1 s around it.
+
+| Prompt | Current (Opus 5.5, effort `high`) | Opus, `low` | Sonnet 5.5, `low` | Opus, `low`, plus the short-reply text |
+|---|---|---|---|---|
+| "Jarvis, can you do web searches by the way?" | 6.1, 4.3, 5.7 | 4.3, 6.4 | 3.7, 3.6 | 3.9 |
+| "How many pods are running in the Jarvis namespace of the cluster?" (one `kubectl` read) | 8.0, 8.7 | 7.2, 8.1 | 7.2, 8.9 | 7.0 |
+| "Search the web. What is the latest stable version of the Linux kernel?" | 21.5, 21.8 | 16.8, 17.4 | 16.2, 36.4 | 16.1, 16.3 |
+| "Jarvis, what's the status on Wordsworth?" (git, roadmap, PRs, issues) | 25.7 | 18.1 | not run | 10.2 (two more runs refused, see below) |
+
+What else the records say:
+
+- **Every turn pays about 0.7 to 1.1 s of `startup_gap_ms`** (Claude Code starting, its
+  settings, MCP servers and session), whatever the profile.
+- **Effort `low` takes the thinking away** (thinking tokens 50-220 at `high`, 0-56 at
+  `low`) and with it some output: 4.6 s off the web question, 7.6 s off the status
+  question, about 0.6 s off the cluster read, nothing measurable off a trivial question.
+  The answers were the same: the kernel version (7.3.4, from news sites, both noting that
+  kernel.org was not checked), the one pod, the same Wordsworth facts and open questions.
+- **Sonnet 5.5 at `low` is faster on a trivial question (1.4 s) but got the web question
+  wrong both times** ("probably 7.2.9", "probably 7.1 something", where Opus found 7.3.4
+  twice at both efforts), and one of its runs took 36 s. Not proposed.
+- **A resumed long session costs about 3 s more.** A copy of the live `jarvis-home`
+  session (about 90,000 tokens of conversation, prompt cache warm) took 8.2 and 9.1 s for
+  a trivial question and a follow-up, against 4.3-6.1 s fresh, with a time to first token
+  of 4.7-5.4 s against 2.1-3.5 s. When the cache has expired (it lives one hour) the whole
+  conversation is written to it again: Mark's turn of 09:47 sent 59,000 tokens to the cache
+  for "can you do web searches" (7.6 s).
+- **The short-reply text** (a `second_prompt_file`, below) halves the output tokens and
+  takes another 0.3 to 1 s off the short turns and 8 s off the status question, with the
+  same spoken lines. But two of its three status runs began with one compound read,
+  `cd ~/wordsworth 2>/dev/null || cd ~/Wordsworth; …`, which the gate refuses as a write
+  to its own files (`self:shell`, a false positive of the shell classifier for a redirect
+  after `cd` in an `||` form; the default profile's runs happened to use other shapes).
+  Use it after that is fixed.
+- `duration_api_ms` is **summed over the whole session** on a resumed one (264 s for a
+  9 s turn); use it for fresh sessions only. `duration_ms`, `ttft_ms` and the token counts
+  are per turn.
+- The gate is unchanged under a profile: a `gh repo create` asked for under Opus `low`
+  was held and read back ("Create the private repository jarvis-speed-probe. Say yes to
+  go ahead."), not refused as `settings_changed`, and nothing was created.
+
+### Proposed values
+
+```toml
+voice_effort = "low"     # Opus stays the model (the user's settings)
+# voice_model unset
+```
+
+Expected: about 5 s off multi-step turns (web, status), up to 8 s on longer ones, the
+same answers. The short-reply text, once the gate's false positive is fixed, as
+`second_prompt_file = "/etc/jarvis-agent/prompt.local.md"` with:
+
+```
+This turn is heard, not read: the driver only hears the SPOKEN SUMMARY line.
+So keep the text before it short: no headings, no lists, no recap of what you
+did, at most two short sentences, or nothing. The SPOKEN SUMMARY line itself
+stays as asked: one or two sentences, under 160 characters.
+```
+
+An earlier wording that also said "use only the tool calls the answer needs" made the
+agent bundle its reads into one call; leave tool use alone. The last sentence matters:
+without it the agent put the whole answer into a 480-character summary line, which the
+bridge cuts at 160.
 
 ## Checkouts that get read-only turns
 
@@ -395,7 +484,7 @@ In `state_dir`, owned by the coding session's user, 0700 with files 0600:
 - `records/<turn id>.json`: one per turn. Time, project, session id, the prompt as
   received, the full reply, duration, outcome, and every pending,
   confirmed, cancelled or refused gated action with its read-back. The bridge's log
-  carries the same turn id.
+  carries the same turn id. A turn that ran `claude` also has `timing` (below).
 - `sessions/sessions.json`: the Claude Code session id per project.
 - `actions/<turn id>.jsonl`: the action log, one line per tool call that can change
   something, with the tool, the command or target and the exit status.
@@ -407,8 +496,21 @@ In `state_dir`, owned by the coding session's user, 0700 with files 0600:
 write all of this, so the wrapper trusts none of it: it derives the read-back and the
 hash again from the stored call.
 
+`timing` says where the turn's time went (`agent_host/timing.py`):
+
+| Field | What |
+|---|---|
+| `wrapper_pre_ms` | From the request on stdin to `claude` started: checks, lock, sessions, environment |
+| `claude_wall_ms` | From `claude` started to `claude` exited, by the wrapper's clock |
+| `wrapper_post_ms` | From `claude` exited to the record written: the gate's state, a read-back, a notify, a clone |
+| `duration_ms`, `duration_api_ms`, `num_turns`, `ttft_ms` | What `claude --output-format json` says: its own clock, the time spent waiting on the API (on a resumed session summed over the whole session, Claude Code 2.1.322), the number of model calls, the time to the first token |
+| `startup_gap_ms` | `claude_wall_ms - duration_ms`: Claude Code's start (node, settings, MCP servers, the session) and exit, outside its own clock |
+| `input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `models` | From claude's `usage` and `modelUsage`. A large `cache_creation_tokens` on a resumed session means the prompt cache had expired and the whole conversation was sent again |
+| `profile` | The voice profile's `model` and `effort`, when configured |
+
 ```sh
 ls -t ~/.local/state/jarvis-agent/records | head          # newest first
+jq -r '[.time[0:19], .duration_s, .timing.duration_api_ms, .timing.startup_gap_ms, .timing.num_turns, .timing.output_tokens] | @tsv' ~/.local/state/jarvis-agent/records/*.json
 jq '{time, project, outcome, prompt, gated_actions}' ~/.local/state/jarvis-agent/records/<turn id>.json
 jq -r 'select(.outcome != "ok") | [.time, .project, .outcome] | @tsv' ~/.local/state/jarvis-agent/records/*.json
 ```

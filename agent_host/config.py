@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_host.boundedio import read_regular
+from agent_host.command import EFFORT_LEVELS, MODEL_NAME
 
 
 class ConfigError(RuntimeError):
@@ -94,6 +95,17 @@ class AgentHostConfig:
     # ran: it adds `<owner>/<name> <destination>` (D53).
     clone_command: tuple[str, ...] = DEFAULT_CLONE_COMMAND
     clone_timeout_s: int = DEFAULT_CLONE_TIMEOUT_S
+    # The voice profile (voice-and-speed): `--model` and `--effort` of every
+    # turn. None: not on the line, Claude Code's own choice from the user's
+    # settings, as before.
+    voice_model: str | None = None
+    voice_effort: str | None = None
+
+    @property
+    def voice_profile(self) -> dict:
+        """The configured parts of the voice profile, for the turn record."""
+        profile = {"model": self.voice_model, "effort": self.voice_effort}
+        return {key: value for key, value in profile.items() if value is not None}
 
     @property
     def lock_path(self) -> Path:
@@ -236,6 +248,13 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
             or not 1 <= clone_timeout_s <= MAX_CLONE_TIMEOUT_S:
         raise ConfigError(f"clone_timeout_s must be a whole number of seconds, 1 to "
                           f"{MAX_CLONE_TIMEOUT_S}")
+    voice_model = data.get("voice_model")
+    if voice_model is not None and (not isinstance(voice_model, str)
+                                    or not MODEL_NAME.fullmatch(voice_model)):
+        raise ConfigError("voice_model must be a model alias or name, e.g. \"sonnet\"")
+    voice_effort = data.get("voice_effort")
+    if voice_effort is not None and voice_effort not in EFFORT_LEVELS:
+        raise ConfigError(f"voice_effort must be one of {', '.join(EFFORT_LEVELS)}")
 
     return AgentHostConfig(
         enabled=bool(data.get("enabled", True)),
@@ -270,4 +289,6 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
         retention_days=retention_days,
         clone_command=clone_command,
         clone_timeout_s=clone_timeout_s,
+        voice_model=voice_model,
+        voice_effort=voice_effort,
     )

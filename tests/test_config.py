@@ -427,3 +427,32 @@ def test_the_default_voice_is_the_male_one(monkeypatch, tmp_path):
 def test_the_voice_can_be_switched_back_by_env(monkeypatch, tmp_path):
     _set_minimal_env(monkeypatch, tmp_path, JARVIS_KOKORO_VOICE="af_heart")
     assert load_config().kokoro_voice == "af_heart"
+
+
+# --- Whisper's decoding (voice-and-speed) ---------------------------------------------
+
+def test_whisper_decoding_is_faster_whispers_default_when_unset(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("JARVIS_WHISPER_BEAM_SIZE", raising=False)
+    monkeypatch.delenv("JARVIS_WHISPER_LANGUAGE", raising=False)
+    config = load_config()
+    assert (config.whisper_beam_size, config.whisper_language) == (5, None)
+    assert config.whisper_options == {}
+
+
+def test_whisper_beam_and_language_can_be_set(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_WHISPER_BEAM_SIZE="1",
+                     JARVIS_WHISPER_LANGUAGE="en")
+    assert load_config().whisper_options == {"beam_size": 1, "language": "en"}
+
+
+@pytest.mark.parametrize("name,value", [
+    ("JARVIS_WHISPER_BEAM_SIZE", "0"), ("JARVIS_WHISPER_BEAM_SIZE", "11"),
+    ("JARVIS_WHISPER_BEAM_SIZE", "+1"), ("JARVIS_WHISPER_BEAM_SIZE", "one"),
+    ("JARVIS_WHISPER_LANGUAGE", "English"), ("JARVIS_WHISPER_LANGUAGE", "EN"),
+    ("JARVIS_WHISPER_LANGUAGE", "e"),
+])
+def test_bad_whisper_settings_are_refused_at_start(monkeypatch, tmp_path, name, value):
+    _set_minimal_env(monkeypatch, tmp_path, **{name: value})
+    with pytest.raises(ConfigError):
+        load_config()

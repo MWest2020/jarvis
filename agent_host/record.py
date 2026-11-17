@@ -66,6 +66,9 @@ class TurnRecord:
     # Why the checkout's own settings were unsafe when the turn ended (1.7d,
     # D36), or None. They were safe when it started, or it would not have.
     settings_changed: str | None = None
+    # Where the turn's time went (agent_host.timing): the wrapper's clock and
+    # what claude's JSON says about itself. None for a turn with no agent run.
+    timing: dict | None = None
 
     def redacted(self) -> "TurnRecord":
         return TurnRecord(
@@ -79,6 +82,7 @@ class TurnRecord:
             outcome=self.outcome,
             gated_actions=self.gated_actions,
             settings_changed=self.settings_changed,
+            timing=self.timing,
         )
 
 
