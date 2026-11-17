@@ -15,6 +15,9 @@ import io.github.mwest2020.jarvis.core.Phase
 import io.github.mwest2020.jarvis.core.Playback
 import io.github.mwest2020.jarvis.core.PlaybackEnd
 import io.github.mwest2020.jarvis.core.CancelOutcome
+import io.github.mwest2020.jarvis.core.Endpoint
+import io.github.mwest2020.jarvis.core.Endpointer
+import io.github.mwest2020.jarvis.core.Endpointing
 import io.github.mwest2020.jarvis.core.ReadBack
 import io.github.mwest2020.jarvis.core.ReadBackCancels
 import io.github.mwest2020.jarvis.core.ProjectEntry
@@ -22,6 +25,8 @@ import io.github.mwest2020.jarvis.core.ProjectList
 import io.github.mwest2020.jarvis.core.ProjectMenu
 import io.github.mwest2020.jarvis.core.ProjectPick
 import io.github.mwest2020.jarvis.core.ProjectSetting
+import io.github.mwest2020.jarvis.core.SilenceAction
+import io.github.mwest2020.jarvis.core.SilenceSend
 import io.github.mwest2020.jarvis.core.TalkAction
 import io.github.mwest2020.jarvis.core.TalkGesture
 import io.github.mwest2020.jarvis.core.TurnErrors
@@ -63,6 +68,18 @@ data class UiState(
     val refreshing: Boolean = false,
     /** False until the stored settings have been read (the Keystore is not asked on the main thread). */
     val loaded: Boolean = false,
+    /** The setting "Send when I stop talking" (change jarvis-silence-send, H8). */
+    val silenceSend: Boolean = true,
+    /** The silence that sends a hands-free recording, 1.5 to 6 s. */
+    val silenceSeconds: Double = Endpointing.DEFAULT_SILENCE_SECONDS,
+    /** This recording was started with a tap and sends by itself when Mark stops talking (H7). */
+    val handsFree: Boolean = false,
+    /** Milliseconds until the recording is sent by itself; null while no countdown shows (H6). */
+    val countdownMs: Long? = null,
+    /** A short sound was set aside during this recording (H4). */
+    val shortSound: Boolean = false,
+    /** A note that is not an error: a recording was dropped because it held no speech. */
+    val notice: String? = null,
 ) {
     val configured: Boolean get() = bridgeUrl.isNotBlank() && hasToken && (projects.isNotEmpty() || projectsFromBridge)
 
@@ -78,11 +95,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val tone = WaitTone()
     private val player = ReplyPlayer()
     private val streamPlayer = StreamPlayer()
-    private val recorder = Recorder(onLimitReached = {
-        viewModelScope.launch(Dispatchers.Main) {
-            if (state.value.phase == Phase.RECORDING) stopAndSend()
-        }
-    })
+
+    /** One hands-free recording's end-of-speech detection; [posted] is the recorder thread's own. */
+    private class Listening(val endpointer: Endpointer) {
+        var posted: Endpoint? = null
+    }
+
+    // The recording in progress, when it may send by itself (change jarvis-silence-send). Set
+    // on the main thread before the recording starts and cleared when it stops; the recorder's
+    // thread feeds it.
+    @Volatile
+    private var listening: Listening? = null
+    // Main thread only: the last verdict for the recording in progress.
+    private var endpoint: Endpoint? = null
+    // Main thread only: whether the reply that plays waits for a yes, and when such a reply last
+    // played to its end (the next recording then needs less speech, H5).
+    private var replyAsksYes = false
+    private var readBackPlayedAt: Long? = null
+
+    private val recorder = Recorder(
+        onLimitReached = {
+            viewModelScope.launch(Dispatchers.Main) {
+                if (state.value.phase == Phase.RECORDING) atLimit()
+            }
+        },
+        onRead = ::heard,
+    )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -127,6 +165,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 bridgeUrl = settings.bridgeUrl,
                 hasToken = tokens.hasToken(),
                 loaded = true,
+                silenceSend = settings.silenceSend,
+                silenceSeconds = settings.silenceSeconds,
             )
         }
         _state.update { stored.copy(summary = it.summary, refreshing = it.refreshing) }
@@ -204,7 +244,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onPress() = act(gesture.onPress(state.value.phase, SystemClock.elapsedRealtime()))
 
-    fun onRelease() = act(gesture.onRelease(state.value.phase, SystemClock.elapsedRealtime()))
+    fun onRelease() {
+        act(gesture.onRelease(state.value.phase, SystemClock.elapsedRealtime()))
+        // Still recording after the release: it was a tap, so the recording may send by itself.
+        if (state.value.phase == Phase.RECORDING && listening != null) {
+            _state.update { it.copy(handsFree = true) }
+            decide()
+        }
+    }
+
+    /**
+     * The recorder's thread, after each read: the end-of-speech verdict. The main thread hears
+     * of it only when it changes; the countdown in tenths of a second is enough for the screen.
+     */
+    private fun heard(chunk: ByteArray, read: Int) {
+        val current = listening ?: return
+        val now = current.endpointer.feed(chunk, 0, read)
+        val shown = now.copy(countdownMs = now.countdownMs?.let { (it + 99) / 100 * 100 })
+        if (shown == current.posted) return
+        current.posted = shown
+        viewModelScope.launch(Dispatchers.Main) { onEndpoint(current, shown) }
+    }
+
+    private fun onEndpoint(from: Listening, now: Endpoint) {
+        // A verdict for a recording that has already ended (sent, dropped, tapped) is ignored.
+        if (from !== listening || state.value.phase != Phase.RECORDING) return
+        endpoint = now
+        _state.update { it.copy(countdownMs = now.countdownMs, shortSound = now.shortSound) }
+        decide()
+    }
+
+    /** What the end of speech means for the recording in progress; nothing while the button is held (H7). */
+    private fun decide() {
+        val current = state.value
+        when (SilenceSend.action(current.silenceSend && listening != null, current.phase, gesture.holding, endpoint)) {
+            SilenceAction.SEND -> stopAndSend(toEndOfSpeech = true)
+            SilenceAction.DROP -> drop()
+            SilenceAction.NONE -> Unit
+        }
+    }
+
+    /** The two-minute limit: a hands-free recording without speech is dropped, any other is sent (H4). */
+    private fun atLimit() {
+        val heard = listening?.endpointer?.heardSpeech == true
+        when (SilenceSend.atLimit(state.value.handsFree, heard)) {
+            SilenceAction.DROP -> drop()
+            else -> stopAndSend()
+        }
+    }
+
+    /** A hands-free recording without speech: nothing is sent, a note says so; no error tone (H4). */
+    private fun drop() {
+        val note = SilenceSend.dropped(endpoint)
+        stopListening()
+        recorder.stop()
+        _state.update { it.copy(phase = Phase.IDLE, notice = note) }
+    }
+
+    /** The recording in progress no longer sends by itself. Main thread. */
+    private fun stopListening() {
+        listening = null
+        endpoint = null
+        _state.update { it.copy(handsFree = false, countdownMs = null, shortSound = false) }
+    }
 
     private fun act(action: TalkAction) {
         when (action) {
@@ -235,20 +337,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(needsMicrophone = true) }
             return
         }
+        // With the setting on, the recording is measured from its first byte, so it can send by
+        // itself after a tap; while the button is held it never does (jarvis-silence-send).
+        val yes = SilenceSend.yesExpected(readBackPlayedAt, SystemClock.elapsedRealtime())
+        endpoint = null
+        listening = if (current.silenceSend) {
+            Listening(Endpointer(Endpointing.forRecording(current.silenceSeconds, yesExpected = yes)))
+        } else {
+            null
+        }
         if (!recorder.start()) {
+            listening = null
             fail("The microphone is not available. Is another app using it?")
             return
         }
-        _state.update { it.copy(phase = Phase.RECORDING, error = null) }
+        _state.update {
+            it.copy(phase = Phase.RECORDING, error = null, notice = null, handsFree = false, countdownMs = null, shortSound = false)
+        }
     }
 
-    private fun stopAndSend() {
-        val pcm = recorder.stop()
+    /**
+     * Stops the recording and sends it. [toEndOfSpeech]: it ended by itself, and only up to half
+     * a second after the last speech goes out (H9). Either way the read-back cancel queue runs
+     * first and can refuse the turn.
+     */
+    private fun stopAndSend(toEndOfSpeech: Boolean = false) {
+        val ended = listening
+        stopListening()
+        val recorded = recorder.stop()
+        val pcm = if (toEndOfSpeech && ended != null) recorded.copyOf(ended.endpointer.sendLength(recorded.size)) else recorded
         if (Wav.durationMs(pcm.size) < MIN_RECORDING_MS) {
             _state.update { it.copy(phase = Phase.IDLE, error = "That was too short to send. Hold the button while you talk, or tap to start and tap to stop.") }
             return
         }
         val current = state.value
+        // The yes that a read-back waited for has now been said, or something else was asked.
+        readBackPlayedAt = null
         _state.update { it.copy(phase = Phase.WAITING, error = null) }
         tone.heard()
         viewModelScope.launch {
@@ -331,6 +455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startedReadBack(project: String, needsConfirmation: Boolean, id: String?) {
+        replyAsksYes = needsConfirmation
         if (needsConfirmation && !id.isNullOrEmpty()) {
             readBacks.started(project, id, SystemClock.elapsedRealtime())
         } else {
@@ -344,10 +469,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * fails the cancel stays queued and goes out again before the next turn. Main thread.
      */
     private fun playbackEnded(end: PlaybackEnd) {
+        val asksYes = replyAsksYes
+        replyAsksYes = false
         if (end == PlaybackEnd.PLAYED) {
             readBacks.played()
+            // A read-back was heard to its end: the next recording may be a short yes (H5).
+            readBackPlayedAt = if (asksYes) SystemClock.elapsedRealtime() else null
             return
         }
+        readBackPlayedAt = null
         val item = readBacks.notPlayed(SystemClock.elapsedRealtime()) ?: return
         val settings = state.value
         // No new turn until the bridge has been told: a yes must never overtake the cancel.
@@ -412,7 +542,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectProject(name: String) {
         if (state.value.phase != Phase.IDLE) return
         settings.pickedProject = name
-        _state.update { it.copy(project = name, summary = "", error = null) }
+        _state.update { it.copy(project = name, summary = "", error = null, notice = null) }
+    }
+
+    /** The setting "Send when I stop talking" and its silence; stored at once, no Save needed (H8). */
+    fun setSilenceSend(enabled: Boolean, seconds: Double) {
+        val clamped = Endpointing.silenceSeconds(seconds)
+        settings.silenceSend = enabled
+        settings.silenceSeconds = clamped
+        _state.update { it.copy(silenceSend = enabled, silenceSeconds = clamped) }
     }
 
     /**
@@ -468,12 +606,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The app left the screen: a recording in progress is dropped, never sent later. */
     fun onBackground() {
         if (state.value.phase == Phase.RECORDING) {
+            stopListening()
             recorder.stop()
             _state.update { it.copy(phase = Phase.IDLE) }
         }
     }
 
     override fun onCleared() {
+        listening = null
         recorder.stop()
         player.stop()
         streamPlayer.stop()

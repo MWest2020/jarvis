@@ -26,8 +26,13 @@ import kotlin.concurrent.thread
  * Records 16 kHz mono 16-bit PCM into memory. Raw PCM in a WAV header is the one format the
  * bridge decodes without guessing (faster-whisper reads it through PyAV, `bridge/stt.py`).
  * A recording stops by itself at [MAX_SECONDS], far below the bridge's 10 MB limit.
+ * [onRead] gets each read on the recorder's own thread, after it was kept (the end of speech,
+ * change jarvis-silence-send); it must not block.
  */
-class Recorder(private val onLimitReached: () -> Unit) {
+class Recorder(
+    private val onLimitReached: () -> Unit,
+    private val onRead: (ByteArray, Int) -> Unit = { _, _ -> },
+) {
     @Volatile
     private var recording = false
     private var record: AudioRecord? = null
@@ -80,6 +85,7 @@ class Recorder(private val onLimitReached: () -> Unit) {
                     pcm.write(chunk, 0, read)
                     pcm.size() >= MAX_SECONDS * Wav.BYTES_PER_SECOND
                 }
+                onRead(chunk, read)
                 if (full) {
                     recording = false
                     onLimitReached()

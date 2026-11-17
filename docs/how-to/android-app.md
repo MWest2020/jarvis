@@ -79,7 +79,9 @@ run number than the installed one is refused (`INSTALL_FAILED_VERSION_DOWNGRADE`
    hide General.
 7. Save. With `jarvis-home` in the list the main screen opens with General selected; pick a
    project to talk about that one instead (see "Which project is selected" below).
-8. Press the button. The first time, Android asks for the microphone; allow it and press
+8. **Send when I stop talking** (on by default) and **Silence before sending** (3 s): see
+   "Using it" below. They apply at once, without Save.
+9. Press the button. The first time, Android asks for the microphone; allow it and press
    again.
 
 ### General: just talk
@@ -129,6 +131,26 @@ project once.
 ## Using it
 
 - **Hold** the button, talk, let go. Or **tap** it, talk, tap again. Both send.
+- **Tap and just talk** (since 2026-11-17, change
+  [`jarvis-silence-send`](../../openspec/changes/jarvis-silence-send/design.md), jarvis#67):
+  after a tap the app sends the question by itself once you have stopped talking for three
+  seconds. When you pause, the button says "sending in 3 s, tap to send now" and a white bar
+  runs down; talk again and it waits. A tap still sends at once. While you **hold** the
+  button nothing is sent by itself; letting go sends, as before.
+  - A cough, a click or another short sound alone is never sent. The panel says "Only a short
+    sound so far. Still listening." and the app keeps listening, so you can still ask.
+  - When the app hears no speech for 10 seconds after a tap, it stops and says "Nothing heard,
+    so nothing was sent." (or "Only a short sound, so nothing was sent."). No error tone; tap
+    to try again.
+  - Right after Jarvis read something back and asked for your yes, a short "yes" is enough:
+    tap, say yes, and it goes after the silence like any question. (The bridge still checks
+    that the yes was real speech.)
+  - Nothing listens while a reply plays or while the bridge works: listening only starts with
+    your tap.
+  - Only the audio up to half a second after you stopped talking is sent.
+  - Settings → **Send when I stop talking** switches it off (then a tap starts and a tap
+    sends, as before), and **Silence before sending** sets the pause, 1.5 to 6 seconds in
+    half seconds. Both apply at once, without Save.
 - A beep confirms the recording has gone out; a soft tick every three seconds means the
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
@@ -171,6 +193,8 @@ project once.
 | The read-back was stopped, but the bridge could not be told yet. The app tells it before your next question; do not say yes to it. | As above, but the cancel did not reach the bridge; it stays queued | Nothing; the next question sends it first |
 | I couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a minute. | The queued cancel failed again before this question; the question was not sent | Check Tailscale and the bridge; after a minute the read-back has expired and questions go again |
 | The spoken reply broke off. Its text is above. | A streamed reply stopped before its end: speech failed on the bridge, or the connection went. What arrived has played; the summary on screen is the whole spoken text | Read it; if it happens often, check the bridge's log for `reply=stream_cut` |
+| Nothing heard, so nothing was sent. | After a tap the app heard no speech for 10 seconds (or a recording reached two minutes without speech); it stopped listening | Tap and talk again; in a loud place, hold the button or tap to send |
+| Only a short sound, so nothing was sent. | As above, but a cough or a click was heard: too short to be a question | Tap and talk again; for a very short question tap again to send it |
 | The reply could not be played. | The phone could not play the audio (no audio output, or a format it does not take) | Try again; restart the app |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
 

@@ -19,16 +19,16 @@ updates `docs/` in the same commit (AGENTS.md).
 
 ## 2. App
 
-- [ ] 2.1 `Recorder` hands each read to a listener on its worker thread.
-- [ ] 2.2 View model: an endpointer per tapped recording, verdicts on the main thread for the
+- [x] 2.1 `Recorder` hands each read to a listener on its worker thread.
+- [x] 2.2 View model: an endpointer per tapped recording, verdicts on the main thread for the
   current recording only, the send through `stopAndSend` (cancel queue first), the drop with
   a note, the 2-minute limit without speech dropped, the yes minimum after a read-back.
-- [ ] 2.3 Screens: the countdown and its bar on the button, the short-sound note, the hint
+- [x] 2.3 Screens: the countdown and its bar on the button, the short-sound note, the hint
   text; the setting (switch and slider) in Settings, stored in `SettingsStore`.
 
 ## 3. Docs
 
-- [ ] 3.1 `android-app.md` (using it, the setting, how the end is found), the roadmap item.
+- [x] 3.1 `android-app.md` (using it, the setting, how the end is found), the roadmap item.
 
 ## 4. On the phone
 
