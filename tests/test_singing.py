@@ -374,3 +374,19 @@ def test_the_switch_reads_0_1_or_unset(monkeypatch):
 def test_tunes_are_plain_data():
     tune = Tune("x", "X", 60, ((Note(0, 1, (0, 4, 7)), Note(2, 2)),))
     assert tune.syllables == (2,) and tune.beats == 3 and len(tune.notes) == 2
+
+
+
+@pytest.mark.parametrize("text,sung", [
+    ("[sing: happy birthday] Hap-py day to you", True),
+    ("[sing: happy_birthday] Hap-py day to you", True),
+    ("[sing twinkle] Lit-tle star", True),
+    ("[sing: twinkle Lit-tle star", False),
+    ("Sure. [sing: twinkle] Lit-tle star", False),
+    ("[sing: no-such-tune] la la", False),
+])
+def test_a_malformed_or_misplaced_tag_is_never_spoken_aloud(text, sung):
+    # review of #78
+    said, song = singing.choose(text, transcript="please sing", enabled=True, read_back=False)
+    assert "[" not in said and "sing:" not in said.lower()
+    assert (song is not None) == sung

@@ -29,7 +29,10 @@ SAMPLE_RATE = 24000
 MAX_SECONDS = 20.0
 
 # The tag, at the start of the summary: "[sing: happy-birthday]".
-TAG = re.compile(r"\[\s*sing\s*:\s*([A-Za-z-]*)\s*\]\s*", re.IGNORECASE)
+TAG = re.compile(r"\[\s*sing\s*:?\s*([A-Za-z _-]*?)\s*\]\s*", re.IGNORECASE)
+# A broken tag the agent may write ("[sing: twinkle hi", no closing bracket): never
+# spoken aloud, always taken out (review of #78).
+OPEN_TAG = re.compile(r"\[\s*sing\b\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECASE)
 # What the driver must have said in this turn for a reply to be sung: a word that asks
 # for a song, in English or Dutch. The agent's tag alone is not enough.
 ASKED = re.compile(
@@ -128,9 +131,11 @@ def split_tag(spoken: str) -> tuple[Tune | None, str, bool]:
     """(the tune, the text without any tag, whether there was a tag). The tune only
     when the tag is the very first thing and names a known tune."""
     match = TAG.match(spoken)
-    tune = TUNES.get(match.group(1).lower()) if match else None
+    name = re.sub(r"[\s_]+", "-", match.group(1).strip().lower()) if match else ""
+    tune = TUNES.get(name) if match else None
     rest, count = TAG.subn("", spoken)
-    return tune, " ".join(rest.split()), count > 0
+    rest, broken = OPEN_TAG.subn("", rest)
+    return tune, " ".join(rest.split()), count + broken > 0
 
 
 def asked_to_sing(transcript: str) -> bool:
