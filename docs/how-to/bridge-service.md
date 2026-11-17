@@ -642,11 +642,22 @@ lyrics as words. Rendering took 4 to 9 s on `agent-lxc` (2026-11-17, Kokoro warm
 0.6 s per distinct word), so a song starts later than a spoken reply of the same length.
 When rendering fails, the lyrics are spoken instead.
 
+A notice or fallback sentence is spoken before the song, news of a new project after it,
+with 0.3 s between, and `X-Jarvis-Summary` carries them too. They are not dropped, not
+even the informational `new_session`: the others say that something was refused or passed
+to the desk, `new_session` that the earlier conversation is gone, and one rule for all of
+them is simpler than a list of which may be left out. It costs two or three seconds of
+speech; the 20 s cap is for the song alone.
+
 **When it sings, and when not.** All four must hold; otherwise every tag is removed and
 the words are spoken:
 
-- the tag is the very first thing on the agent's spoken line and names a tune in the
-  table (a tag after a notice or the fallback sentence of `full` mode is not);
+- the tag is the very first thing on the agent's own spoken line and names a tune in the
+  table. In `full` mode the bridge's own fixed sentences can stand around that line: a
+  notice of the agent host ("I started a new session for this project."), the read-only
+  fallback sentence, news of a new project. Only those sentences, from their closed list
+  (`FRAMING_SENTENCES` in `bridge/full_mode.py`), are looked past; anything else before
+  the tag means it is not first;
 - the driver's own words in this turn ask for it: "sing", "song", "serenade", "zing",
   "zingen", "lied", "liedje" (a "yes" to a read-back never does);
 - the reply is not a read-back: a read-back is spoken exactly as built, tag or not;

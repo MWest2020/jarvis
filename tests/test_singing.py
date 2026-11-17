@@ -3,6 +3,7 @@ may sing, the renderer with a fake voice (a sine, no Kokoro), and the server: a 
 reply only when asked, never a read-back, spoken when switched off or when it fails."""
 import dataclasses
 import math
+import urllib.parse
 import re
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import numpy as np
 import pytest
 
 from bridge import claude_adapter, singing, summary, tts
+from bridge.full_mode import FALLBACK_SENTENCES, FRAMING_SENTENCES, PROJECT_READY
+from bridge.remote_adapter import NOTICE_SENTENCES
 from bridge.singing import TUNES, Note, Tune
 from tests.test_server_full_mode import Bridge
 from tests.test_streaming import STREAM_ACCEPT, _say
@@ -267,10 +270,12 @@ class Singer:
 
     def __init__(self, fail=False):
         self.songs = []
+        self.requests = []
         self.fail = fail
 
     def __call__(self, song, *, voice):
         self.songs.append((song.tune.id, song.lyrics, voice))
+        self.requests.append(song)
         if self.fail:
             raise RuntimeError("no song today")
         return np.full(SR // 4, 0.25, dtype=np.float32)
@@ -390,3 +395,84 @@ def test_a_malformed_or_misplaced_tag_is_never_spoken_aloud(text, sung):
     said, song = singing.choose(text, transcript="please sing", enabled=True, read_back=False)
     assert "[" not in said and "sing:" not in said.lower()
     assert (song is not None) == sung
+
+
+# --- after a notice, the fallback or project news (jarvis#78 follow-up) ---------------------
+
+@pytest.mark.parametrize("code", sorted(NOTICE_SENTENCES))
+def test_a_tag_right_after_a_notice_is_still_sung(code):
+    sentence = NOTICE_SENTENCES[code]
+    text, song = singing.choose(f"{sentence} [sing: twinkle] Lit-tle build",
+                                transcript="sing a song", enabled=True, read_back=False,
+                                framing=FRAMING_SENTENCES)
+    assert song is not None and song.tune.id == "twinkle"
+    assert song.before == sentence and song.lyrics == "Lit-tle build" and song.after == ""
+    assert text == f"{sentence} Little build"
+
+
+def test_the_read_only_fallback_is_spoken_before_the_song_and_keeps_its_hyphen():
+    sentence = next(iter(FALLBACK_SENTENCES.values()))
+    assert "read-only" in sentence
+    spoken = f"{sentence} [sing: twinkle] Lit-tle build"
+    _, song = singing.choose(spoken, transcript="sing", enabled=True, read_back=False,
+                             framing=FRAMING_SENTENCES)
+    assert song.before == sentence
+    # Not sung: the tag goes, the lyrics lose their hyphens, the fixed sentence does not.
+    text, song = singing.choose(spoken, transcript="what now", enabled=True, read_back=False,
+                                framing=FRAMING_SENTENCES)
+    assert song is None and text == f"{sentence} Little build"
+
+
+def test_news_after_the_song_is_spoken_after_it():
+    sentence = NOTICE_SENTENCES["new_session"]
+    spoken = f"{sentence} [sing: twinkle] Lit-tle build {PROJECT_READY}"
+    text, song = singing.choose(spoken, transcript="sing", enabled=True, read_back=False,
+                                framing=FRAMING_SENTENCES)
+    assert (song.before, song.lyrics, song.after) == (sentence, "Lit-tle build", PROJECT_READY)
+    assert text == f"{sentence} Little build {PROJECT_READY}"
+
+
+def test_only_the_bridges_own_sentences_are_taken_off():
+    # Anything else before the tag still means: not first, not sung.
+    text, song = singing.choose("Sure thing. [sing: twinkle] Lit-tle build",
+                                transcript="sing", enabled=True, read_back=False,
+                                framing=FRAMING_SENTENCES)
+    assert song is None and text == "Sure thing. Little build"
+
+
+def test_a_read_back_after_a_notice_is_untouched():
+    spoken = f"{NOTICE_SENTENCES['new_session']} [sing: twinkle] Merge it. Say yes."
+    assert singing.choose(spoken, transcript="sing", enabled=True, read_back=True,
+                          framing=FRAMING_SENTENCES) == (spoken, None)
+
+
+@pytest.mark.parametrize("code", sorted(NOTICE_SENTENCES))
+def test_the_server_sings_after_each_notice(full, code):
+    full.host.scenario(mode="wrapper", notice=code, spoken=TAGGED)
+    response, said = full.say("Jarvis, sing me a song")
+    assert response.status == 200
+    assert said == "SUNG:%d" % (SR // 4)
+    request = full.singer.requests[-1]
+    assert request.before == NOTICE_SENTENCES[code]
+    assert request.lyrics == "Lit-tle build, you're green at last"
+    summary_header = urllib.parse.unquote(response.getheader("X-Jarvis-Summary"))
+    assert summary_header == f"{NOTICE_SENTENCES[code]} Little build, you're green at last"
+
+
+def test_a_notice_is_spoken_before_the_song_and_news_after_it(monkeypatch):
+    said = []
+
+    def word_audio(text, *, voice):
+        said.append(text)
+        return np.full(100, 0.1, dtype=np.float32)
+    monkeypatch.setattr(tts, "word_audio", word_audio)
+    song = singing.SongRequest(TUNES["twinkle"], "la la la la la la la", before="Notice.",
+                               after="News.")
+    samples = tts.sing(song, voice="bm_george")
+    assert said[0] == "la" and said[-2:] == ["Notice.", "News."]
+    pause = int(tts.SONG_PAUSE_S * SR)
+    assert np.all(samples[:100] == np.float32(0.1))
+    assert np.all(samples[100:100 + pause] == 0)
+    assert np.all(samples[-100:] == np.float32(0.1))
+    sung = singing.render(TUNES["twinkle"], "la la la la la la la", lambda w: word_audio(w, voice=""))
+    assert len(samples) == 200 + 2 * pause + len(sung.samples)
