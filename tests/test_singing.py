@@ -581,3 +581,17 @@ def test_a_notice_is_spoken_before_the_song_and_news_after_it(monkeypatch):
     assert np.all(samples[-100:] == np.float32(0.1))
     sung = singing.render(TUNES["twinkle"], "la la la la la la la", lambda w: word_audio(w, voice=""))
     assert len(samples) == 200 + 2 * pause + len(sung.samples)
+
+
+def test_a_closed_tag_with_punctuation_or_a_long_name_is_never_spoken():
+    for spoken in ("[sing: Iron Man!] Hello, I'm Jarvis.",
+                   "[sing: In the Hall of the Mountain King (Grieg)] Hello, I'm Jarvis."):
+        tune, rest, tagged = singing.split_tag(spoken)
+        assert tagged and tune is None
+        assert rest == "Hello, I'm Jarvis."
+
+
+def test_an_unclosed_tag_never_swallows_the_lyrics():
+    tune, rest, tagged = singing.split_tag("[sing: twinkle Hello, I'm Jarvis, mind the bump")
+    assert tagged and tune is None
+    assert rest == "Hello, I'm Jarvis, mind the bump"

@@ -34,6 +34,11 @@ TAG = re.compile(r"\[\s*sing\s*:?\s*([A-Za-z _-]*?)\s*\]\s*", re.IGNORECASE)
 # A broken tag the agent may write ("[sing: twinkle hi", no closing bracket): never
 # spoken aloud, always taken out (review of #78).
 OPEN_TAG = re.compile(r"\[\s*sing\b\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECASE)
+# A closed tag with a name TAG does not take ("[sing: Iron Man!]", "[sing: In the Hall
+# of the Mountain King (Grieg)]"): taken out up to its bracket, so no part of the name
+# is spoken. Bounded, so an unclosed tag never swallows the lyrics after it (review of
+# #81).
+ODD_TAG = re.compile(r"\[\s*sing\b[^\]\[\n]{0,60}\]\s*", re.IGNORECASE)
 # What the driver must have said in this turn for a reply to be sung: a word that asks
 # for a song, in English or Dutch. The agent's tag alone is not enough.
 ASKED = re.compile(
@@ -228,7 +233,9 @@ def split_tag(spoken: str, *, parody: bool = True) -> tuple[Tune | None, str, bo
     name = re.sub(r"[\s_]+", "-", match.group(1).strip().lower()) if match else ""
     tune = tunes(parody).get(ALIASES.get(name, name)) if match else None
     rest, count = TAG.subn("", spoken)
+    rest, odd = ODD_TAG.subn("", rest)
     rest, broken = OPEN_TAG.subn("", rest)
+    broken += odd
     return tune, " ".join(rest.split()), count + broken > 0
 
 
