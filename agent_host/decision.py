@@ -53,6 +53,7 @@ to the bridge when the turn ends with nothing pending.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import fcntl
 import os
 import pwd
@@ -200,7 +201,8 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
     the configuration or the environment decides or the gate could not
     place, never for a call reached by unwrapping a shell (`bash -c`),
     never for a tool nobody listed, never for a subagent that is not a
-    read-only helper (#57): "off" means "do not ask me", not "do not look". With `confirm_skip`, every class of the call must be skipped,
+    read-only helper (#57): "off" means "do not ask me", not "do not
+    look". With `confirm_skip`, every class of the call must be skipped,
     and a call in no class is in no skipped class.
     """
     if "self" in verdict.classes or verdict.run_alone:
@@ -208,8 +210,8 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
     if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
         return False
     if verdict.rule.startswith(("interpreter:", "shell:", "tool:", "subagent:", "git:config")):
-        # Inline code, a shell on stdin, a tool nobody listed, a subagent that
-        # is not a read-only helper, and a change to git's configuration
+        # Inline code, a shell on stdin, a tool nobody listed, a subagent
+        # that is not a read-only helper, and a change to git's configuration
         # (which changes what every later git call does): desk-only, whatever
         # the switch says.
         return False
@@ -325,6 +327,7 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
     real_cwd = Path(os.path.realpath(cwd))
 
     ctx = build_context(config, real_cwd, home=home, lib_dir=lib_dir, git=git)
+    ctx = dataclasses.replace(ctx, logical_cwd=Path(os.path.normpath(cwd)))
     verdict = classify.classify(tool_name, tool_input, ctx)
     if not verdict.gated:
         return ALLOW

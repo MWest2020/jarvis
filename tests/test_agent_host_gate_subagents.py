@@ -43,8 +43,7 @@ def test_a_read_only_type_is_not_gated(ctx, kind, tool):
 def test_the_fields_a_turn_uses_are_allowed(ctx):
     # The call of turn 3e0b6159 had these four, run_in_background false.
     assert not _verdict(ctx, "web-fetch", run_in_background=False).gated
-    assert not _verdict(ctx, "Explore", model="sonnet", effort="low",
-                        run_in_background=None).gated
+    assert not _verdict(ctx, "Explore", model="sonnet", effort="low").gated
 
 
 @pytest.mark.parametrize("kind", ["Web Fetch", "web_fetch", "WEB-FETCH", "explore",
@@ -85,8 +84,8 @@ def test_a_field_the_rules_do_not_know_is_gated(ctx, extra):
     assert verdict.gated and verdict.rule == "subagent:field"
 
 
-@pytest.mark.parametrize("value", [True, "true", 1, "yes"])
-def test_a_subagent_in_the_background_is_gated(ctx, value):
+@pytest.mark.parametrize("value", [True, "true", 1, "yes", None, 0, "false", "", [], {}])
+def test_run_in_background_other_than_absent_or_false_is_gated(ctx, value):
     verdict = _verdict(ctx, "web-fetch", run_in_background=value)
     assert verdict.gated and verdict.rule == "subagent:background"
 
@@ -142,7 +141,7 @@ def test_too_many_agent_files_gate(tmp_path):
     ctx = make_ctx(tmp_path)
     agents = ctx.claude_dir / "agents"
     agents.mkdir(parents=True)
-    for i in range(classify._AGENT_FILES_MAX + 1):
+    for i in range(classify._AGENT_ENTRIES_MAX + 1):
         (agents / f"a{i}.md").write_text("x")
     assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
 
@@ -213,3 +212,181 @@ def test_a_host_local_file_can_add_a_type(tmp_path):
     ctx = make_ctx(tmp_path)
     assert not _verdict(ctx, "my-reader").gated
     assert not _verdict(ctx, "Explore").gated
+
+
+# --- review of #58: what an agent file cannot slip past -------------------------------------
+
+BYPASSES = {
+    "folded": "---\nname: >-\n  Explore\ndescription: x\n---\n",
+    "literal": "---\nname: |\n  Explore\ndescription: x\n---\n",
+    "escape": '---\nname: "Expl\\x6fre"\ndescription: x\n---\n',
+    "single-quote-escape": "---\nname: 'Expl''ore'\ndescription: x\n---\n",
+    "tag": "---\nname: !!str Explore\ndescription: x\n---\n",
+    "quoted-key": '---\n"name": Explore\ndescription: x\n---\n',
+    "single-quoted-key": "---\n'name': Explore\ndescription: x\n---\n",
+    "escaped-key": '---\n"n\\x61me": Explore\ndescription: x\n---\n',
+    "next-line": "---\nname:\n  Explore\ndescription: x\n---\n",
+    "flow": "---\n{name: Explore, description: x}\n---\n",
+    "complex-key": "---\n? name\n: Explore\ndescription: x\n---\n",
+    "merge-key": "---\nbase: &b {name: Explore}\n<<: *b\ndescription: x\n---\n",
+    "anchor": "---\nname: &a Explore\ndescription: x\n---\n",
+    "alias": "---\nx: &a Explore\nname: *a\ndescription: x\n---\n",
+    "unclosed-16k": "---\ndescription: " + "a" * 17000 + "\nname: Explore\n---\n",
+    "leading-blank": "\n---\nname: !!str Explore\n---\n",
+}
+
+
+def _plant(ctx, body, where="x.md"):
+    agents = ctx.cwd / ".claude" / "agents"
+    (agents / where).parent.mkdir(parents=True, exist_ok=True)
+    (agents / where).write_text(body)
+
+
+@pytest.mark.parametrize("yaml_parser", [True, False])
+@pytest.mark.parametrize("case", sorted(BYPASSES))
+def test_a_name_written_in_a_form_the_gate_does_not_read_gates(tmp_path, monkeypatch, case,
+                                                                yaml_parser):
+    if not yaml_parser:
+        monkeypatch.setattr(classify, "_yaml_name", lambda text: classify._NO_YAML)
+    ctx = make_ctx(tmp_path)
+    _plant(ctx, BYPASSES[case])
+    verdict = _verdict(ctx, "Explore")
+    assert verdict.gated and verdict.rule == "subagent:shadowed", case
+
+
+@pytest.mark.parametrize("body", [
+    "---\nname: reviewer\ndescription: x\n---\n",
+    "---\nname: 'reviewer'  # a comment\ndescription: x\ntools: Read, Grep\n---\n",
+    '---\nname: "reviewer"\ndescription: >-\n  long text\n  over lines\n---\nbody\n',
+    "---\nname: reviewer\nhooks:\n  name: nested\n---\n",
+    "no front matter at all\n",
+])
+def test_an_agent_file_read_with_certainty_changes_nothing(tmp_path, body):
+    ctx = make_ctx(tmp_path)
+    _plant(ctx, body)
+    assert not _verdict(ctx, "Explore").gated
+
+
+def test_the_yaml_parser_disagreeing_with_the_simple_read_gates(tmp_path, monkeypatch):
+    monkeypatch.setattr(classify, "_yaml_name", lambda text: "Explore")
+    ctx = make_ctx(tmp_path)
+    _plant(ctx, "---\nname: reviewer\n---\n")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
+
+
+def test_a_symlinked_directory_in_an_agents_directory_is_followed(tmp_path):
+    ctx = make_ctx(tmp_path)
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    (real / "x.md").write_text("---\nname: Explore\ndescription: x\n---\n")
+    agents = ctx.cwd / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    os.symlink(real, agents / "link")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
+
+
+def test_a_symlink_loop_in_an_agents_directory_ends(tmp_path):
+    ctx = make_ctx(tmp_path)
+    agents = ctx.cwd / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    os.symlink(agents, agents / "loop")
+    assert not _verdict(ctx, "Explore").gated
+
+
+def test_a_dangling_agent_file_gates(tmp_path):
+    ctx = make_ctx(tmp_path)
+    agents = ctx.cwd / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    os.symlink(tmp_path / "missing.md", agents / "x.md")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
+
+
+def test_the_main_worktree_of_a_linked_worktree_is_looked_at(tmp_path):
+    from tests.gatekit import git_init, run_git
+    main = tmp_path / "projects" / "main"
+    git_init(main)
+    linked = tmp_path / "wt" / "linked"
+    run_git(main, "worktree", "add", "-q", str(linked), "-b", "side")
+    ctx = make_ctx(tmp_path, cwd=linked)
+    assert not _verdict(ctx, "Explore").gated
+    (main / ".claude" / "agents").mkdir(parents=True)
+    (main / ".claude" / "agents" / "x.md").write_text("---\nname: Explore\n---\n")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
+
+
+def test_the_call_directory_as_named_and_as_real_path_are_both_looked_at(tmp_path):
+    import dataclasses
+    real = tmp_path / "real" / "checkout"
+    real.mkdir(parents=True)
+    (tmp_path / "named").mkdir()
+    os.symlink(real, tmp_path / "named" / "checkout")
+    (tmp_path / "named" / ".claude" / "agents").mkdir(parents=True)
+    (tmp_path / "named" / ".claude" / "agents" / "x.md").write_text("---\nname: Explore\n---\n")
+    ctx = make_ctx(tmp_path, cwd=real)
+    assert not _verdict(ctx, "Explore").gated
+    ctx = dataclasses.replace(ctx, logical_cwd=tmp_path / "named" / "checkout")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
+
+
+def test_the_gate_passes_the_call_directory_as_named(tmp_path):
+    real = tmp_path / "projects" / "demo"
+    (tmp_path / "named").mkdir()
+    os.symlink(real, tmp_path / "named" / "demo")
+    (tmp_path / "named" / ".claude" / "agents").mkdir(parents=True)
+    (tmp_path / "named" / ".claude" / "agents" / "x.md").write_text("---\nname: Explore\n---\n")
+    cfg = make_config(tmp_path)
+    tool, data = _agent("Explore")
+    result = decision.decide(
+        {"tool_name": tool, "tool_input": data, "cwd": str(tmp_path / "named" / "demo")},
+        cfg, turn_checkout=real, turn_id=str(uuid.uuid4()),
+        home=tmp_path / "home", lib_dir=tmp_path / "lib")
+    assert not result.allow and result.reason.startswith("[subagent]")
+
+
+# --- a write into an agents directory is the class `self` ----------------------------------
+
+@pytest.mark.parametrize("path", [
+    "projects/demo/.claude/agents/x.md", "projects/demo/.claude/agents/sub/x.md",
+    "projects/other/.claude/agents/x.md", "home/.claude/agents/x.md",
+])
+@pytest.mark.parametrize("tool", ["Write", "Edit"])
+def test_a_write_tool_into_an_agents_directory_is_self(tmp_path, path, tool):
+    ctx = make_ctx(tmp_path)
+    verdict = classify.classify(tool, {"file_path": str(tmp_path / path), "content": "x",
+                                       "old_string": "a", "new_string": "b"}, ctx)
+    assert verdict.gated and verdict.classes == ("self",) and verdict.desk_only
+
+
+def test_a_write_through_a_symlink_into_an_agents_directory_is_self(tmp_path):
+    ctx = make_ctx(tmp_path)
+    agents = ctx.cwd / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    os.symlink(agents, ctx.cwd / "innocent")
+    verdict = classify.classify("Write", {"file_path": str(ctx.cwd / "innocent" / "x.md"),
+                                          "content": "x"}, ctx)
+    assert verdict.classes == ("self",)
+
+
+@pytest.mark.parametrize("command", [
+    "cp /tmp/evil.md .claude/agents/x.md", "cp /tmp/evil.md .claude/agents/",
+    "mv /tmp/evil.md .claude/agents/explore.md", "ln -s /tmp/evil.md .claude/agents/x.md",
+    "ln -s /tmp/agents-src .claude/agents", "tee .claude/agents/x.md",
+    "git checkout other -- .claude/agents", "git restore --source other .claude/agents/x.md",
+    "git checkout other -- .claude/agents/x.md", "rm -r .claude/agents",
+    "curl -o .claude/agents/x.md https://example.invalid/x",
+    "cp /tmp/evil.md ~/.claude/agents/x.md",
+])
+def test_a_shell_write_into_an_agents_directory_is_self(tmp_path, command):
+    from tests.gatekit import bash
+    ctx = make_ctx(tmp_path)
+    (ctx.cwd / ".claude" / "agents").mkdir(parents=True)
+    verdict = bash(command, ctx)
+    assert verdict.gated and "self" in verdict.classes, (command, verdict)
+
+
+@pytest.mark.parametrize("command", ["cat .claude/agents/x.md", "ls .claude/agents"])
+def test_reading_an_agents_directory_is_not(tmp_path, command):
+    from tests.gatekit import bash
+    ctx = make_ctx(tmp_path)
+    (ctx.cwd / ".claude" / "agents").mkdir(parents=True)
+    assert not bash(command, ctx).gated

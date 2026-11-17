@@ -181,7 +181,8 @@ class Protected:
 
     def is_protected_dir(self, path: str | os.PathLike) -> bool:
         for form in self._forms(path):
-            if form in self.dirs or os.path.basename(form) == ".claude":
+            if form in self.dirs or os.path.basename(form) == ".claude" \
+                    or _is_claude_agents(form):
                 return True
         return False
 
@@ -192,7 +193,7 @@ class Protected:
 
     def covers(self, path: str | os.PathLike) -> bool:
         for form in self._forms(path):
-            if _is_claude_settings(form) or _is_git_control(form):
+            if _is_claude_settings(form) or _is_claude_agents(form) or _is_git_control(form):
                 return True
             if any(form == p or form.startswith(p + os.sep) for p in self.paths):
                 return True
@@ -223,6 +224,14 @@ def _is_claude_settings(real: str) -> bool:
         os.path.basename(os.path.dirname(real)) == ".claude"
         and fnmatch.fnmatchcase(os.path.basename(real), "settings*.json")
     )
+
+
+def _is_claude_agents(real: str) -> bool:
+    """Any `.claude/agents` directory and everything in it (a checkout's, the
+    user's): an agent file there defines a subagent type, with its own tools,
+    hooks and permission mode (#57, D58)."""
+    parts = real.split(os.sep)
+    return any(a == ".claude" and b == "agents" for a, b in zip(parts, parts[1:]))
 
 
 _GIT_CONTROL = frozenset({"config", "config.worktree", "hooks", "info"})
@@ -340,6 +349,9 @@ class Context:
     # Claude Code's user directory (where the user settings are): its
     # `agents/` can define a subagent type (#57).
     claude_dir: Path | None = None
+    # The call's directory as the call names it, before symlinks are
+    # resolved (the gate sets it; `cwd` is the real path).
+    logical_cwd: Path | None = None
 
 
 def context_for(
@@ -416,8 +428,24 @@ def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
 
 # Bounds for reading agent files: they are looked at on every subagent call.
 _AGENT_FILE_HEAD_BYTES = 16 * 1024
-_AGENT_FILES_MAX = 500
-_FRONTMATTER_NAME_RE = re.compile(r"""name\s*:\s*["']?([^"'\r\n#]*?)["']?\s*(?:#.*)?$""")
+# Files and directories, together: also the guard against a symlink loop.
+_AGENT_ENTRIES_MAX = 500
+_GIT_FILE_BYTES = 4096
+# A top-level `name:` line in the one form read here: a plain scalar, or a
+# quoted one without escapes, on the same line, with an optional comment.
+# Every other way to write that key gates (`_front_matter_names`).
+_NAME_PLAIN_RE = re.compile(
+    r"""name[ \t]*:[ \t]+(?:"([^"\\]*)"|'([^']*)'|([^\s"'#{}\[\]&*!|>%@`,][^#{}\[\],]*?))"""
+    r"""[ \t]*(?:#.*)?""")
+# Any top-level line that could set the key `name` some other way: the key
+# quoted or escaped, a complex key (`? name`), a merge key (`<<: *x`), a flow
+# mapping, an anchor, alias or tag in key position, or a directive.
+_NAME_KEY_RE = re.compile(r"""name[ \t]*:""")
+_RISKY_TOP_RE = re.compile(r"""["'?{\[&*!%@`]|<<""")
+
+
+class _Unknown(Exception):
+    """What an agent file defines cannot be read with certainty."""
 
 
 def agent_name_key(name: str) -> str:
@@ -432,11 +460,14 @@ def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
     """A call that starts a subagent runs by voice only as a read-only type,
     in the turn itself, with nothing in its input the rules do not know.
     Every call the subagent makes comes through the gate on its own (host
-    check 13); this rule keeps the helpers to the ones that only read."""
+    check 13); this rule keeps the helpers to the built-in ones without
+    edit tools."""
     rules = ctx.rules
     if set(tool_input) - rules.subagent_fields - rules.subagent_off_fields:
         return Verdict(gated=True, rule="subagent:field")
-    if any(tool_input.get(key) not in (None, False) for key in rules.subagent_off_fields):
+    # Absent, or JSON false: nothing else (not null, 0 or "false").
+    if any(key in tool_input and tool_input[key] is not False
+           for key in rules.subagent_off_fields):
         return Verdict(gated=True, rule="subagent:background")
     kind = tool_input.get("subagent_type")
     # No type is Claude Code's general-purpose agent: every tool.
@@ -445,81 +476,178 @@ def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
     key = agent_name_key(kind)
     if key not in {agent_name_key(t) for t in rules.subagent_types}:
         return Verdict(gated=True, rule="subagent:type")
-    names = _agent_file_names(ctx)
-    if names is None or key in names:
+    try:
+        names = _agent_file_names(ctx)
+    except _Unknown:
+        return Verdict(gated=True, rule="subagent:shadowed")
+    if key in names:
         return Verdict(gated=True, rule="subagent:shadowed")
     return UNGATED
 
 
-def _agent_dirs(ctx: Context) -> list[Path]:
+def _main_worktree(directory: str) -> str | None:
+    """The main worktree of the linked git worktree `directory` is in, read
+    from its `.git` file and the `commondir` behind it (no git is run)."""
+    here = directory
+    while True:
+        dot_git = os.path.join(here, ".git")
+        if os.path.isdir(dot_git):
+            return None
+        if os.path.isfile(dot_git):
+            try:
+                text = read_text(dot_git, _GIT_FILE_BYTES)
+            except (OSError, UnicodeDecodeError) as exc:
+                raise _Unknown(f"cannot read {dot_git}") from exc
+            match = re.match(r"gitdir:\s*(.+)", text.strip())
+            if not match:
+                raise _Unknown(f"{dot_git} names no gitdir")
+            gitdir = os.path.join(here, match.group(1).strip())
+            try:
+                common = read_text(os.path.join(gitdir, "commondir"), _GIT_FILE_BYTES).strip()
+            except FileNotFoundError:
+                return None  # a submodule, not a linked worktree
+            except (OSError, UnicodeDecodeError) as exc:
+                raise _Unknown(f"cannot read the commondir of {gitdir}") from exc
+            common_dir = os.path.realpath(os.path.join(gitdir, common))
+            return os.path.dirname(common_dir) if os.path.basename(common_dir) == ".git" else None
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+
+
+def _agent_dirs(ctx: Context) -> list[str]:
     """Where an agent file could define a type for this call: the user's
-    agents directory, and `.claude/agents` in the call's directory and in
-    every directory above it."""
-    dirs = [ctx.claude_dir / "agents"] if ctx.claude_dir is not None else []
-    here = Path(os.path.abspath(ctx.cwd))
-    dirs += [d / ".claude" / "agents" for d in (here, *here.parents)]
-    return dirs
+    agents directory, and `.claude/agents` in the call's directory and every
+    directory above it, from the directory as the call names it and from
+    its real path, and the same from the main worktree when the call is in
+    a linked one. Not looked at (D58): `--add-dir` directories, the managed
+    folder, `--agents` (the wrapper passes none, and the agent cannot)."""
+    starts: list[str] = []
+    for cwd in (ctx.logical_cwd, ctx.cwd):
+        if cwd is not None:
+            starts += [os.path.normpath(os.path.abspath(cwd)), os.path.realpath(cwd)]
+    for start in list(starts):
+        main = _main_worktree(start)
+        if main is not None:
+            starts += [main, os.path.realpath(main)]
+    dirs = [str(ctx.claude_dir / "agents")] if ctx.claude_dir is not None else []
+    for start in starts:
+        here = start
+        while True:
+            dirs.append(os.path.join(here, ".claude", "agents"))
+            parent = os.path.dirname(here)
+            if parent == here:
+                break
+            here = parent
+    return list(dict.fromkeys(dirs))
 
 
-def _agent_file_names(ctx: Context) -> set[str] | None:
+def _agent_file_names(ctx: Context) -> set[str]:
     """The names (as `agent_name_key`) that agent files define, by their
-    front matter and by their file name; None when that cannot be known
-    (a directory that cannot be read, too many files): the call is gated."""
+    front matter and, to be safe, by their file name (Claude Code goes by
+    `name:` only; counting the file name too only gates more). Raises
+    `_Unknown` when that cannot be known: a directory that cannot be read,
+    too many entries, a file whose `name:` is not read with certainty."""
     names: set[str] = set()
-    count = 0
+    entries = 0
+    seen: set[str] = set()
     for top in _agent_dirs(ctx):
         try:
             info = os.stat(top)
         except FileNotFoundError:
             continue
-        except OSError:
-            return None
+        except OSError as exc:
+            raise _Unknown(f"cannot look at {top}") from exc
         if not stat.S_ISDIR(info.st_mode):
             continue
         failed: list[OSError] = []
-        for root, _dirs, files in os.walk(top, onerror=failed.append):
+        # Symlinks are followed, as Claude Code's own search does; a directory
+        # already seen (by its real path) is not entered again.
+        for root, dirs, files in os.walk(top, onerror=failed.append, followlinks=True):
+            real = os.path.realpath(root)
+            if real in seen:
+                dirs[:] = []
+                continue
+            seen.add(real)
+            entries += 1 + len(files)
+            if entries > _AGENT_ENTRIES_MAX:
+                raise _Unknown("too many agent files")
             for name in files:
-                if not name.endswith(".md"):
+                if not name.lower().endswith(".md"):
                     continue
-                count += 1
-                if count > _AGENT_FILES_MAX:
-                    return None
                 names.add(agent_name_key(name[:-3]))
-                declared = _front_matter_name(Path(root) / name)
-                if declared is None:
-                    return None
-                if declared:
-                    names.add(agent_name_key(declared))
+                names |= {agent_name_key(n) for n in _front_matter_names(os.path.join(root, name))}
         if failed:
-            return None
+            raise _Unknown(f"cannot read {failed[0].filename}")
     return names
 
 
-def _front_matter_name(path: Path) -> str | None:
-    """The `name:` of an agent file's front matter, "" when it has none,
-    None when the file cannot be read."""
+def _front_matter_names(path: str) -> set[str]:
+    """The `name` an agent file's front matter sets, read in one strict form,
+    and checked against a YAML parser when there is one. Anything that might
+    set `name` some other way raises `_Unknown`."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
-    except OSError:
-        return None
+    except OSError as exc:
+        raise _Unknown(f"cannot open {path}") from exc
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return ""
-        head = os.read(fd, _AGENT_FILE_HEAD_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return None
+            raise _Unknown(f"{path} is not a regular file")
+        head = os.read(fd, _AGENT_FILE_HEAD_BYTES)
+    except OSError as exc:
+        raise _Unknown(f"cannot read {path}") from exc
     finally:
         os.close(fd)
-    lines = head.lstrip("\ufeff").splitlines()
+    lines = head.decode("utf-8", "replace").lstrip("\ufeff").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
     if not lines or lines[0].strip() != "---":
-        return ""
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        match = _FRONTMATTER_NAME_RE.match(line)
-        if match:
-            return match.group(1).strip()
-    return ""
+        return set()  # no front matter: no agent
+    try:
+        end = next(i for i, line in enumerate(lines[1:], 1) if line.strip() in ("---", "..."))
+    except StopIteration:
+        raise _Unknown(f"the front matter of {path} does not end in its first bytes") from None
+    body = lines[1:end]
+    names: list[str] = []
+    for line in body:
+        if not line.strip() or line[0] in " \t#":
+            continue  # blank, nested, or a comment
+        if _RISKY_TOP_RE.match(line):
+            raise _Unknown(f"{path}: a top-level line the gate does not read")
+        if _NAME_KEY_RE.match(line):
+            match = _NAME_PLAIN_RE.fullmatch(line.rstrip())
+            if not match:
+                raise _Unknown(f"{path}: a name the gate does not read")
+            names.append(next(g for g in match.groups() if g is not None).strip())
+    parsed = _yaml_name("\n".join(body))
+    if parsed is not _NO_YAML and parsed != (names[-1] if names else None):
+        raise _Unknown(f"{path}: the YAML parser reads another name")
+    return set(names)
+
+
+_NO_YAML = object()
+
+
+def _yaml_name(text: str):
+    """The `name` a YAML parser reads, None when there is none, `_NO_YAML`
+    when no parser is installed."""
+    try:
+        import yaml
+    except ImportError:
+        return _NO_YAML
+    try:
+        data = yaml.safe_load(text)
+    except Exception as exc:  # noqa: BLE001 - any parser error: not known
+        raise _Unknown("the front matter is not YAML") from exc
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise _Unknown("the front matter is not a mapping")
+    value = data.get("name")
+    if value is not None and not isinstance(value, str):
+        raise _Unknown("a name that is not a string")
+    return value
 
 
 def _resolve(path: str, ctx: Context) -> str:
