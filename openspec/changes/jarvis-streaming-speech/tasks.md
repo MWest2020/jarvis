@@ -7,14 +7,14 @@ Built in the same pull request as the proposal (Mark asked for it). Every step u
 
 ## 1. Bridge
 
-- [ ] 1.1 `bridge/tts.py`: `stream_pcm(text, voice, whole)`, one big-endian L16 piece per
+- [x] 1.1 `bridge/tts.py`: `stream_pcm(text, voice, whole)`, one big-endian L16 piece per
   sentence (S4), or Kokoro's default split for a read-back (S5).
-- [ ] 1.2 `bridge/server.py`: the `Accept` match (S1), headers first and the chunked body
+- [x] 1.2 `bridge/server.py`: the `Accept` match (S1), headers first and the chunked body
   (S2, S3), read-backs rendered before the headers (S5), a cut body on an error (S6),
   `delivered`/`undelivered` from the stream's result.
-- [ ] 1.3 `bridge/config.py`: `JARVIS_STREAM_REPLIES` (default on, `0` off).
-- [ ] 1.4 `bridge/timing.py`: `first_audio_ms`, `reply=stream|wav` (S8).
-- [ ] 1.5 Tests: headers before the body, one chunk per sentence and the first before the
+- [x] 1.3 `bridge/config.py`: `JARVIS_STREAM_REPLIES` (default on, `0` off).
+- [x] 1.4 `bridge/timing.py`: `first_audio_ms`, `reply=stream|wav` (S8).
+- [x] 1.5 Tests: headers before the body, one chunk per sentence and the first before the
   second is rendered, the error mid-stream, a read-back rendered before the headers and
   cancelled when it fails, the old client and HTTP/1.0 unchanged, the switch.
 

@@ -4,7 +4,10 @@ A turn is: the upload is read, the recording is transcribed (`stt`), in
 `full` mode the detected speech is measured (`vad`), the agent answers
 (`agent`: the ssh round trip to the agent host, or the read-only turn), the
 summary is spoken (`tts`), and the WAV is written back. `total` runs from the
-request's head being parsed to the reply being written.
+request's head being parsed to the reply being written. A streamed reply
+(jarvis-streaming-speech) renders and writes one sentence at a time, so `tts`
+and `write` interleave; `first_audio` is the moment its first audio byte was
+written, counted like `total` (for a WAV: the first byte of the file).
 
 One INFO line per turn goes to the log (the file and stdout), and the same
 numbers, minus the write, go to the phone in `X-Jarvis-Timing`. No text of
@@ -45,6 +48,9 @@ class TurnTimer:
         self.audio_in_s: float | None = None
         self.audio_out_s: float | None = None
         self.spoken_chars: int | None = None
+        self.first_audio_ms: int | None = None
+        # "stream" or "wav" once the reply is chosen (S8).
+        self.reply: str | None = None
 
     @contextmanager
     def stage(self, name: str):
@@ -64,6 +70,11 @@ class TurnTimer:
                 return func()
         return timed
 
+    def mark_first_audio(self) -> None:
+        """The first audio byte is about to be written; only the first call counts."""
+        if self.first_audio_ms is None:
+            self.first_audio_ms = self.total_ms()
+
     def total_ms(self) -> int:
         return int(round((self._clock() - self.started) * 1000))
 
@@ -75,9 +86,14 @@ class TurnTimer:
         return ";".join(parts)
 
     def log_fields(self) -> str:
-        """`stt_ms=812 agent_ms=7604 ... total_ms=14020 audio_in_s=5.5 ...`."""
+        """`stt_ms=812 agent_ms=7604 ... first_audio_ms=9620 total_ms=14020 reply=stream
+        audio_in_s=5.5 ...`."""
         parts = [f"{name}_ms={self.ms[name]}" for name in STAGES if name in self.ms]
+        if self.first_audio_ms is not None:
+            parts.append(f"first_audio_ms={self.first_audio_ms}")
         parts.append(f"total_ms={self.total_ms()}")
+        if self.reply is not None:
+            parts.append(f"reply={self.reply}")
         if self.audio_in_s is not None:
             parts.append(f"audio_in_s={self.audio_in_s:.1f}")
         if self.audio_out_s is not None:

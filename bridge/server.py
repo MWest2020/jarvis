@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bridge import claude_adapter, remote_adapter, stt, tts
@@ -87,6 +88,32 @@ def _parse_content_length(value: str | None) -> int | None:
         return int(value)
     except ValueError:   # more digits than int() converts
         return None
+
+
+def accepts_stream(accept: str | None) -> bool:
+    """True when an `Accept` header names the streamed reply's format
+    (jarvis-streaming-speech S1): `audio/L16` with `rate=24000`, `channels` absent or
+    1, and a quality above 0. `*/*`, `audio/*` or `audio/wav` do not count: a client
+    that never asked keeps getting the WAV."""
+    if not accept:
+        return False
+    for entry in accept.split(","):
+        kind, *params = (part.strip() for part in entry.split(";"))
+        if kind.lower() != "audio/l16":
+            continue
+        values = {}
+        for param in params:
+            name, _, value = param.partition("=")
+            values[name.strip().lower()] = value.strip().strip('"')
+        if values.get("rate") != str(tts.SAMPLE_RATE) or values.get("channels", "1") != "1":
+            continue
+        try:
+            quality = float(values.get("q", "1"))
+        except ValueError:
+            continue
+        if quality > 0:
+            return True
+    return False
 
 
 def is_authorized(auth_header: str | None, expected_token: str) -> bool:
@@ -258,6 +285,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
         # Per-stage timing of the turn (bridge.timing), from the head on.
         timer = TurnTimer()
+        # jarvis-streaming-speech S1, S2: a streamed reply only for a client that asks
+        # and speaks HTTP/1.1 (a chunked body needs it), and only while the switch is on.
+        self._stream_reply = (self.config.stream_replies
+                              and self.request_version == "HTTP/1.1"
+                              and accepts_stream(self.headers.get("Accept")))
+        self._headers_out = False
         # Read the announced length before any check, but not the body: a
         # rejection needs it to drain the upload first (_reject).
         self._body_length = _parse_content_length(self.headers.get("Content-Length"))
@@ -332,9 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
         if not transcript.strip():
             # Silence: no agent turn, just say so.
-            with timer.stage("tts"):
-                audio_reply = tts.synthesize(NOT_HEARD, voice=self.config.kokoro_voice)
-            self._respond_audio(audio_reply, NOT_HEARD, "", timer=timer, project=project_name)
+            self._speak(NOT_HEARD, "", timer=timer, project=project_name)
             return
 
         if self.full is not None:
@@ -349,39 +380,64 @@ class Handler(BaseHTTPRequestHandler):
             timer.add("agent", time.monotonic() - handle_started - timer.ms.get("vad", 0) / 1000)
             logger.info("project=%s summary=%r", project_name, outcome.spoken)
             try:
-                with timer.stage("tts"):
-                    audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
-                self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
-                                    needs_confirmation=outcome.needs_confirmation,
-                                    projects_changed=outcome.projects_changed,
-                                    timer=timer, project=project_name)
+                complete = self._speak(outcome.spoken, outcome.ref,
+                                       needs_confirmation=outcome.needs_confirmation,
+                                       projects_changed=outcome.projects_changed,
+                                       timer=timer, project=project_name)
             except BaseException:
                 # A read-back that was not spoken, or did not reach the phone, was
                 # not heard: nothing stays pending, here or on the agent host.
                 self.full.undelivered(project, outcome)
                 raise
-            self.full.delivered(project, outcome)
+            if complete:
+                self.full.delivered(project, outcome)
+            else:
+                # A streamed reply that broke off after its headers (S6).
+                self.full.undelivered(project, outcome)
             return
 
         with timer.stage("agent"):
             turn = self.readonly.run_turn(project=project, prompt=transcript)
         summary = turn.spoken
         logger.info("project=%s summary=%r", project_name, summary)
+        self._speak(summary, turn.ref, timer=timer, project=project_name)
 
-        with timer.stage("tts"):
-            audio_reply = tts.synthesize(summary, voice=self.config.kokoro_voice)
-        self._respond_audio(audio_reply, summary, turn.ref, timer=timer, project=project_name)
+    def _speak(self, text: str, session_id: str, *, needs_confirmation: bool = False,
+               projects_changed: bool = False, timer: TurnTimer, project: str) -> bool:
+        """Render `text` and send it: as a WAV, or as a stream to a client that asked
+        for one (jarvis-streaming-speech).
 
-    def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
-                       needs_confirmation: bool = False,
-                       projects_changed: bool = False,
-                       timer: TurnTimer | None = None, project: str = "") -> None:
-        if timer is not None:
-            timer.audio_out_s = wav_seconds(audio_reply)
-            timer.spoken_chars = len(summary)
-        self.send_response(200)
-        self.send_header("Content-Type", "audio/wav")
-        self.send_header("Content-Length", str(len(audio_reply)))
+        Raises when the failure came before anything was sent (do_POST then answers
+        500, as before). Returns False when a streamed reply broke off after its
+        headers (S6), True when the whole reply was written.
+        """
+        voice = self.config.kokoro_voice
+        if not getattr(self, "_stream_reply", False):
+            timer.reply = "wav"
+            with timer.stage("tts"):
+                audio_reply = tts.synthesize(text, voice=voice)
+            self._respond_audio(audio_reply, text, session_id,
+                                needs_confirmation=needs_confirmation,
+                                projects_changed=projects_changed, timer=timer, project=project)
+            return True
+        timer.reply = "stream"
+        if needs_confirmation:
+            # S5: a read-back is rendered whole, with Kokoro's own split (the WAV's
+            # call), and before the status line: a failure here is still a 500 with
+            # nothing pending, and its words go out exactly as built.
+            with timer.stage("tts"):
+                pieces = list(tts.stream_pcm(text, voice=voice, whole=True))
+            return self._respond_stream(iter(pieces), text, session_id,
+                                        needs_confirmation=True,
+                                        projects_changed=projects_changed,
+                                        timer=timer, project=project, rendered=True)
+        return self._respond_stream(tts.stream_pcm(text, voice=voice), text, session_id,
+                                    projects_changed=projects_changed,
+                                    timer=timer, project=project, rendered=False)
+
+    def _reply_headers(self, summary: str, session_id: str, *, needs_confirmation: bool,
+                       projects_changed: bool, timer: TurnTimer | None) -> None:
+        """The X-Jarvis-* headers of a reply, the same for a WAV and a stream."""
         self.send_header("X-Jarvis-Session-Id", session_id)
         self.send_header("X-Jarvis-Summary", urllib.parse.quote(summary))
         if needs_confirmation:
@@ -394,14 +450,92 @@ class Handler(BaseHTTPRequestHandler):
         if timer is not None:
             # Milliseconds per stage so far, for a client that wants to show them.
             self.send_header(TIMING_HEADER, timer.header_value())
+
+    def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
+                       needs_confirmation: bool = False,
+                       projects_changed: bool = False,
+                       timer: TurnTimer | None = None, project: str = "") -> None:
+        if timer is not None:
+            timer.audio_out_s = wav_seconds(audio_reply)
+            timer.spoken_chars = len(summary)
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(audio_reply)))
+        self._reply_headers(summary, session_id, needs_confirmation=needs_confirmation,
+                            projects_changed=projects_changed, timer=timer)
         self.end_headers()
         if timer is None:
             self.wfile.write(audio_reply)
             return
+        timer.mark_first_audio()
         with timer.stage("write"):
             self.wfile.write(audio_reply)
         # One line per turn, in the file and on stdout: numbers only, no text.
         logger.info("project=%s timing %s", project, timer.log_fields())
+
+    def _respond_stream(self, pieces: Iterator[bytes], summary: str, session_id: str, *,
+                        needs_confirmation: bool = False, projects_changed: bool = False,
+                        timer: TurnTimer, project: str, rendered: bool) -> bool:
+        """The headers at once, then each piece of audio as one chunk of a chunked
+        HTTP/1.1 body (S2, S3). `rendered`: the pieces are ready (a read-back, S5);
+        otherwise taking the next one renders it, and that time counts as `tts`.
+
+        On a rendering error or a broken connection the body ends without its
+        terminating chunk and the connection is closed, so the client can tell a cut
+        reply from a complete one (S6). True when the whole body was written.
+        """
+        timer.spoken_chars = len(summary)
+        audio_bytes = 0
+        # Only this reply's status line says HTTP/1.1; the connection still closes.
+        self.protocol_version = "HTTP/1.1"
+        self.close_connection = True
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", tts.STREAM_CONTENT_TYPE)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self._reply_headers(summary, session_id, needs_confirmation=needs_confirmation,
+                                projects_changed=projects_changed, timer=timer)
+            self._headers_out = True
+            self.end_headers()
+            while True:
+                try:
+                    if rendered:
+                        piece = next(pieces, None)
+                    else:
+                        with timer.stage("tts"):
+                            piece = next(pieces, None)
+                except Exception as exc:  # noqa: BLE001 - Kokoro can fail in many ways
+                    logger.error("project=%s: the streamed reply could not be rendered "
+                                 "after %d bytes; the stream is cut", project, audio_bytes)
+                    logger.error("project=%s streamed rendering failed: %r", project, exc,
+                                 extra=FILE_ONLY)
+                    return self._stream_cut(timer, project, audio_bytes)
+                if piece is None:
+                    break
+                if not piece:
+                    continue
+                timer.mark_first_audio()
+                with timer.stage("write"):
+                    self.wfile.write(b"%X\r\n" % len(piece) + piece + b"\r\n")
+                audio_bytes += len(piece)
+            with timer.stage("write"):
+                self.wfile.write(b"0\r\n\r\n")
+        except OSError as exc:
+            logger.info("project=%s: the streamed reply to %s broke off after %d bytes: %s",
+                        project, self.address_string(), audio_bytes, exc)
+            return self._stream_cut(timer, project, audio_bytes)
+        timer.audio_out_s = audio_bytes / 2 / tts.SAMPLE_RATE
+        logger.info("project=%s timing %s", project, timer.log_fields())
+        return True
+
+    def _stream_cut(self, timer: TurnTimer, project: str, audio_bytes: int) -> bool:
+        self.close_connection = True
+        timer.reply = "stream_cut"
+        timer.audio_out_s = audio_bytes / 2 / tts.SAMPLE_RATE
+        logger.info("project=%s timing %s", project, timer.log_fields())
+        return False
 
     def _reject(self, status: int, message: str) -> None:
         """Answer a request that is refused before its body was read.
@@ -447,6 +581,11 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(self.timeout)
 
     def _respond_error(self, status: int, message: str, *, close: bool = False) -> None:
+        if getattr(self, "_headers_out", False):
+            # A streamed reply's headers are out: a status cannot follow them. The
+            # connection closes, which the client reads as a cut reply (S6).
+            self.close_connection = True
+            return
         body = message.encode("utf-8")
         try:
             self.send_response(status)

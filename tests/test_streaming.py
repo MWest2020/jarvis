@@ -1,0 +1,481 @@
+"""The streamed reply (jarvis-streaming-speech): the `Accept` match, headers before
+the body, one chunk per sentence, a cut body on an error, read-backs rendered whole
+before the headers, and the WAV unchanged for every client that does not ask.
+
+Real HTTP server on loopback, faked speech and agent (no Kokoro is loaded here)."""
+import http.client
+import logging
+import socket
+import threading
+import urllib.parse
+
+import numpy as np
+import pytest
+
+from bridge import claude_adapter, server, stt, tts
+from bridge.config import BridgeConfig, ProjectConfig
+from tests.test_server_full_mode import READBACK, Bridge
+
+STREAM_ACCEPT = "audio/L16;rate=24000;channels=1"
+SUMMARY = "The answer is four. Nothing else changed!"
+
+
+# --- the Accept match (S1) -----------------------------------------------------------
+
+@pytest.mark.parametrize("accept", [
+    "audio/L16;rate=24000;channels=1",
+    "audio/l16; rate=24000",
+    "AUDIO/L16;RATE=24000;channels=1",
+    'audio/L16;rate="24000";channels="1"',
+    "audio/L16;rate=24000;channels=1, audio/wav;q=0.5",
+    "audio/wav;q=0.5, audio/L16;rate=24000;channels=1;q=0.9",
+])
+def test_a_client_that_names_the_format_gets_the_stream(accept):
+    assert server.accepts_stream(accept)
+
+
+@pytest.mark.parametrize("accept", [
+    None, "", "*/*", "audio/*", "audio/wav", "audio/L16", "audio/L16;rate=16000",
+    "audio/L16;rate=24000;channels=2", "audio/L16;rate=24000;q=0",
+    "audio/L16;rate=24000;q=zero", "audio/L16x;rate=24000",
+])
+def test_anything_else_keeps_the_wav(accept):
+    assert not server.accepts_stream(accept)
+
+
+# --- the stream's pieces (S4, S5), without a model ---------------------------------------
+
+class FakePipeline:
+    """Stands for KPipeline: splits like it (re.split of the stripped text) and yields
+    one float array per piece, so the conversion and the split pattern are real."""
+
+    def __init__(self):
+        self.patterns = []
+
+    def __call__(self, text, voice, split_pattern):
+        import re
+        self.patterns.append(split_pattern)
+        for piece in re.split(split_pattern, text.strip()):
+            if piece.strip():
+                yield piece, "", np.full(len(piece), 0.5, dtype=np.float32)
+
+
+def test_to_l16_is_big_endian_and_clipped():
+    assert tts.to_l16(np.array([0.0, 1.0, -1.0, 0.5, 2.0], dtype=np.float32)) == (
+        b"\x00\x00" b"\x7f\xff" b"\x80\x01" b"\x40\x00" b"\x7f\xff")
+
+
+def test_an_ordinary_reply_is_rendered_one_sentence_at_a_time(monkeypatch):
+    fake = FakePipeline()
+    monkeypatch.setattr(tts, "_pipeline", lambda code: fake)
+    pieces = list(tts.stream_pcm(SUMMARY, voice="bm_george"))
+    assert fake.patterns == [tts.SENTENCE_SPLIT]
+    assert [len(p) // 2 for p in pieces] == [len("The answer is four."), len("Nothing else changed!")]
+
+
+def test_a_read_back_is_rendered_with_kokoros_own_split(monkeypatch):
+    fake = FakePipeline()
+    monkeypatch.setattr(tts, "_pipeline", lambda code: fake)
+    pieces = list(tts.stream_pcm(READBACK, voice="bm_george", whole=True))
+    assert fake.patterns == [tts.KOKORO_SPLIT] == [r"\n+"]
+    assert len(pieces) == 1 and len(pieces[0]) == 2 * len(READBACK)
+
+
+def test_the_sentence_split_never_changes_the_words():
+    text = "Merged 3.5 PRs, e.g. the docs. Is that all? Yes… it is!\nNext line."
+    parts = tts.sentences(text)
+    assert parts == ["Merged 3.5 PRs, e.g. the docs.", "Is that all?", "Yes… it is!", "Next line."]
+    assert " ".join(parts) == text.replace("\n", " ")
+
+
+# --- the server, readonly mode -----------------------------------------------------------
+
+class Speech:
+    """A fake tts.stream_pcm: one piece per sentence, the bytes say which. Can hold
+    back the second piece until the test lets it go, or fail at a given piece."""
+
+    def __init__(self):
+        self.calls = []
+        self.rendered = []
+        self.release = threading.Event()
+        self.release.set()
+        self.fail_at = None
+
+    def __call__(self, text, *, voice, whole=False):
+        self.calls.append((text, whole))
+        parts = [text] if whole else tts.sentences(text)
+        for index, part in enumerate(parts):
+            if index == 1:
+                self.release.wait(5)
+            if self.fail_at == index:
+                raise RuntimeError("no voice today")
+            self.rendered.append(part)
+            yield part.encode()
+
+
+@pytest.fixture
+def stream_server(tmp_path, monkeypatch):
+    config = BridgeConfig(
+        bind_host="127.0.0.1", port=0, token="test-token",
+        projects={"demo": ProjectConfig(name="demo", working_dir=tmp_path)},
+        allowed_tools=("Read", "Glob", "Grep"),
+        session_store_path=tmp_path / "sessions.json", log_path=tmp_path / "bridge.log",
+        whisper_model="base", kokoro_voice="bm_george", claude_timeout_s=30,
+    )
+    monkeypatch.setattr(stt, "transcribe", lambda audio_bytes, model_size: "what is 2 plus 2")
+    monkeypatch.setattr(claude_adapter, "run_turn",
+                        lambda **kwargs: (f"4\nSPOKEN SUMMARY: {SUMMARY}", "session-123"))
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: b"FAKE-WAV-" + text.encode())
+    speech = Speech()
+    monkeypatch.setattr(tts, "stream_pcm", speech)
+
+    class Running:
+        pass
+    running = Running()
+    running.speech = speech
+    running.config = config
+
+    def start(cfg):
+        running.httpd = server.make_server(cfg)
+        running.port = running.httpd.server_address[1]
+        running.thread = threading.Thread(target=running.httpd.serve_forever, daemon=True)
+        running.thread.start()
+    running.start = start
+    start(config)
+    try:
+        yield running
+    finally:
+        running.httpd.shutdown()
+        running.httpd.server_close()
+        running.thread.join(timeout=5)
+
+
+def _request(accept=STREAM_ACCEPT, version="HTTP/1.1", body=b"fake-audio") -> bytes:
+    head = (f"POST /turn?project=demo {version}\r\nHost: x\r\n"
+            f"Authorization: Bearer test-token\r\nContent-Length: {len(body)}\r\n")
+    if accept is not None:
+        head += f"Accept: {accept}\r\n"
+    return head.encode() + b"\r\n" + body
+
+
+class Raw:
+    """A plain socket, so the test sees the bytes as sent: status, headers, chunks."""
+
+    def __init__(self, port, payload):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        self.sock.sendall(payload)
+        self.buffer = b""
+
+    def _fill(self):
+        data = self.sock.recv(65536)
+        if not data:
+            raise EOFError
+        self.buffer += data
+
+    def until(self, marker: bytes) -> bytes:
+        while marker not in self.buffer:
+            self._fill()
+        head, self.buffer = self.buffer.split(marker, 1)
+        return head
+
+    def exactly(self, n: int) -> bytes:
+        while len(self.buffer) < n:
+            self._fill()
+        data, self.buffer = self.buffer[:n], self.buffer[n:]
+        return data
+
+    def head(self) -> tuple[str, dict[str, str]]:
+        lines = self.until(b"\r\n\r\n").decode("latin-1").split("\r\n")
+        headers = {}
+        for line in lines[1:]:
+            name, _, value = line.partition(":")
+            headers[name.strip().lower()] = value.strip()
+        return lines[0], headers
+
+    def chunk(self) -> bytes:
+        size = int(self.until(b"\r\n"), 16)
+        data = self.exactly(size)
+        assert self.exactly(2) == b"\r\n"
+        return data
+
+    def rest(self) -> bytes:
+        try:
+            while True:
+                self._fill()
+        except EOFError:
+            pass
+        return self.buffer
+
+    def close(self):
+        self.sock.close()
+
+
+def test_headers_come_first_and_each_sentence_is_one_chunk(stream_server):
+    raw = Raw(stream_server.port, _request())
+    try:
+        status, headers = raw.head()
+        assert status == "HTTP/1.1 200 OK"
+        assert headers["content-type"] == "audio/L16;rate=24000;channels=1"
+        assert headers["transfer-encoding"] == "chunked"
+        assert headers["connection"] == "close"
+        assert "content-length" not in headers
+        assert urllib.parse.unquote(headers["x-jarvis-summary"]) == SUMMARY
+        assert headers["x-jarvis-session-id"] == "session-123"
+        # The timing so far: the agent has answered, nothing is rendered yet (S3).
+        names = [part.split("=")[0] for part in headers["x-jarvis-timing"].split(";")]
+        assert names == ["read", "stt", "agent", "total"]
+        assert raw.chunk() == b"The answer is four."
+        assert raw.chunk() == b"Nothing else changed!"
+        assert raw.chunk() == b""                      # the terminating chunk
+        assert raw.rest() == b""                       # and the connection closes
+    finally:
+        raw.close()
+    assert stream_server.speech.calls == [(SUMMARY, False)]
+
+
+def test_the_first_sentence_is_sent_before_the_second_is_rendered(stream_server):
+    speech = stream_server.speech
+    speech.release.clear()
+    raw = Raw(stream_server.port, _request())
+    try:
+        raw.head()
+        assert raw.chunk() == b"The answer is four."
+        assert speech.rendered == ["The answer is four."]   # the second waits
+        speech.release.set()
+        assert raw.chunk() == b"Nothing else changed!"
+        assert raw.chunk() == b""
+    finally:
+        speech.release.set()
+        raw.close()
+
+
+def test_a_rendering_error_mid_stream_cuts_the_body(stream_server, caplog):
+    stream_server.speech.fail_at = 1
+    raw = Raw(stream_server.port, _request())
+    with caplog.at_level(logging.INFO, logger="bridge"):
+        try:
+            status, _ = raw.head()
+            assert status == "HTTP/1.1 200 OK"
+            assert raw.chunk() == b"The answer is four."
+            # No terminating chunk and no error status after the headers: closed.
+            assert raw.rest() == b""
+        finally:
+            raw.close()
+        stream_server.httpd.shutdown()      # the handler has finished and logged
+    lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
+    assert len(lines) == 1 and "reply=stream_cut" in lines[0]
+    assert "first_audio_ms=" in lines[0]
+
+
+def test_a_rendering_error_before_the_first_sentence_sends_headers_and_no_audio(stream_server):
+    stream_server.speech.fail_at = 0
+    raw = Raw(stream_server.port, _request())
+    try:
+        status, headers = raw.head()
+        assert status == "HTTP/1.1 200 OK"
+        assert raw.rest() == b""
+    finally:
+        raw.close()
+
+
+def test_http_client_sees_a_cut_body_as_incomplete(stream_server):
+    stream_server.speech.fail_at = 1
+    conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+    conn.request("POST", "/turn?project=demo", body=b"fake-audio",
+                 headers={"Authorization": "Bearer test-token", "Accept": STREAM_ACCEPT})
+    response = conn.getresponse()
+    assert response.status == 200
+    with pytest.raises(http.client.IncompleteRead):
+        response.read()
+    conn.close()
+
+
+def test_http_client_reads_a_whole_stream(stream_server):
+    conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+    conn.request("POST", "/turn?project=demo", body=b"fake-audio",
+                 headers={"Authorization": "Bearer test-token", "Accept": STREAM_ACCEPT})
+    response = conn.getresponse()
+    assert response.read() == b"The answer is four.Nothing else changed!"
+    conn.close()
+
+
+@pytest.mark.parametrize("accept", [None, "*/*", "audio/wav"])
+def test_a_client_that_does_not_ask_gets_the_wav_unchanged(stream_server, accept):
+    raw = Raw(stream_server.port, _request(accept=accept))
+    try:
+        status, headers = raw.head()
+        body = raw.rest()
+    finally:
+        raw.close()
+    assert status == "HTTP/1.0 200 OK"
+    assert headers["content-type"] == "audio/wav"
+    assert headers["content-length"] == str(len(body))
+    assert "transfer-encoding" not in headers
+    assert body == b"FAKE-WAV-" + SUMMARY.encode()
+    assert stream_server.speech.calls == []
+
+
+def test_an_http_1_0_client_gets_the_wav_even_when_it_asks(stream_server):
+    raw = Raw(stream_server.port, _request(version="HTTP/1.0"))
+    try:
+        status, headers = raw.head()
+        body = raw.rest()
+    finally:
+        raw.close()
+    assert headers["content-type"] == "audio/wav"
+    assert body == b"FAKE-WAV-" + SUMMARY.encode()
+
+
+def test_the_switch_gives_every_client_the_wav(stream_server):
+    import dataclasses
+    stream_server.httpd.shutdown()
+    stream_server.httpd.server_close()
+    stream_server.thread.join(timeout=5)
+    stream_server.start(dataclasses.replace(stream_server.config, stream_replies=False))
+    raw = Raw(stream_server.port, _request())
+    try:
+        _, headers = raw.head()
+        body = raw.rest()
+    finally:
+        raw.close()
+    assert headers["content-type"] == "audio/wav"
+    assert body == b"FAKE-WAV-" + SUMMARY.encode()
+
+
+def test_silence_is_streamed_too(stream_server, monkeypatch):
+    monkeypatch.setattr(stt, "transcribe", lambda audio_bytes, model_size: "  ")
+    raw = Raw(stream_server.port, _request())
+    try:
+        _, headers = raw.head()
+        assert headers["content-type"] == "audio/L16;rate=24000;channels=1"
+        assert raw.chunk() == server.NOT_HEARD.encode()
+        assert raw.chunk() == b""
+    finally:
+        raw.close()
+
+
+def test_the_log_line_has_the_time_to_the_first_audio_byte(stream_server, caplog):
+    with caplog.at_level(logging.INFO, logger="bridge"):
+        conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+        conn.request("POST", "/turn?project=demo", body=b"fake-audio",
+                     headers={"Authorization": "Bearer test-token", "Accept": STREAM_ACCEPT})
+        conn.getresponse().read()
+        conn.close()
+        conn = http.client.HTTPConnection("127.0.0.1", stream_server.port, timeout=5)
+        conn.request("POST", "/turn?project=demo", body=b"fake-audio",
+                     headers={"Authorization": "Bearer test-token"})
+        conn.getresponse().read()
+        conn.close()
+    lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
+    assert len(lines) == 2
+    streamed, wav = lines
+    for field in ("tts_ms=", "write_ms=", "first_audio_ms=", "total_ms=",
+                  f"spoken_chars={len(SUMMARY)}"):
+        assert field in streamed and field in wav
+    assert "reply=stream " in streamed and "reply=wav " in wav
+    # 40 bytes of fake audio: 20 samples at 24 kHz.
+    assert "audio_out_s=0.0" in streamed
+    assert SUMMARY not in streamed
+
+
+def test_the_switch_reads_0_1_or_unset(monkeypatch):
+    from bridge import config
+    from bridge.config import ConfigError
+    monkeypatch.setenv("JARVIS_BIND_HOST", "100.64.0.1")
+    monkeypatch.setenv("JARVIS_TOKEN", "secret")
+    monkeypatch.setenv("JARVIS_PROJECTS", "demo=/tmp")
+    monkeypatch.delenv("JARVIS_STREAM_REPLIES", raising=False)
+    assert config.load_config().stream_replies is True
+    monkeypatch.setenv("JARVIS_STREAM_REPLIES", "0")
+    assert config.load_config().stream_replies is False
+    monkeypatch.setenv("JARVIS_STREAM_REPLIES", "1")
+    assert config.load_config().stream_replies is True
+    monkeypatch.setenv("JARVIS_STREAM_REPLIES", "off")
+    with pytest.raises(ConfigError):
+        config.load_config()
+
+
+def test_only_the_first_audio_byte_counts():
+    from bridge.timing import TurnTimer
+    now = [10.0]
+    timer = TurnTimer(lambda: now[0])
+    now[0] = 12.5
+    timer.mark_first_audio()
+    now[0] = 14.0
+    timer.mark_first_audio()
+    timer.reply = "stream"
+    assert timer.first_audio_ms == 2500
+    assert timer.log_fields() == "first_audio_ms=2500 total_ms=4000 reply=stream"
+
+
+# --- full mode: read-backs (S5, S6) ---------------------------------------------------
+
+def _say(bridge, heard, *, accept=STREAM_ACCEPT):
+    bridge.heard = heard
+    conn = http.client.HTTPConnection("127.0.0.1", bridge.httpd.server_address[1], timeout=30)
+    headers = {"Authorization": "Bearer test-token"}
+    if accept:
+        headers["Accept"] = accept
+    conn.request("POST", "/turn?project=demo", body=b"audio", headers=headers)
+    response = conn.getresponse()
+    try:
+        data = response.read()
+    except http.client.IncompleteRead as exc:
+        data = exc.partial
+    conn.close()
+    return response, data
+
+
+@pytest.fixture
+def full(tmp_path, monkeypatch):
+    b = Bridge(tmp_path, monkeypatch)
+    b.voice = Speech()
+    monkeypatch.setattr(tts, "stream_pcm", b.voice)
+    yield b
+    b.stop()
+
+
+def test_a_read_back_is_streamed_whole_and_exactly_as_built(full):
+    full.host.scenario(mode="wrapper", gate=True)
+    response, data = _say(full, "merge the jarvis pull request")
+    assert response.getheader("Content-Type") == STREAM_ACCEPT
+    assert response.getheader("X-Jarvis-Needs-Confirmation") == "1"
+    assert data == READBACK.encode()
+    assert full.voice.calls == [(READBACK, True)]   # one call, Kokoro's own split
+    # Rendered before the headers: the header's timing already has the speech.
+    assert "tts=" in response.getheader("X-Jarvis-Timing")
+
+    full.host.scenario(mode="wrapper")
+    response, data = _say(full, "Yes.")
+    assert data == b"Merged."
+    assert full.kinds() == ["agent", "confirmed"]
+
+
+def test_a_streamed_read_back_whose_rendering_fails_is_a_500_and_cancelled(full):
+    full.host.scenario(mode="wrapper", gate=True)
+    full.voice.fail_at = 0
+    response, _ = _say(full, "merge it")
+    assert response.status == 500
+    assert full.kinds() == ["agent", "cancel"]
+    full.voice.fail_at = None
+    full.host.scenario(mode="wrapper")
+    _say(full, "yes")
+    assert full.host.requests()[-1]["confirm"] is None
+
+
+def test_a_streamed_read_back_that_breaks_off_is_cancelled(full, monkeypatch):
+    full.host.scenario(mode="wrapper", gate=True)
+    monkeypatch.setattr(server.Handler, "_respond_stream", lambda self, *a, **k: False)
+    try:
+        _say(full, "merge it")
+    except Exception:  # noqa: BLE001 - no reply at all reaches this client
+        pass
+    assert full.kinds() == ["agent", "cancel"]
+
+
+def test_an_ordinary_full_reply_is_split_and_a_cut_leaves_nothing_pending(full):
+    full.voice.fail_at = 0
+    response, data = _say(full, "what is open?")
+    assert response.status == 200 and data == b""
+    assert full.voice.calls == [("Done on the agent host.", False)]   # not whole
+    assert full.kinds() == ["agent"]                                   # no cancel needed
