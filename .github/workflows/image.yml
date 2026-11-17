@@ -14,7 +14,7 @@ on:
 # used, mostly by this workflow on every PR push). A newer push to the same PR
 # cancels the older run.
 concurrency:
-  group: image-${{ github.event.pull_request.number || github.ref }}
+  group: image-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
