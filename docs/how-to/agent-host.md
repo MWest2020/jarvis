@@ -482,8 +482,9 @@ the coding session at the desk takes these turns over from their records
 
 - a gated call refused for the desk: an entry in `gated_actions` with `outcome: refused` and
   `code` one of `needs_desk`, `settings_changed`, `target_changed` (other refusals, such as
-  a split or a missing target the agent repairs, `run_alone`, or a `[subagent]` refusal of a
-  helper that is not read-only, are part of a normal turn);
+  a split or a missing target the agent repairs, or `run_alone`, are part of a normal turn).
+  A refused helper that is not read-only (a builder, a background job) has code `needs_desk`
+  since 2026-11-17, so the coding session builds what was asked;
 - a new repository that could not be set up as a project: `outcome: confirmed` with a
   `project` field that starts with `not ready` (`name_taken`, `needs_desk`, a name no
   project can have).
@@ -590,9 +591,12 @@ named (a `git pull`, a whole-branch `git checkout`) is not stopped by this. It i
 the next `Agent` call, which reads the agents directories again: one that redefines an
 allowed type, or cannot be read with certainty, gates that call.
 
-Anything else is refused with `[subagent]`, a sentence that names what can be started, and
-is **not** passed to the coding session: whatever that subagent would have done, the agent
-can do itself, under the same gate, or hand a read to one of the helpers. It stays refused
+Anything else is refused with `[needs_desk]`: a sentence that names what can be started, and
+that the request goes to the coding session at the desk. By voice such a helper is a build or
+a long job; on 2026-11-17 a Bazibo change Mark asked for was refused this way while the
+refusal was not passed on (it had no code), so nothing happened. Since then it carries code
+`needs_desk`, the turn stops, and the coding session takes the request over from the record
+and pings Mark. A small step the agent can do itself in its own worktree it still does itself. It stays refused
 with confirmation off. `SubagentHandback`, the tool with which a subagent hands its report
 back, is ungated: until this change the gate refused it as a tool nobody listed, which is
 what sent turn `3e0b6159…` (a `web-fetch` read for a washing-machine search) to the desk.

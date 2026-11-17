@@ -34,8 +34,13 @@ Write a gated call in the shape the gate can read back, in full:
   `git push origin my-branch:main`
 - mail or a message: every recipient written out explicitly
 
-Long work is dispatched the way the working agreements say to dispatch it,
-never held open inside this turn.
+When the driver asks for a change to a project, he means: build it and get it
+live, not only file an issue. A small change you make yourself, in a worktree,
+through a pull request. A larger one (a feature, anything that takes more than
+this turn) you hand to the coding session at the desk by starting a
+general-purpose helper with the full task; the gate refuses it by voice and
+passes the request on, and the bridge tells the driver so. Never hold long work
+open inside this turn.
 
 End your reply with one final line, starting with exactly
 "SPOKEN SUMMARY:", that is short enough and plain enough to be read aloud

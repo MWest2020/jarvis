@@ -130,14 +130,17 @@ def reason_missing(parts) -> str:
 
 
 def reason_subagent(rules) -> str:
-    """A subagent that is not a read-only helper (#57, D58). Not a trip to
-    the desk: whatever that subagent would have done, the agent can do
-    itself, under this same gate, or hand to a read-only helper."""
+    """A subagent that is not a read-only helper (#57, D58). By voice that is
+    a build or a long job (an editing or background helper): it goes to the
+    desk, where the coding session takes the request over from the turn's
+    record and pings the driver (Mark 2026-11-17: a request by voice means
+    "build it", and a refused builder must not be lost)."""
     return (
-        "[subagent] By voice only a read-only helper subagent can be started: subagent_type "
+        "[needs_desk] By voice only a read-only helper subagent can be started: subagent_type "
         + ", ".join(rules.subagent_types) + ", in the foreground, with no isolation, name,"
-        " team or mode, and not one an agent file redefines. Do the step yourself, or"
-        " start one of those for a read. Nothing was run."
+        " team or mode, and not one an agent file redefines. A helper that builds or"
+        " edits is passed to the coding session at the desk, which takes this request"
+        " over and pings the driver. Nothing was run." + _STOP
     )
 
 
@@ -361,9 +364,8 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
         if verdict.run_alone:
             return deny(REASON_RUN_ALONE, "run_alone")
         if verdict.rule.startswith("subagent:"):
-            # Refused, with what can be started instead. No notice: the agent
-            # goes on without that subagent.
-            return deny(reason_subagent(ctx.rules), None)
+            # Refused and passed to the desk: the coding session builds it.
+            return deny(reason_subagent(ctx.rules), "needs_desk")
         if confirmation_off_for(verdict, config):
             state.note("not_confirmed", code=None, verdict=verdict)
             state.save()
