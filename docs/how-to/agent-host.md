@@ -432,6 +432,13 @@ The close marker's limits, each with a test in `tests/test_agent_host_lifetime.p
 - It is cut off before the marker line is taken, so it reaches neither the bridge nor the
   speech; the record keeps the reply as the agent wrote it.
 
+Checked on 2026-11-17 with Claude Code 2.1.322 and this `prompt.md` appended (effort
+`low`, outside the wrapper, no gate): "Thanks, that's all." on a resumed session ended with
+`SPOKEN SUMMARY: You're welcome, drive safely, goodbye.` and `SESSION: close`; a Dutch
+"daarna wil ik verder niks" closed the same way; a finished request for three boat names
+ended its summary with "Shall I close this conversation?"; a single arithmetic question
+got no offer. Not yet checked through the installed wrapper on the agent host.
+
 The agent can write `sessions/` directly, as all of `state_dir` (D40), and so could make a
 project resume or start fresh by itself; the marker adds no reach beyond that. A value in
 `last_turn.json` that is not a past time with a zone is read as unknown, and the session is

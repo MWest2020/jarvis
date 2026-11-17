@@ -16,8 +16,11 @@
 - [x] 2.2 The wrapper: the marker only as the last line (or the end of a last summary
   line), no argument, cut off before the spoken line; drops the session of the request's
   project only; ignored while a call is pending and on a failed turn; recorded
-- [ ] 2.3 One or two real turns on the agent host to see that the offer and the close come
-  as the prompt asks (not part of CI)
+- [x] 2.3 Real turns with the prompt (2026-11-17, Claude Code 2.1.322, outside the wrapper):
+  the close in English and Dutch, the offer after a finished request, no offer after a
+  single question; see docs/how-to/agent-host.md
+- [ ] 2.4 After install: one close and one idle turn through the wrapper on the agent host,
+  the records' `session` field checked
 
 ## 3. Tests and docs
 - [x] 3.1 Unit tests and wrapper tests with the fake `Popen`, the confirmation harness and
