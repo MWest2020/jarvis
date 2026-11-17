@@ -227,6 +227,10 @@ Alternative considered: keep it pending until the driver plays the arrival. Reje
 yes would come minutes after the read-back was built, and "what's new" in between is an
 utterance of its own. Open question 2.
 
+Note on names: the spoken control word "cancel" stops a running turn; the route
+`POST /turn/cancel` (from #66) cancels a read-back that was not heard. They share a word,
+not a mechanism.
+
 **D29. The drive log goes to the desk.** The bridge writes each drive as Markdown on its
 state volume, appended as the drive goes: per turn the time, project, transcript, spoken
 reply, turn id and session id; the notes; the arrivals; what was cancelled. Full written
