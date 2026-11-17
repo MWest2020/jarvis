@@ -830,6 +830,22 @@ session takes the request over from the turn record (docs/how-to/agent-host.md, 
 turns go to the coding session"). A read-back that cannot be spoken is the exception: it is
 cancelled like a no and Jarvis says so. Nothing about what is confirmable by voice changes.
 
+### D58. A voice turn may start read-only helper subagents (2026-11-17, #57)
+
+Mark decided 2026-11-17 ("stuff like that can be really useful"). Claude Code runs the
+turn's PreToolUse hooks for every tool call a subagent makes (host check 13), so the gate
+judges each of them as it judges the turn's own; the subagent adds no road around it. On top
+of that, as a seatbelt (D40), `[subagents]` in the rules lets an `Agent` call through only
+for a built-in type whose tools only read (`web-fetch`, `Explore`, `Plan`,
+`claude-code-guide` on 2.1.322), in the foreground, with no `isolation`, `name`, `team_name`
+or `mode`, and not when an agent file in the user's or a checkout's agents directory
+redefines that name. A remote session (`isolation: remote`) would run where this gate does
+not; a background subagent would act after the turn's record and lock. Any other subagent is
+refused with a sentence that names what can be started and is not passed to the coding
+session (D57): the agent can do the same work itself under the same gate. `SubagentHandback`
+is ungated. Until this change `Agent` was listed as ungated outright, so every type started;
+the refusal behind #57 was the subagent's `SubagentHandback`.
+
 ## Risks / Trade-offs
 
 - **A misheard instruction now has effects.** "Close issue twelve" heard as "twenty" closes
