@@ -21,10 +21,35 @@ class ClaudeTurnError(RuntimeError):
 
 
 # Tools that must never run from a voice turn in the weekend slice, denied on top
-# of --tools as a second layer.
+# of --tools as a second layer. Read(//proc/**) also binds Grep and Glob (they follow
+# Read deny rules): Grep on /proc/self/environ, or on a committed symlink to it,
+# returned the process environment, credentials included (review of
+# run-bridge-in-cluster, reproduced with Claude Code 2.1.322).
 DENIED_TOOLS: tuple[str, ...] = (
     "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent",
+    "Read(//proc/**)",
 )
+
+
+# --restricted (D8 of run-bridge-in-cluster) was verified with this version; older
+# Claude Code may not have it, and without it the file tools can reach /proc.
+MIN_CLAUDE_CODE_VERSION = "2.1.322"
+
+
+def check_cli(timeout_s: int = 60) -> None:
+    """Fail at start, clearly, when the installed Claude Code lacks --restricted."""
+    try:
+        proc = subprocess.run(["claude", "--help"], capture_output=True, text=True,
+                              timeout=timeout_s)
+    except FileNotFoundError as exc:
+        raise ClaudeTurnError("claude (Claude Code) is not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeTurnError(f"claude --help did not answer within {timeout_s}s") from exc
+    if "--restricted" not in proc.stdout + proc.stderr:
+        raise ClaudeTurnError(
+            "this Claude Code has no --restricted flag, which the bridge requires to keep "
+            f"its file tools out of /proc; install Claude Code {MIN_CLAUDE_CODE_VERSION} or newer"
+        )
 
 
 def build_command(*, allowed_tools: tuple[str, ...], session_id: str | None) -> list[str]:
@@ -34,7 +59,9 @@ def build_command(*, allowed_tools: tuple[str, ...], session_id: str | None) -> 
     settings (an "auto" permission mode, allowed Bash rules) and MCP servers would
     still apply. So: --tools limits which tools exist at all, dontAsk refuses
     anything not pre-approved instead of asking, and --strict-mcp-config without an
-    --mcp-config loads no MCP servers.
+    --mcp-config loads no MCP servers. --restricted confines the file tools to the
+    working directory and ignores user, project and local settings files, so a
+    cloned repo's .claude/settings.json (hooks, permission rules) has no effect.
     """
     tools = ",".join(allowed_tools)
     command = [
@@ -53,6 +80,7 @@ def build_command(*, allowed_tools: tuple[str, ...], session_id: str | None) -> 
         "--permission-mode",
         "dontAsk",
         "--strict-mcp-config",
+        "--restricted",
     ]
     if session_id:
         command += ["--resume", session_id]
@@ -70,8 +98,12 @@ def run_turn(
     """Run one turn of headless Claude Code. Returns (reply_text, session_id)."""
     command = build_command(allowed_tools=allowed_tools, session_id=session_id)
     # The prompt goes over stdin, never argv: a transcript starting with "-" would
-    # otherwise be parsed as options. The token never reaches the child: the Read
-    # tool could read /proc/self/environ.
+    # otherwise be parsed as options. The JARVIS_* variables (the phone's token) are
+    # not passed to the child. That alone does not hide them: the bridge's own
+    # /proc/<pid>/environ still holds them, and the child's environment holds its
+    # Claude credentials. What keeps the file tools away from /proc is --restricted
+    # (cwd only) plus the Read(//proc/**) deny rule in build_command; the log and
+    # the spoken summary are redacted on top (logging_setup, summary).
     env = {k: v for k, v in os.environ.items() if not k.startswith("JARVIS_")}
     proc = subprocess.Popen(
         command,

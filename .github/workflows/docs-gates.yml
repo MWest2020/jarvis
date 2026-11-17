@@ -6,6 +6,6 @@ jobs:
   gates:
     uses: MWest2020/handbook/.github/workflows/docs-gates.yml@main
     with:
-      code_paths: "bridge/,plugin/,client/,pyproject.toml"
+      code_paths: "bridge/,agent_host/,plugin/,client/,android/,pyproject.toml"
       docs_paths: "docs/"
       drift_mode: "fail"

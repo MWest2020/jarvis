@@ -1,0 +1,47 @@
+{
+  "disableAllHooks": false,
+  "env": {
+    "LD_PRELOAD": "",
+    "LD_LIBRARY_PATH": "",
+    "LD_AUDIT": "",
+    "GIT_CONFIG_COUNT": "0"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/lib/jarvis-agent/gate",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/lib/jarvis-agent/action-log",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/lib/jarvis-agent/action-log",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,93 @@
+# Configuration of the Jarvis agent host wrapper (/etc/jarvis-agent/config.toml).
+# Root-owned, world-readable: the wrapper runs as the coding session's user and
+# must read it; the agent must not be able to write it. No secrets belong here.
+# Every key is explained in docs/how-to/agent-host.md.
+
+# The kill switch (design D33). false: the wrapper answers `disabled` and does
+# nothing else; the bridge then answers read-only. The template ships with
+# false: set it to true only after the host checks of task 1.17 have passed.
+enabled = false
+
+# Which checkouts a turn may run in. Exactly one of the two forms.
+# Form 1: every directory directly under a root, minus exclusions.
+projects_root = "/home/CHANGE-ME/projects"
+project_exclusions = []
+# Form 2: an explicit list (remove projects_root and project_exclusions).
+# [projects] must then be the LAST thing in this file, or the keys below it
+# become project names.
+# [projects]
+# example = "/home/CHANGE-ME/example"
+
+# The wrapper's own state: session ids, records, the turn lock. Created by the
+# wrapper as the user it runs as (0700, files 0600).
+state_dir = "/home/CHANGE-ME/.local/state/jarvis-agent"
+
+# The only environment a turn starts from, plus the turn variables.
+environment_file = "/etc/jarvis-agent/environment"
+
+# Installed by install.sh; do not point these anywhere a turn can write.
+turn_settings = "/usr/local/lib/jarvis-agent/turn-settings.json"
+prompt_file = "/usr/local/lib/jarvis-agent/prompt.md"
+# Optional: the user's own additions to the appended prompt (design D35).
+# second_prompt_file = "/etc/jarvis-agent/prompt.local.md"
+
+# The identity builds and pings go out under (design D37), and the variable
+# that carries it.
+session_identity = "jarvis"
+identity_env_var = "IDENT"
+
+# Read before every turn: a turn is refused when these settings default to
+# the bypass permission mode. Never written by Jarvis or by install.sh.
+user_settings_path = "/home/CHANGE-ME/.claude/settings.json"
+
+# The forge whose repositories can be named in a read-back (design D36).
+forge_host = "github.com"
+
+# No turn below this much available memory; a turn is killed after timeout_s.
+memory_floor_mb = 600
+timeout_s = 600
+
+# Fallbacks of design D34, set only when a host check of task 1.17 says so.
+append_system_prompt_fallback = false
+session_rotation_fallback = false
+
+# A project's next turn starts a new session, instead of resuming its last one, when that
+# project's last turn ended more than this many minutes ago. Resuming a long session
+# re-sends the whole conversation once the prompt cache has expired (after five minutes by
+# default, one hour with one-hour caching) and costs about 3 s more per turn; a fresh session
+# after a pause avoids that. The driver hears "I started a new session for this
+# project." 0: always resume. See docs/how-to/agent-host.md, "How long a session lives".
+session_idle_minutes = 60
+
+# Voice confirmation (design D36). "off" lets gated calls through unconfirmed
+# (the class `self` stays desk-only); confirm_skip does that per class.
+confirm = "on"
+confirm_skip = []
+# The root-owned `confirm on|off [class]` program, the one way to change the two above by voice.
+confirm_program = "/usr/local/lib/jarvis-agent/confirm"
+
+# Host-local gate rules, read next to the rules of the repository.
+rules_dir = "/etc/jarvis-agent/rules.d"
+# Claude Code's managed settings on this host: a write to it is in the class `self`.
+managed_settings_path = "/etc/claude-code/managed-settings.json"
+# Owner names on the forge host whose repositories are your own (spoken as "name", not "name of owner").
+own_owners = []
+# Run by the wrapper after a confirmed call ran: a list of words, the read-back is appended as the last. Empty: no notification.
+notify_command = []
+# Asked for a merge's review decision and checks; the wrapper adds the number, --repo and --json.
+pr_status_command = ["gh", "pr", "view"]
+# Days that records and action logs are kept.
+retention_days = 90
+# After a confirmed `gh repo create <owner>/<name>` ran, the wrapper clones it to <projects_root>/<name>
+# (only with projects_root, only for an owner in own_owners). It adds `<owner>/<name> <destination> -- --depth 1`.
+clone_command = ["gh", "repo", "clone"]
+# Seconds one attempt may take (at most 90); then it is stopped, nothing of it is left, and it is
+# tried again by the next requests, three attempts in all.
+clone_timeout_s = 45
+
+# The voice profile: the model and effort of every turn, as `--model=` and `--effort=`.
+# Unset (the default): Claude Code's own choice from user_settings_path, as at the desk.
+# voice_model: an alias (sonnet, opus) or a full model name. voice_effort: low, medium,
+# high, xhigh or max. Measurements and a proposal: docs/how-to/agent-host.md.
+# voice_model = "sonnet"
+# voice_effort = "low"

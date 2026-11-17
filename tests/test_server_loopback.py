@@ -24,7 +24,7 @@ def running_server(tmp_path, monkeypatch):
         session_store_path=tmp_path / "sessions.json",
         log_path=tmp_path / "bridge.log",
         whisper_model="base",
-        kokoro_voice="af_heart",
+        kokoro_voice="bm_george",
         claude_timeout_s=30,
     )
 
@@ -129,10 +129,415 @@ def test_silence_is_answered_without_an_agent_turn(running_server, monkeypatch):
 
 
 def test_a_second_turn_on_a_busy_project_gets_409(running_server):
-    lock = server._project_lock("demo")
-    lock.acquire()
+    assert server._try_project_lock("demo")
     try:
         response, _ = _post_turn(running_server)
         assert response.status == 409
     finally:
-        lock.release()
+        server._release_project_lock("demo")
+    assert "demo" not in server._project_locks        # dropped when not held
+
+
+def test_a_project_lock_lives_only_while_it_is_held():
+    assert server._try_project_lock("x")
+    assert not server._try_project_lock("x")
+    server._release_project_lock("x")
+    assert server._project_locks == {} or "x" not in server._project_locks
+    assert server._try_project_lock("x")
+    server._release_project_lock("x")
+
+
+# An early 4xx (bad token, unknown project) used to be sent before the body was
+# read; the server then closed with the upload still arriving, the kernel reset
+# the connection, and a client with a long question saw a broken pipe instead of
+# the status (jarvis#12: 700 KB and up on loopback). These send the whole body
+# first, the way a phone does, and only then read.
+BIG_BODY = b"\0" * (4 * 1024 * 1024)
+
+
+def _post_raw_then_read(port, *, project="demo", token="wrong", body=BIG_BODY) -> bytes:
+    import socket
+    head = (f"POST /turn?project={project} HTTP/1.1\r\nHost: x\r\n"
+            f"Authorization: Bearer {token}\r\nContent-Length: {len(body)}\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+        s.sendall(head + body)
+        reply = b""
+        while b"\r\n" not in reply:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+        return reply
+
+
+def test_a_wrong_token_with_a_large_body_gets_the_401(running_server):
+    reply = _post_raw_then_read(running_server, token="wrong")
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_an_unknown_project_with_a_large_body_gets_the_400(running_server):
+    reply = _post_raw_then_read(running_server, project="does-not-exist", token="test-token")
+    assert b" 400 " in reply.split(b"\r\n")[0]
+
+
+def test_draining_a_rejected_body_is_bounded_in_time(running_server, monkeypatch):
+    # A client that announces a large body with a wrong token and then stalls
+    # must not hold the thread longer than the drain deadline.
+    import socket
+    import time
+    monkeypatch.setattr(server, "DRAIN_DEADLINE_S", 1.0)
+    head = (b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+            b"Authorization: Bearer wrong\r\nContent-Length: 5000000\r\n\r\n")
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head + b"x" * 1000)
+        started = time.monotonic()
+        try:
+            reply = s.recv(4096)
+        except ConnectionResetError:
+            reply = b""
+        elapsed = time.monotonic() - started
+    assert elapsed < 5
+    # Best effort: the status still goes out once the deadline has passed.
+    assert reply == b"" or b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_draining_a_trickled_body_stops_at_the_total_deadline(running_server, monkeypatch):
+    # Slowloris-style: a byte every 100 ms keeps every single read well inside the
+    # socket timeout, so only the total deadline can end the drain (jarvis#15).
+    import socket
+    import time
+    monkeypatch.setattr(server, "DRAIN_DEADLINE_S", 1.0)
+    head = (b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+            b"Authorization: Bearer wrong\r\nContent-Length: 5000000\r\n\r\n")
+    reply = b""
+    sent = 0
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head)
+        started = time.monotonic()
+        s.settimeout(0.1)
+        while time.monotonic() - started < 10:
+            try:
+                s.sendall(b"x")
+                sent += 1
+            except OSError:
+                break
+            try:
+                chunk = s.recv(4096)   # doubles as the 100 ms pause
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            reply += chunk
+            if not chunk or b"\r\n\r\n" in reply:
+                break
+        elapsed = time.monotonic() - started
+    # Not before the deadline (the trickle was still being read), and not long after.
+    assert elapsed >= 1.0
+    assert elapsed < 3.0
+    assert sent >= 5
+    assert b" 401 " in reply.split(b"\r\n")[0]
+    assert b"connection: close" in reply.lower()
+
+
+@pytest.mark.parametrize("value", ["+5", "-1", "5_0", "0x10", "1.0", "\u0665", "9" * 5000])
+def test_content_length_must_be_plain_digits(value):
+    assert server._parse_content_length(value) is None
+
+
+def test_content_length_plain_digits_and_absent():
+    assert server._parse_content_length("0") == 0
+    assert server._parse_content_length("0010") == 10
+    assert server._parse_content_length(None) == 0
+
+
+def test_rejects_a_signed_content_length(running_server):
+    reply = _raw(running_server, b"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\n"
+                 b"Authorization: Bearer test-token\r\nContent-Length: +5\r\n\r\nhello")
+    assert b" 400 " in reply.split(b"\r\n")[0]
+
+
+# jarvis#15: at most MAX_CONNECTIONS connections are served at once.
+
+@pytest.fixture
+def capped_server(monkeypatch, request):
+    # The cap is read when the server is made, so set it before running_server starts.
+    monkeypatch.setattr(server, "MAX_CONNECTIONS", 2)
+    return request.getfixturevalue("running_server")
+
+
+def _wait_for_status(port, wanted, *, within=5.0):
+    import time
+    deadline = time.monotonic() + within
+    status = None
+    while time.monotonic() < deadline:
+        status = _get(port)[0].status
+        if status == wanted:
+            return status
+        time.sleep(0.05)
+    return status
+
+
+def test_a_connection_over_the_cap_gets_a_quick_503(capped_server):
+    import socket
+    import time
+    # Two clients that connect and say nothing hold both slots.
+    idle = [socket.create_connection(("127.0.0.1", capped_server), timeout=5) for _ in range(2)]
+    try:
+        assert _wait_for_status(capped_server, 503) == 503
+        started = time.monotonic()
+        with socket.create_connection(("127.0.0.1", capped_server), timeout=5) as s:
+            reply = b""
+            while chunk := s.recv(4096):   # nothing was sent: the 503 does not wait for a request
+                reply += chunk
+        assert time.monotonic() - started < 1.0
+        head, _, body = reply.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.1 503 ")
+        assert b"connection: close" in head.lower()
+        assert b"retry-after:" in head.lower()
+        assert body == server.BUSY_MESSAGE
+    finally:
+        for s in idle:
+            s.close()
+    # The slots come back when those connections close.
+    assert _wait_for_status(capped_server, 200) == 200
+
+
+def test_many_connections_over_the_cap_do_not_queue(capped_server):
+    import socket
+    idle = [socket.create_connection(("127.0.0.1", capped_server), timeout=5) for _ in range(2)]
+    try:
+        assert _wait_for_status(capped_server, 503) == 503
+        for _ in range(20):
+            assert _get(capped_server)[0].status == 503
+    finally:
+        for s in idle:
+            s.close()
+    assert _wait_for_status(capped_server, 200) == 200
+    # More requests than slots, one after another: each gives its slot back. A slot
+    # is freed just after the client sees the close, hence the short wait.
+    for _ in range(10):
+        assert _wait_for_status(capped_server, 200) == 200
+
+
+# jarvis#15: the request line and headers have a total deadline, so trickling them
+# cannot hold a slot.
+
+def _read_all(sock) -> bytes:
+    data = b""
+    try:
+        while chunk := sock.recv(4096):
+            data += chunk
+    except OSError:
+        pass
+    return data
+
+
+def test_eight_clients_trickling_headers_lose_their_slots_at_the_deadline(running_server, monkeypatch):
+    import socket
+    import time
+    monkeypatch.setattr(server, "HEAD_DEADLINE_S", 1.0)
+    assert server.MAX_CONNECTIONS == 8
+    tricklers = [socket.create_connection(("127.0.0.1", running_server), timeout=5)
+                 for _ in range(server.MAX_CONNECTIONS)]
+    head = b"GET /projects HTTP/1.1\r\nHost: x\r\nX-Slow: " + b"a" * 1000
+    statuses = []   # (seconds since the start, status the ninth client got)
+    try:
+        started = time.monotonic()
+        for s in tricklers:
+            s.sendall(b"G")
+        position = 1
+        while time.monotonic() - started < 6:
+            # A byte each, every 100 ms: every single read is far inside the 30 s
+            # socket timeout, so only the total deadline can end these.
+            for s in tricklers:
+                try:
+                    s.sendall(head[position:position + 1])
+                except OSError:
+                    pass
+            position += 1
+            status = _get(running_server)[0].status
+            statuses.append((time.monotonic() - started, status))
+            if statuses[-1][1] == 200:
+                break
+            time.sleep(0.1)
+        replies = [_read_all(s) for s in tricklers]
+    finally:
+        for s in tricklers:
+            s.close()
+    served_at, last = statuses[-1]
+    # The ninth client was refused while the slots were held, and served once the
+    # deadline had taken them back: not before it, and not long after.
+    assert last == 200, statuses
+    assert [status for _, status in statuses[:-1]] == [503] * (len(statuses) - 1)
+    assert len(statuses) > 1
+    assert 0.9 <= served_at < 3.0
+    # Each trickler was told why, then closed.
+    for reply in replies:
+        assert reply.startswith(b"HTTP/1.1 408 "), reply
+        assert reply.endswith(server.TIMEOUT_MESSAGE)
+
+
+def test_a_client_that_connects_and_says_nothing_gets_a_408(running_server, monkeypatch):
+    import socket
+    import time
+    monkeypatch.setattr(server, "HEAD_DEADLINE_S", 0.5)
+    started = time.monotonic()
+    with socket.create_connection(("127.0.0.1", running_server), timeout=5) as s:
+        reply = _read_all(s)
+    assert 0.5 <= time.monotonic() - started < 2.0
+    assert reply.startswith(b"HTTP/1.1 408 ")
+    assert b"connection: close" in reply.lower()
+
+
+def test_the_head_deadline_does_not_cut_a_slow_body(running_server, monkeypatch):
+    # The deadline covers the request line and headers only: a body that takes
+    # longer than it is still a turn.
+    import socket
+    import time
+    monkeypatch.setattr(server, "HEAD_DEADLINE_S", 0.5)
+    body = b"fake-audio"
+    head = (f"POST /turn?project=demo HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-token\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", running_server), timeout=5) as s:
+        s.sendall(head + body[:4])
+        time.sleep(1.0)
+        s.sendall(body[4:])
+        reply = _read_all(s)
+    assert b" 200 " in reply.split(b"\r\n")[0]
+    assert reply.endswith(b"FAKE-WAV-The answer is four.")
+
+
+def test_the_head_deadline_setting():
+    assert server._head_deadline_from_env({}) == server.HEAD_DEADLINE_S
+    assert server._head_deadline_from_env({server.HEAD_DEADLINE_ENV: " 2.5 "}) == 2.5
+    for bad in ["0", "-1", "abc", "nan", "inf", "301"]:
+        with pytest.raises(server.ConfigError):
+            server._head_deadline_from_env({server.HEAD_DEADLINE_ENV: bad})
+
+
+# add-project-list: GET /projects, behind the same gate as /turn.
+
+def _get(port, path="/projects", *, token="test-token"):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    conn.request("GET", path, headers=headers)
+    response = conn.getresponse()
+    data = response.read()
+    conn.close()
+    return response, data
+
+
+def test_lists_the_projects_as_sorted_names(tmp_path):
+    import json
+    config = BridgeConfig(
+        bind_host="127.0.0.1", port=0, token="test-token",
+        projects={
+            "zeta": ProjectConfig(name="zeta", working_dir=tmp_path / "z"),
+            "alpha": ProjectConfig(name="alpha", working_dir=tmp_path / "a"),
+        },
+        allowed_tools=("Read",), session_store_path=tmp_path / "s.json",
+        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="bm_george",
+        claude_timeout_s=30,
+    )
+    httpd = server.make_server(config)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response, data = _get(httpd.server_address[1])
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+    assert response.status == 200
+    assert response.getheader("Content-Type") == "application/json"
+    assert json.loads(data) == {"projects": ["alpha", "zeta"]}
+    assert str(tmp_path).encode() not in data   # names only, never paths
+
+
+def test_the_project_list_needs_the_token(running_server):
+    response, data = _get(running_server, token=None)
+    assert response.status == 401
+    assert b"demo" not in data
+
+
+def test_the_project_list_refuses_a_wrong_token(running_server):
+    response, data = _get(running_server, token="wrong")
+    assert response.status == 401
+    assert b"demo" not in data
+
+
+def test_the_project_list_with_a_non_ascii_token_is_a_plain_401(running_server):
+    reply = _raw(running_server, "GET /projects HTTP/1.1\r\nHost: x\r\n"
+                 "Authorization: Bearer ték\r\n\r\n".encode("latin-1"))
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_a_get_on_another_path_is_404(running_server):
+    response, _ = _get(running_server, "/turn")
+    assert response.status == 404
+    response, _ = _get(running_server, "/projects/../etc")
+    assert response.status == 404
+
+
+def test_post_to_the_project_list_is_404(running_server):
+    conn = http.client.HTTPConnection("127.0.0.1", running_server, timeout=5)
+    conn.request("POST", "/projects", body=b"x",
+                 headers={"Authorization": "Bearer test-token", "Content-Length": "1"})
+    assert conn.getresponse().status == 404
+    conn.close()
+
+
+def test_a_refused_project_list_with_a_large_body_gets_the_401(running_server):
+    import socket
+    head = (f"GET /projects HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\n"
+            f"Content-Length: {len(BIG_BODY)}\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head + BIG_BODY)
+        reply = s.recv(4096)
+    assert b" 401 " in reply.split(b"\r\n")[0]
+
+
+def test_an_authorized_project_list_with_a_body_still_answers(running_server):
+    import json
+    import socket
+    head = (b"GET /projects HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-token\r\n"
+            b"Content-Length: 5\r\n\r\nhello")
+    with socket.create_connection(("127.0.0.1", running_server), timeout=10) as s:
+        s.sendall(head)
+        reply = b""
+        while chunk := s.recv(4096):
+            reply += chunk
+    status, _, body = reply.partition(b"\r\n\r\n")
+    assert b" 200 " in status.split(b"\r\n")[0]
+    assert json.loads(body) == {"projects": ["demo"]}
+
+
+def test_the_project_list_follows_the_root_with_a_wildcard(tmp_path):
+    import json
+    from bridge.config import ProjectScanner
+    root = tmp_path / "work"
+    (root / "one" / ".git").mkdir(parents=True)
+    clock = [0.0]
+    config = BridgeConfig(
+        bind_host="127.0.0.1", port=0, token="test-token", projects={},
+        allowed_tools=("Read",), session_store_path=tmp_path / "s.json",
+        log_path=tmp_path / "b.log", whisper_model="base", kokoro_voice="bm_george",
+        claude_timeout_s=30,
+        project_scanner=ProjectScanner(root, ttl_s=10, clock=lambda: clock[0]),
+    )
+    httpd = server.make_server(config)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_address[1]
+        assert json.loads(_get(port)[1]) == {"projects": ["one"]}
+        (root / "two" / ".git").mkdir(parents=True)
+        assert json.loads(_get(port)[1]) == {"projects": ["one"]}      # cached
+        clock[0] = 11.0
+        assert json.loads(_get(port)[1]) == {"projects": ["one", "two"]}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)

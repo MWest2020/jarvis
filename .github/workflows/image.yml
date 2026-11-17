@@ -1,0 +1,103 @@
+# Tests, then the bridge image (deploy/Dockerfile): built and smoke-tested on
+# every PR, pushed to GHCR on main as ghcr.io/mwest2020/jarvis-bridge:<sha> and
+# :sha-<short>. A deployment pins it by digest (docs/how-to/run-in-cluster.md).
+# The package inherits this repo's visibility (private); GITHUB_TOKEN pushes it.
+name: image
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.15"
+      - run: uv sync --frozen
+      - run: uv run --frozen pytest -q
+      - run: shellcheck deploy/sync-projects.sh agent_host/install.sh
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/mwest2020/jarvis-bridge
+    steps:
+      - name: Free runner disk (image plus build cache is several GB)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          tags: jarvis-bridge:ci
+          cache-from: type=gha
+          cache-to: type=gha
+
+      # The image as a pod runs it: read-only root, only /tmp writable, HOME on
+      # /tmp, and no network at all, so the models and Claude Code must come
+      # from the image. The bridge must load both models, listen, and refuse a
+      # request without the token.
+      - name: Smoke test (read-only root, offline)
+        run: |
+          set -eu
+          ro="--read-only --tmpfs /tmp --network none -e HOME=/tmp"
+          # shellcheck disable=SC2086
+          docker run --rm $ro jarvis-bridge:ci claude --version
+          # The ssh client of `full` mode is in the image; the bridge below runs in
+          # `readonly` mode (no JARVIS_AGENT_MODE) and never starts it.
+          # shellcheck disable=SC2086
+          docker run --rm $ro jarvis-bridge:ci ssh -V
+          # shellcheck disable=SC2086
+          docker run -d --name bridge $ro \
+            -e JARVIS_STATE_DIR=/tmp/jarvis -e JARVIS_BIND_HOST=127.0.0.1 \
+            -e JARVIS_TOKEN=ci-not-a-secret -e JARVIS_PROJECTS=demo=/tmp \
+            jarvis-bridge:ci
+          for _ in $(seq 1 90); do
+            docker logs bridge 2>&1 | grep -q "jarvis-bridge listening" && break
+            if [ "$(docker inspect -f '{{.State.Running}}' bridge)" != true ]; then
+              docker logs bridge; exit 1
+            fi
+            sleep 5
+          done
+          docker logs bridge 2>&1 | grep -q "jarvis-bridge listening" || { docker logs bridge; exit 1; }
+          code=$(docker exec bridge python -c "
+          import urllib.error, urllib.request
+          req = urllib.request.Request('http://127.0.0.1:8787/turn?project=demo', data=b'x', method='POST')
+          try:
+              urllib.request.urlopen(req)
+          except urllib.error.HTTPError as e:
+              print(e.code)")
+          echo "no token -> $code"
+          test "$code" = 401
+          docker rm -f bridge
+
+      - if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: github.event_name == 'push'
+        name: Push :<sha> and :sha-<short>
+        run: |
+          set -eu
+          for tag in "$GITHUB_SHA" "sha-${{ steps.sha.outputs.short }}"; do
+            docker tag jarvis-bridge:ci "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_SHA")
+          echo "pushed $IMAGE:$GITHUB_SHA -> $digest" >> "$GITHUB_STEP_SUMMARY"
