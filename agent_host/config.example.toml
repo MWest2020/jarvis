@@ -52,9 +52,10 @@ append_system_prompt_fallback = false
 session_rotation_fallback = false
 
 # A project's next turn starts a new session, instead of resuming its last one, when that
-# project's last turn ended more than this many minutes ago. 60 is the prompt cache's
-# lifetime: after it, resuming sends the whole conversation to the cache again and a long
-# session costs about 3 s more per turn. The driver hears "I started a new session for this
+# project's last turn ended more than this many minutes ago. Resuming a long session
+# re-sends the whole conversation once the prompt cache has expired (after five minutes by
+# default, one hour with one-hour caching) and costs about 3 s more per turn; a fresh session
+# after a pause avoids that. The driver hears "I started a new session for this
 # project." 0: always resume. See docs/how-to/agent-host.md, "How long a session lives".
 session_idle_minutes = 60
 

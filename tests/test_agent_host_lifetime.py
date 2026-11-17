@@ -395,3 +395,23 @@ def test_entrypoint_idle_reset_and_switched_off(tmp_path):
         records = [json.loads(p.read_text()) for p in (case / "state" / "records").glob("*.json")]
         starts = sorted(r["session"]["start"] for r in records)
         assert starts == (["new", "resumed"] if resumed else ["idle", "new"])
+
+
+@pytest.mark.parametrize("line", [
+    "SPOKEN SUMMARY: The cookie is now set to session: close.",
+    "SPOKEN SUMMARY: I renamed it PRESESSION: close",
+    "SPOKEN SUMMARY: Done. Session: close",
+])
+def test_ordinary_words_on_the_summary_line_do_not_close(line):
+    # review of #68: the tail marker is exact and stands on its own
+    from agent_host import lifetime
+    assert not lifetime._CLOSE_TAIL.search(line)
+
+
+def test_a_non_string_session_value_is_discarded_not_a_crash(tmp_path):
+    import json
+    from agent_host.sessions import SessionStore
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({"p": 5}))
+    store = SessionStore(path)
+    assert store.get("p") == (None, True)

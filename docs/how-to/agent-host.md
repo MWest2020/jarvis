@@ -333,7 +333,7 @@ What else the records say:
 - **A resumed long session costs about 3 s more.** A copy of the live `jarvis-home`
   session (about 90,000 tokens of conversation, prompt cache warm) took 8.2 and 9.1 s for
   a trivial question and a follow-up, against 4.3-6.1 s fresh, with a time to first token
-  of 4.7-5.4 s against 2.1-3.5 s. When the cache has expired (it lives one hour) the whole
+  of 4.7-5.4 s against 2.1-3.5 s. When the cache has expired (five minutes by default, one hour when one-hour caching is on) the whole
   conversation is written to it again: Mark's turn of 09:47 sent 59,000 tokens to the cache
   for "can you do web searches" (7.6 s). Since then a session is not resumed after an hour
   without a turn: [How long a session lives](#how-long-a-session-lives).

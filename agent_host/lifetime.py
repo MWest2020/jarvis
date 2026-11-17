@@ -127,7 +127,10 @@ CLOSE_MARKER = "SESSION: close"
 _CLOSE_LINE = re.compile(r"[\s*_`>-]*SESSION:[*_`]*\s*close[\s*_`.!]*", re.IGNORECASE)
 # The same words at the end of the SPOKEN SUMMARY line, when the agent put
 # them there instead of on a line of their own.
-_CLOSE_TAIL = re.compile(r"\s*[*_`]*SESSION:[*_`]*\s*close[\s*_`.!]*\Z", re.IGNORECASE)
+# On the summary line only as its last words, written exactly so (no case folding) and
+# standing on its own: "…set to session: close." or "PRESESSION: close" is ordinary text
+# (review of #68).
+_CLOSE_TAIL = re.compile(r"(?:^|(?<=\s))[*_`]*SESSION:[*_`]*\s*close[\s*_`.!]*\Z")
 
 
 def split_close_marker(reply_text: str) -> tuple[str, bool]:

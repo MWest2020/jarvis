@@ -84,7 +84,7 @@ class SessionStore:
         raw = self._store.get(project)
         if raw is None:
             return None, False
-        if is_canonical_uuid(raw):
+        if isinstance(raw, str) and is_canonical_uuid(raw):
             return raw, False
         return None, True
 
