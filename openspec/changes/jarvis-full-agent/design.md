@@ -839,9 +839,11 @@ of that, as a seatbelt (D40), `[subagents]` in the rules lets an `Agent` call th
 for a built-in type with no edit tools, whose `Bash` and connector calls are gated per call
 (`web-fetch`, `Explore`, `Plan`, `claude-code-guide` on 2.1.322), with no `isolation`,
 `name`, `team_name` or `mode`, `run_in_background` absent or false, and not when an agent
-file redefines that name or cannot be read with certainty (the gate fails closed on any
-YAML form it does not read). Writing into any `.claude/agents` is the class `self`: an agent
-file carries hooks, MCP servers and a permission mode that run outside the gate. A remote
+file redefines that name or cannot be read with certainty (the gate finds the front matter as
+Claude Code does, checks it with PyYAML, which is required, and fails closed on any YAML
+form it does not read; the directories are read again on every call). Writing into any
+`.claude/agents` is the class `self`: an agent file carries hooks, MCP servers and a
+permission mode that run outside the gate. A remote
 session (`isolation: remote`) would run where this gate does not. Any other subagent is
 refused with a sentence that names what can be started and is not passed to the coding
 session (D57): the agent can do the same work itself under the same gate. `SubagentHandback`

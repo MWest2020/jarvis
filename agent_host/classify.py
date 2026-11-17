@@ -441,6 +441,8 @@ _NAME_PLAIN_RE = re.compile(
 # quoted or escaped, a complex key (`? name`), a merge key (`<<: *x`), a flow
 # mapping, an anchor, alias or tag in key position, or a directive.
 _NAME_KEY_RE = re.compile(r"""name[ \t]*:""")
+# Claude Code's own (JavaScript, no flags): `^` is the start of the file.
+_FRONT_MATTER_RE = re.compile(r"---\s*\n([\s\S]*?)---\s*\n?")
 _RISKY_TOP_RE = re.compile(r"""["'?{\[&*!%@`]|<<""")
 
 
@@ -584,9 +586,9 @@ def _agent_file_names(ctx: Context) -> set[str]:
 
 
 def _front_matter_names(path: str) -> set[str]:
-    """The `name` an agent file's front matter sets, read in one strict form,
-    and checked against a YAML parser when there is one. Anything that might
-    set `name` some other way raises `_Unknown`."""
+    """The `name` an agent file's front matter sets, read in one strict form
+    and checked against a YAML parser (required). Anything that might set
+    `name` some other way raises `_Unknown`."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
     except OSError as exc:
@@ -599,43 +601,48 @@ def _front_matter_names(path: str) -> set[str]:
         raise _Unknown(f"cannot read {path}") from exc
     finally:
         os.close(fd)
-    lines = head.decode("utf-8", "replace").lstrip("\ufeff").splitlines()
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    if not lines or lines[0].strip() != "---":
+    text = head.decode("utf-8", "replace").lstrip("\ufeff")
+    # Claude Code 2.1.322 finds the front matter with this expression: it
+    # ends at the first `---` anywhere, mid-line too. Only one that ends on
+    # a line of its own is read here.
+    match = _FRONT_MATTER_RE.match(text)
+    if match is None:
+        if text.lstrip().startswith("---"):
+            raise _Unknown(f"the front matter of {path} does not end in its first bytes")
         return set()  # no front matter: no agent
-    try:
-        end = next(i for i, line in enumerate(lines[1:], 1) if line.strip() in ("---", "..."))
-    except StopIteration:
-        raise _Unknown(f"the front matter of {path} does not end in its first bytes") from None
-    body = lines[1:end]
+    inner = match.group(1)
+    rest = text[match.end(1) + 3:]
+    if (inner and not inner.endswith("\n")) or rest.split("\n", 1)[0].strip():
+        raise _Unknown(f"the front matter of {path} ends inside a line")
+    # A line break other than `\n` (a lone CR, NEL, U+2028, U+2029) splits
+    # lines for YAML and not for the line read below.
+    if re.search("[\x85\u2028\u2029]|\r(?!\n)", inner):
+        raise _Unknown(f"{path}: a line break the gate does not read")
+    body = inner.split("\n")
     names: list[str] = []
     for line in body:
         if not line.strip() or line[0] in " \t#":
             continue  # blank, nested, or a comment
-        if _RISKY_TOP_RE.match(line):
+        if _RISKY_TOP_RE.match(line) or line.rstrip() == "...":
             raise _Unknown(f"{path}: a top-level line the gate does not read")
         if _NAME_KEY_RE.match(line):
             match = _NAME_PLAIN_RE.fullmatch(line.rstrip())
             if not match:
                 raise _Unknown(f"{path}: a name the gate does not read")
             names.append(next(g for g in match.groups() if g is not None).strip())
-    parsed = _yaml_name("\n".join(body))
-    if parsed is not _NO_YAML and parsed != (names[-1] if names else None):
+    if _yaml_name(inner) != (names[-1] if names else None):
         raise _Unknown(f"{path}: the YAML parser reads another name")
     return set(names)
 
 
-_NO_YAML = object()
-
-
 def _yaml_name(text: str):
-    """The `name` a YAML parser reads, None when there is none, `_NO_YAML`
-    when no parser is installed."""
+    """The `name` a YAML parser reads, None when there is none. Without a
+    parser nothing is known: the strict line read alone misses YAML's
+    continuation lines (install.sh checks that the gate's Python has one)."""
     try:
         import yaml
-    except ImportError:
-        return _NO_YAML
+    except ImportError as exc:
+        raise _Unknown("no YAML parser (PyYAML) for the gate's Python") from exc
     try:
         data = yaml.safe_load(text)
     except Exception as exc:  # noqa: BLE001 - any parser error: not known

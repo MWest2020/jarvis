@@ -495,3 +495,13 @@ def test_the_installed_wrapper_ignores_a_configuration_named_in_the_environment(
     # own fake `claude` and state directory) was not the one used.
     assert not record_path.exists()
     assert not (work / "state").exists()
+
+
+def test_the_installer_checks_that_the_gate_can_read_agent_files(source, destdir):
+    """The gate reads agent files with PyYAML (#57, D58); without it every
+    subagent is refused, and the installer says so up front."""
+    text = (REPO_ROOT / "agent_host" / "install.sh").read_text()
+    assert "import yaml" in text and "refuse every subagent" in text
+    proc = install(source, destdir, "--dry-run")
+    has_yaml = subprocess.run(["/usr/bin/python3", "-I", "-c", "import yaml"]).returncode == 0
+    assert ("no PyYAML" in proc.stderr) is not has_yaml

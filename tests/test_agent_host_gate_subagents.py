@@ -6,6 +6,7 @@ of Claude Code, shown on the host (docs/how-to/agent-host.md, host check
 13); here it is the call that starts one.
 """
 import os
+import sys
 import uuid
 
 import pytest
@@ -233,6 +234,17 @@ BYPASSES = {
     "alias": "---\nx: &a Explore\nname: *a\ndescription: x\n---\n",
     "unclosed-16k": "---\ndescription: " + "a" * 17000 + "\nname: Explore\n---\n",
     "leading-blank": "\n---\nname: !!str Explore\n---\n",
+    # Review 2 of #58: Claude Code ends the front matter at the first `---`
+    # anywhere, mid-line too.
+    "dashes-midline": "---\ndescription: x\nname: Explore---x\n---\nbody\n",
+    "dashes-space": "---\ndescription: x\nname: Explore ---x\n---\n",
+    "dashes-closing-line-with-text": "---\nname: Explore\n---x\nname: other\n---\n",
+    "dots-end": "---\ndescription: x\n...\nname: Explore\n---\n",
+    "indented-map": "---\n name: Explore\n description: x\n---\n",
+    "multiline-plain": "---\nname: Ex\n plore\ndescription: x\n---\n",
+    "u2028": "---\nname: Ex\u2028 plore\ndescription: x\n---\n",
+    "nel": "---\ndescription: x\x85name: Explore\n---\n",
+    "lone-cr": "---\ndescription: x\rname: Explore\n---\n",
 }
 
 
@@ -247,7 +259,7 @@ def _plant(ctx, body, where="x.md"):
 def test_a_name_written_in_a_form_the_gate_does_not_read_gates(tmp_path, monkeypatch, case,
                                                                 yaml_parser):
     if not yaml_parser:
-        monkeypatch.setattr(classify, "_yaml_name", lambda text: classify._NO_YAML)
+        monkeypatch.setitem(sys.modules, "yaml", None)  # `import yaml` fails
     ctx = make_ctx(tmp_path)
     _plant(ctx, BYPASSES[case])
     verdict = _verdict(ctx, "Explore")
@@ -265,6 +277,33 @@ def test_an_agent_file_read_with_certainty_changes_nothing(tmp_path, body):
     ctx = make_ctx(tmp_path)
     _plant(ctx, body)
     assert not _verdict(ctx, "Explore").gated
+
+
+@pytest.mark.parametrize("kind", ["Explore", "Ex plore", "Ex  plore"])
+@pytest.mark.parametrize("case", ["multiline-plain", "u2028", "indented-map", "dashes-midline"])
+def test_review_2_variants_gate_for_every_spelling_of_the_type(tmp_path, monkeypatch, case, kind):
+    ctx = make_ctx(tmp_path)
+    _plant(ctx, BYPASSES[case])
+    verdict = _verdict(ctx, kind)
+    assert verdict.gated, (case, kind, verdict)
+
+
+def test_without_a_yaml_parser_any_agent_file_gates(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    ctx = make_ctx(tmp_path)
+    _plant(ctx, "---\nname: reviewer\ndescription: x\n---\n")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
+    # A file without front matter is no agent: nothing to parse.
+    (ctx.cwd / ".claude" / "agents" / "x.md").write_text("notes\n")
+    assert not _verdict(ctx, "Explore").gated
+
+
+def test_crlf_front_matter_is_read(tmp_path):
+    ctx = make_ctx(tmp_path)
+    _plant(ctx, "---\r\nname: reviewer\r\ndescription: x\r\n---\r\nbody\r\n")
+    assert not _verdict(ctx, "Explore").gated
+    _plant(ctx, "---\r\nname: Explore\r\n---\r\n")
+    assert _verdict(ctx, "Explore").rule == "subagent:shadowed"
 
 
 def test_the_yaml_parser_disagreeing_with_the_simple_read_gates(tmp_path, monkeypatch):

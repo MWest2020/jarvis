@@ -479,12 +479,18 @@ only when all of this holds:
   in the call's directory and every directory above it, from the directory as the call
   names it and from its real path, and the same for the main worktree when the call is in a
   linked one; symlinked directories are followed. Claude Code goes by the front matter
-  `name:` only; the gate also counts the file name, which only gates more. The gate reads
-  `name:` in one form, a plain or simply quoted value on the same line, and checks it against
-  a YAML parser where one is installed (PyYAML, on agent-lxc). Anything else gates: a
-  folded, escaped, tagged, anchored or next-line value, a quoted or complex key, a merge key,
-  a flow mapping, front matter that does not end in the first 16 KB, a parser that reads
-  another name, an agents directory or file that cannot be read, more than 500 entries.
+  `name:` only; the gate also counts the file name, which only gates more. It finds the
+  front matter with Claude Code's own expression (`^---\s*\n([\s\S]*?)---\s*\n?`, which
+  ends at the first `---` anywhere, mid-line too) and reads it only when that `---` is a line
+  of its own. It reads `name:` in one form, a plain or simply quoted value on the same line,
+  and checks it against PyYAML, which is **required**: without it (`python3-yaml` missing
+  for the gate's `/usr/bin/python3`) every agent file gates, and `install.sh` warns. Anything
+  else gates too: a folded, escaped, tagged, anchored, next-line or continued value, a quoted
+  or complex key, a merge key, a flow mapping, a `...` line, a line break other than `\n`
+  (NEL, U+2028, a lone CR), front matter that does not end in the first 16 KB or ends inside
+  a line, a parser that reads another name, an agents directory or file that cannot be read,
+  more than 500 entries. The directories are read again on every `Agent` call, so a file
+  that arrived in the meantime counts at once.
   **Not looked at:** `--add-dir` directories, the managed settings folder and `--agents`; the
   wrapper passes none of them and the agent cannot add them;
 - the input holds nothing but `description`, `prompt`, `subagent_type`, `model`, `effort`,
@@ -508,8 +514,9 @@ a `Write` or `Edit` there, through a symlink too, and a shell command that names
 `mv`, `ln -s`, `tee`, `curl -o`, `git checkout <ref> -- .claude/agents`, `git restore`)
 is refused for the desk. An agent file carries its own tools, hooks, MCP servers and
 permission mode, which would run outside this gate. A file that arrives without being
-named (a `git pull`, a whole-branch `git checkout`) is not stopped by this; it is what the
-fail-closed read above is for.
+named (a `git pull`, a whole-branch `git checkout`) is not stopped by this. It is caught at
+the next `Agent` call, which reads the agents directories again: one that redefines an
+allowed type, or cannot be read with certainty, gates that call.
 
 Anything else is refused with `[subagent]`, a sentence that names what can be started, and
 is **not** passed to the coding session: whatever that subagent would have done, the agent
