@@ -379,23 +379,48 @@ only when all of this holds:
 
 - `subagent_type` is one of `web-fetch`, `Explore`, `Plan`, `claude-code-guide`, compared
   the way Claude Code compares agent names (case, spaces, dashes and underscores do not
-  count). On Claude Code 2.1.322 these are built-ins whose tools only read: `web-fetch` has
-  `WebFetch` only; `Explore` and `Plan` have everything but `Agent`, `Edit`, `Write`,
-  `NotebookEdit` and the artifact tools (their `Bash` calls are gated like any other);
-  `claude-code-guide` has `Bash`, `Read`, `WebFetch` and `WebSearch`. Not allowed:
-  `general-purpose`, `claude` and `fork` (every tool, `Agent` included), `statusline-setup`
-  (edits settings), no type at all (that is `general-purpose`), and any agent defined in a
-  file;
-- no agent file in `~/.claude/agents/` or in a `.claude/agents/` of the call's directory or
-  any directory above it defines the same name (by its front matter `name:` or its file
-  name): then it is not the built-in that would run. An agents directory that cannot be read,
-  or more than 500 agent files, count as such a file;
+  count). On Claude Code 2.1.322 these are built-ins with **no edit tools; their `Bash` and
+  connector calls are gated per call** like the turn's own: `web-fetch` has `WebFetch` only;
+  `Explore` and `Plan` have everything but `Agent`, `Edit`, `Write`, `NotebookEdit` and the
+  artifact tools; `claude-code-guide` has `Bash`, `Read`, `WebFetch` and `WebSearch`. Not
+  allowed: `general-purpose`, `claude` and `fork` (every tool, `Agent` included),
+  `statusline-setup` (edits settings), no type at all (that is `general-purpose`), and any
+  agent defined in a file;
+- no agent file redefines that name. Looked at: `~/.claude/agents/`, and `.claude/agents/`
+  in the call's directory and every directory above it, from the directory as the call
+  names it and from its real path, and the same for the main worktree when the call is in a
+  linked one; symlinked directories are followed. Claude Code goes by the front matter
+  `name:` only; the gate also counts the file name, which only gates more. The gate reads
+  `name:` in one form, a plain or simply quoted value on the same line, and checks it against
+  a YAML parser where one is installed (PyYAML, on agent-lxc). Anything else gates: a
+  folded, escaped, tagged, anchored or next-line value, a quoted or complex key, a merge key,
+  a flow mapping, front matter that does not end in the first 16 KB, a parser that reads
+  another name, an agents directory or file that cannot be read, more than 500 entries.
+  **Not looked at:** `--add-dir` directories, the managed settings folder and `--agents`; the
+  wrapper passes none of them and the agent cannot add them;
 - the input holds nothing but `description`, `prompt`, `subagent_type`, `model`, `effort`,
-  and `run_in_background` set to false. So no `isolation` (a worktree, or a remote session
-  where this gate does not run), no `name` or `team_name` (an agent that outlives the turn
-  and takes messages), no `mode` (another permission mode), and nothing a new version adds;
-- **not in the background**: a subagent that runs on after the turn answered would act after
-  the record is written and the turn lock is free, with nobody to hear a read-back.
+  and `run_in_background`, which may only be absent or JSON `false` (`null`, `0`, `"false"`
+  gate). So no `isolation` (a worktree, or a remote session where this gate does not run),
+  no `name` or `team_name` (an agent that outlives the turn and takes messages), no `mode`
+  (another permission mode), and nothing a new version adds.
+
+On `run_in_background`: an explicit `true` is refused as the declared intent to run on after
+the turn. Leaving it out is allowed, although Claude Code 2.1.322 then **launches in the
+background by default** (`launchedWithDefaults`, `requestShape: background`; it has
+`backgroundLaunchByDefault` and, for a fork, `forceAsync`). A subagent runs inside the turn's
+`claude` process, and the wrapper writes the record only after that process has ended (and
+kills its process group at the timeout), so it cannot act after the record: in host check
+13 such a subagent finished three seconds before the record was written. This rests on
+Claude Code's behaviour, so check 13 is run again on every Claude Code version.
+
+**Writing an agent file is the class `self`.** Any `.claude/agents/` (a checkout's, the
+user's, the main worktree's), and everything in it, is protected like a checkout's settings:
+a `Write` or `Edit` there, through a symlink too, and a shell command that names it (`cp`,
+`mv`, `ln -s`, `tee`, `curl -o`, `git checkout <ref> -- .claude/agents`, `git restore`)
+is refused for the desk. An agent file carries its own tools, hooks, MCP servers and
+permission mode, which would run outside this gate. A file that arrives without being
+named (a `git pull`, a whole-branch `git checkout`) is not stopped by this; it is what the
+fail-closed read above is for.
 
 Anything else is refused with `[subagent]`, a sentence that names what can be started, and
 is **not** passed to the coding session: whatever that subagent would have done, the agent
@@ -720,12 +745,16 @@ agent-lxc, user `agent`.
   | `672a4cd4…` | `Explore` | `git status --short` (it declined the probe by itself, as a read-only agent) | the `Agent` call let through | `git status`, logged by the PostToolUse hook from inside the subagent |
   | `daf6cf4d…` | `general-purpose` (no test rule) | none | `Agent` refused: `subagent:type` | nothing; no subagent transcript |
   | `498903ee…` | the same, after the `[subagent]` refusal text | none | refused, code none, not passed on | nothing; no `needs_desk` notice |
+  | `d635e74b…` | `Explore`, `run_in_background` left out (after the review of #58) | `git log --oneline -1` | the `Agent` call let through (input: `description`, `prompt`, `subagent_type`) | launched **in the background by default** (`launchedWithDefaults: true`, `requestShape: background`); the `Agent` call returned at :38.8, the subagent's `git log` ran at :40.3, its report at :43.0, the turn's answer included it, and the record was written at :46.3, after `claude` ended |
 
   In every turn the subagent's `SubagentHandback` passed (ungated now), and the action log
   has its line: PostToolUse runs inside subagents too. The records name the refused calls
   under `gated_actions` like the turn's own. A first attempt of the first turn
   (`1a64c2c5…`) did not reach the gate: Claude Code refuses a `Write` to a file the agent has
   not read before any hook runs.
+- **Run it again on every Claude Code version** (with the rest of the table): both that a
+  subagent's calls reach the gate, and that a subagent launched in the background by default
+  ends with the turn's `claude` process.
 - **Afterwards:** nothing of the installed Jarvis was changed; the throwaway directory and
   its sessions were removed.
 

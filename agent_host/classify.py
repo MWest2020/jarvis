@@ -19,8 +19,8 @@ The class `self` is Jarvis's own rules: the gate, the wrapper, their rules,
 settings and configuration, `authorized_keys`, Claude Code's user and
 managed settings, the user's instructions, agents, skills and plugins, the
 shell start-up files, every file a configured hook runs, and any checkout's
-`.claude/settings*.json`. A write to one of them, by `Edit`, `Write` or a
-shell command, is always desk-only and never pending. The one exception is
+`.claude/settings*.json` and `.claude/agents`. A write to one of them, by
+`Edit`, `Write` or a shell command, is always desk-only and never pending. The one exception is
 the fixed command `sudo <confirm program> on|off [class]`, matched exactly.
 
 **What this is, and what it is not (D40).** These are rules over the text
