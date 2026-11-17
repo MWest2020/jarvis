@@ -5,6 +5,9 @@ trusted as-is: it is read back only when it is a canonical UUID. Anything
 else (including a planted `--dangerously-skip-permissions` or `--version`)
 is discarded, and the caller is told a new session started (notice
 `new_session`), never passed anywhere near argv.
+
+How long a session lives (an hour idle, or until the agent closes the
+conversation) is agent_host.lifetime.
 """
 from __future__ import annotations
 
@@ -44,13 +47,22 @@ class KeyValueStore:
             data[key] = value
             self._write(data)
 
+    def delete(self, key: str) -> None:
+        with self._lock:
+            data = self._read()
+            if key in data:
+                del data[key]
+                self._write(data)
+
     def _read(self) -> dict[str, str]:
         if not self._path.exists():
             return {}
         try:
-            return json.loads(self._path.read_text())
+            data = json.loads(self._path.read_text())
         except (OSError, json.JSONDecodeError):
             return {}
+        # The agent can write this file (D40): anything but an object is empty.
+        return data if isinstance(data, dict) else {}
 
     def _write(self, data: dict[str, str]) -> None:
         self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -72,9 +84,14 @@ class SessionStore:
         raw = self._store.get(project)
         if raw is None:
             return None, False
-        if is_canonical_uuid(raw):
+        if isinstance(raw, str) and is_canonical_uuid(raw):
             return raw, False
         return None, True
 
     def set(self, project: str, session_id: str) -> None:
         self._store.set(project, session_id)
+
+    def drop(self, project: str) -> None:
+        """Forget the project's session: its next turn starts a new one."""
+        self._store.delete(project)
+

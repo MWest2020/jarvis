@@ -277,7 +277,7 @@ the same summary filter as a read-only reply; the full reply never leaves the ag
 | notice `needs_desk` | "I passed that on to the coding session." |
 | notice `run_alone` | "That command has to be run on its own, so it was refused." |
 | notice `settings_changed` | "The project settings changed. I passed that on to the coding session." |
-| notice `new_session` | "I started a new session for this project." |
+| notice `new_session` (a stored session id was discarded, or the project's last turn was more than an hour ago: [How long a session lives](agent-host.md#how-long-a-session-lives)) | "I started a new session for this project." |
 | notice `target_changed` | "The push target changed. I passed that on to the coding session." |
 | notice `out_of_budget` (with `agent_failed`: the usage limit shared with the coding session) | "The agent is out of budget for now." After a yes followed by "I do not know whether it ran. Check at the desk." |
 
