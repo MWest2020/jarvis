@@ -153,3 +153,66 @@ def test_a_failed_turn_still_has_the_wrappers_clock(tmp_path, monkeypatch):
     reply = handle_request(_raw(), config)
     timing = json.loads((config.records_dir / f"{reply['turn']}.json").read_text())["timing"]
     assert set(timing) == {"wrapper_pre_ms", "claude_wall_ms", "wrapper_post_ms"}
+
+
+def test_the_record_names_the_voice_profile_and_the_argv_carries_it(tmp_path, monkeypatch):
+    from tests.test_agent_host_wrapper import FakePopen
+    monkeypatch.setattr(subprocess, "Popen", _popen(stdout=json.dumps(CLAUDE_JSON)))
+    config = _config(tmp_path, voice_model="sonnet", voice_effort="low")
+    reply = handle_request(_raw(), config)
+    assert "--model=sonnet" in FakePopen.last.command
+    assert "--effort=low" in FakePopen.last.command
+    timing = json.loads((config.records_dir / f"{reply['turn']}.json").read_text())["timing"]
+    assert timing["profile"] == {"model": "sonnet", "effort": "low"}
+
+
+def test_without_a_voice_profile_the_argv_is_as_before(tmp_path, monkeypatch):
+    from tests.test_agent_host_wrapper import FakePopen
+    monkeypatch.setattr(subprocess, "Popen", _popen(stdout=json.dumps(CLAUDE_JSON)))
+    config = _config(tmp_path)
+    reply = handle_request(_raw(), config)
+    assert not any(a.startswith(("--model", "--effort")) for a in FakePopen.last.command)
+    timing = json.loads((config.records_dir / f"{reply['turn']}.json").read_text())["timing"]
+    assert "profile" not in timing
+
+
+# --- Whisper's decoding reaches faster-whisper ---------------------------------------
+
+def test_transcribe_passes_beam_and_language_to_faster_whisper(monkeypatch):
+    from bridge import stt
+    seen = {}
+
+    class Segment:
+        text = " hello "
+
+    class Model:
+        def transcribe(self, audio, **kwargs):
+            seen.update(kwargs)
+            return [Segment()], None
+    monkeypatch.setattr(stt, "_model", lambda size: Model())
+    assert stt.transcribe(b"x", model_size="base") == "hello"
+    assert seen == {"beam_size": 5, "language": None}
+    stt.transcribe(b"x", model_size="base", beam_size=1, language="en")
+    assert seen == {"beam_size": 1, "language": "en"}
+
+
+def test_the_server_hands_the_whisper_options_to_transcribe(tmp_path, monkeypatch):
+    import dataclasses
+
+    from bridge import server, stt
+    b = Bridge(tmp_path, monkeypatch)
+    b.stop()
+    seen = {}
+
+    def transcribe(audio, model_size, **options):
+        seen.update(options)
+        return "what is open?"
+    monkeypatch.setattr(stt, "transcribe", transcribe)
+    b.config = dataclasses.replace(b.config, whisper_beam_size=1, whisper_language="en")
+    b.start()
+    try:
+        b.say("what is open?")
+    finally:
+        b.stop()
+    assert seen == {"beam_size": 1, "language": "en"}
+    assert server.Handler.config.whisper_options == {"beam_size": 1, "language": "en"}

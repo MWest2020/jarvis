@@ -327,7 +327,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Decoded once: `full` mode needs the samples for the transcript and
                 # again for the detected speech.
                 audio = stt.decode(audio_bytes)
-            transcript = stt.transcribe(audio, model_size=self.config.whisper_model)
+            transcript = stt.transcribe(audio, model_size=self.config.whisper_model,
+                                        **self.config.whisper_options)
         logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
         if not transcript.strip():
             # Silence: no agent turn, just say so.
@@ -570,7 +571,9 @@ def main() -> None:
                     agent.user, agent.host, agent.port)
     # Load both speech models before the first turn: on a small CPU the first
     # Kokoro load alone took over two minutes (2026-11-14 tailnet test).
-    logger.info("loading speech models (whisper %s, kokoro)", config.whisper_model)
+    logger.info("loading speech models (whisper %s, beam %s, language %s; kokoro)",
+                config.whisper_model, config.whisper_beam_size,
+                config.whisper_language or "detected")
     stt.warm_up(config.whisper_model)
     tts.warm_up()
     server = make_server(config)
