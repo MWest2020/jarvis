@@ -173,6 +173,8 @@ NOT_THE_GATES_BUSINESS = [
     "cd /srv/repo && ls -la",
     "grep -rn docker docs/ | head",
     "ls -la 2>/dev/null | wc -l",
+    "ls -la 2>/dev/null; pwd",          # right before a separator (#59)
+    "cd /srv/repo >/dev/null&& ls",
     "git log --oneline | head -20",
     "(cd sub && ls)",
     # ... or, in a call without any quoting, a read of a default-gated program.
@@ -386,3 +388,17 @@ def test_nesting_deeper_than_the_limit_is_not_followed_as_one_command(ctx):
     verdict = bash(command, ctx)
     assert verdict.gated  # still found, as a candidate
     assert verdict.run_alone
+
+
+@pytest.mark.parametrize("text, reduced", [
+    ("cd x 2>/dev/null; pwd", "cd x  ; pwd"),
+    ("cd x 2>/dev/null|| cd y", "cd x  || cd y"),
+    ("ls >/dev/null&& ls", "ls  && ls"),
+    ("(ls 2>&1)", "(ls  )"),
+    # Not a redirection to /dev/null: left alone.
+    ("ls >/dev/nullx", "ls >/dev/nullx"),
+    ("ls 2>/dev/null>x", "ls 2>/dev/null>x"),
+    ("ls x>/dev/null", "ls x>/dev/null"),
+])
+def test_benign_redirects_are_taken_out_up_to_a_separator(text, reduced):
+    assert shell.without_benign_redirects(text) == reduced
