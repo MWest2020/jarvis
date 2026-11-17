@@ -30,6 +30,8 @@ from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
 from bridge.logging_setup import configure as configure_logging
 from bridge.readonly_adapter import ReadonlyAdapter
 from bridge.sessions import SessionStore
+from bridge.timing import HEADER as TIMING_HEADER
+from bridge.timing import TurnTimer, wav_seconds
 
 logger = logging.getLogger("bridge.server")
 
@@ -254,6 +256,8 @@ class Handler(BaseHTTPRequestHandler):
             logger.info("could not send the project list to %s: %s", self.address_string(), exc)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
+        # Per-stage timing of the turn (bridge.timing), from the head on.
+        timer = TurnTimer()
         # Read the announced length before any check, but not the body: a
         # rejection needs it to drain the upload first (_reject).
         self._body_length = _parse_content_length(self.headers.get("Content-Length"))
@@ -290,14 +294,15 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_AUDIO_BYTES:
             self._reject(413, "audio too large")
             return
-        audio_bytes = self.rfile.read(length)
+        with timer.stage("read"):
+            audio_bytes = self.rfile.read(length)
 
         if not _try_project_lock(project_name):
             # Two turns on one session would race on its id (session continuity).
             self._respond_error(409, "this project is busy with another turn")
             return
         try:
-            self._handle_turn(project, audio_bytes)
+            self._handle_turn(project, audio_bytes, timer)
         except claude_adapter.ClaudeTurnError as exc:
             # The error can quote Claude Code's stderr or its whole JSON reply:
             # details to the file only, a short line to stdout.
@@ -311,32 +316,44 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             _release_project_lock(project_name)
 
-    def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes) -> None:
+    def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes,
+                     timer: TurnTimer | None = None) -> None:
+        timer = timer if timer is not None else TurnTimer()
         project_name = project.name
         audio = audio_bytes
-        if self.full is not None:
-            # Decoded once: `full` mode needs the samples for the transcript and
-            # again for the detected speech.
-            audio = stt.decode(audio_bytes)
-        transcript = stt.transcribe(audio, model_size=self.config.whisper_model)
+        timer.audio_in_s = wav_seconds(audio_bytes)
+        with timer.stage("stt"):
+            if self.full is not None:
+                # Decoded once: `full` mode needs the samples for the transcript and
+                # again for the detected speech.
+                audio = stt.decode(audio_bytes)
+            transcript = stt.transcribe(audio, model_size=self.config.whisper_model)
         logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
         if not transcript.strip():
             # Silence: no agent turn, just say so.
-            self._respond_audio(tts.synthesize(NOT_HEARD, voice=self.config.kokoro_voice), NOT_HEARD, "")
+            with timer.stage("tts"):
+                audio_reply = tts.synthesize(NOT_HEARD, voice=self.config.kokoro_voice)
+            self._respond_audio(audio_reply, NOT_HEARD, "", timer=timer, project=project_name)
             return
 
         if self.full is not None:
             # The pending confirmation, the fallback and the spoken errors of
             # `full` mode. A yes is only ever read from this transcript.
+            measure = timer.wrap("vad", lambda: stt.speech_seconds(audio))
+            handle_started = time.monotonic()
             outcome = self.full.handle(
-                project, transcript, lambda: stt.speech_seconds(audio),
+                project, transcript, measure,
                 typed_list=self.headers.get("X-Jarvis-Projects", "") == "typed")
+            # The agent's part: the handling minus the speech measurement in it.
+            timer.add("agent", time.monotonic() - handle_started - timer.ms.get("vad", 0) / 1000)
             logger.info("project=%s summary=%r", project_name, outcome.spoken)
             try:
-                audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
+                with timer.stage("tts"):
+                    audio_reply = tts.synthesize(outcome.spoken, voice=self.config.kokoro_voice)
                 self._respond_audio(audio_reply, outcome.spoken, outcome.ref,
                                     needs_confirmation=outcome.needs_confirmation,
-                                    projects_changed=outcome.projects_changed)
+                                    projects_changed=outcome.projects_changed,
+                                    timer=timer, project=project_name)
             except BaseException:
                 # A read-back that was not spoken, or did not reach the phone, was
                 # not heard: nothing stays pending, here or on the agent host.
@@ -345,16 +362,22 @@ class Handler(BaseHTTPRequestHandler):
             self.full.delivered(project, outcome)
             return
 
-        turn = self.readonly.run_turn(project=project, prompt=transcript)
+        with timer.stage("agent"):
+            turn = self.readonly.run_turn(project=project, prompt=transcript)
         summary = turn.spoken
         logger.info("project=%s summary=%r", project_name, summary)
 
-        audio_reply = tts.synthesize(summary, voice=self.config.kokoro_voice)
-        self._respond_audio(audio_reply, summary, turn.ref)
+        with timer.stage("tts"):
+            audio_reply = tts.synthesize(summary, voice=self.config.kokoro_voice)
+        self._respond_audio(audio_reply, summary, turn.ref, timer=timer, project=project_name)
 
     def _respond_audio(self, audio_reply: bytes, summary: str, session_id: str, *,
                        needs_confirmation: bool = False,
-                       projects_changed: bool = False) -> None:
+                       projects_changed: bool = False,
+                       timer: TurnTimer | None = None, project: str = "") -> None:
+        if timer is not None:
+            timer.audio_out_s = wav_seconds(audio_reply)
+            timer.spoken_chars = len(summary)
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(audio_reply)))
@@ -367,8 +390,18 @@ class Handler(BaseHTTPRequestHandler):
             # jarvis-general-conversation D56: a new project is ready; the phone
             # fetches GET /projects again.
             self.send_header("X-Jarvis-Projects-Changed", "1")
+        if timer is not None:
+            # Milliseconds per stage so far, for a client that wants to show them.
+            self.send_header(TIMING_HEADER, timer.header_value())
         self.end_headers()
-        self.wfile.write(audio_reply)
+        if timer is None:
+            self.wfile.write(audio_reply)
+            return
+        with timer.stage("write"):
+            self.wfile.write(audio_reply)
+        # One line per turn, in the file and on stdout: numbers only, no text.
+        logger.info("project=%s turn=%s timing %s", project, session_id or "-",
+                    timer.log_fields())
 
     def _reject(self, status: int, message: str) -> None:
         """Answer a request that is refused before its body was read.

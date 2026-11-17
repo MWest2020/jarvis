@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-15
+last_reviewed: 2026-11-17
 ---
 # Running the bridge service (weekend slice)
 
@@ -337,7 +337,7 @@ recorded audio as the body. Replies:
 
 | Status | When |
 |---|---|
-| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken) and `X-Jarvis-Session-Id`. Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
+| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken), `X-Jarvis-Session-Id` and `X-Jarvis-Timing` (milliseconds per stage, see "Where a turn's time goes"). Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
 | 400 | No project, an unknown project (in `full` mode: a name the agent host would not accept by its shape), an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
 | 409 | That project is still busy with another turn (one turn per session at a time). The lock lives only while that turn runs, so names asked for in `full` mode leave nothing behind. |
@@ -394,6 +394,37 @@ or else at a word, with "…"), and only when it contains nothing that looks lik
 names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
 letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
 details."
+
+## Where a turn's time goes
+
+Every answered turn writes one INFO line, in the file and on stdout, with numbers only
+(no transcript, no summary):
+
+```
+project=jarvis-home turn=<turn id> timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=5420 write_ms=3 total_ms=14840 audio_in_s=5.5 audio_out_s=9.9 spoken_chars=143
+```
+
+| Field | What |
+|---|---|
+| `read_ms` | Reading the upload after the head arrived |
+| `stt_ms` | Decoding the recording and Whisper's transcript |
+| `vad_ms` | `full` mode only: the detected-speech measurement (D36, step 5) |
+| `agent_ms` | The agent: in `full` mode the ssh round trip to the agent host (the turn record there splits it further, see [the agent host's records](agent-host.md#reading-the-records)); in `readonly` mode the local Claude Code turn |
+| `tts_ms` | Kokoro rendering the spoken line |
+| `write_ms` | Writing the WAV to the phone |
+| `total_ms` | From the request's head to the last byte written |
+| `audio_in_s`, `audio_out_s` | Seconds of the recording and of the reply, from their WAV headers (absent when the upload is not WAV) |
+| `spoken_chars` | Length of the spoken line |
+
+The same stages, without `write_ms` and with the total up to the moment the headers go
+out, are in the reply header `X-Jarvis-Timing`, e.g.
+`read=4;stt=1702;vad=61;agent=7650;tts=5420;total=14837`. A client may show it; the app
+does not need it.
+
+```sh
+grep ' timing ' "$JARVIS_STATE_DIR/bridge.log" | tail          # on a workstation
+kubectl -n jarvis logs deploy/jarvis -c bridge | grep ' timing ' # in the cluster
+```
 
 ## Picking a Kokoro voice
 

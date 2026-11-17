@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-17
 ---
 # The agent host: installing the side that runs `full` turns
 
@@ -395,7 +395,7 @@ In `state_dir`, owned by the coding session's user, 0700 with files 0600:
 - `records/<turn id>.json`: one per turn. Time, project, session id, the prompt as
   received, the full reply, duration, outcome, and every pending,
   confirmed, cancelled or refused gated action with its read-back. The bridge's log
-  carries the same turn id.
+  carries the same turn id. A turn that ran `claude` also has `timing` (below).
 - `sessions/sessions.json`: the Claude Code session id per project.
 - `actions/<turn id>.jsonl`: the action log, one line per tool call that can change
   something, with the tool, the command or target and the exit status.
@@ -407,8 +407,20 @@ In `state_dir`, owned by the coding session's user, 0700 with files 0600:
 write all of this, so the wrapper trusts none of it: it derives the read-back and the
 hash again from the stored call.
 
+`timing` says where the turn's time went (`agent_host/timing.py`):
+
+| Field | What |
+|---|---|
+| `wrapper_pre_ms` | From the request on stdin to `claude` started: checks, lock, sessions, environment |
+| `claude_wall_ms` | From `claude` started to `claude` exited, by the wrapper's clock |
+| `wrapper_post_ms` | From `claude` exited to the record written: the gate's state, a read-back, a notify, a clone |
+| `duration_ms`, `duration_api_ms`, `num_turns`, `ttft_ms` | What `claude --output-format json` says: its own clock, the time spent waiting on the API, the number of model calls, the time to the first token |
+| `startup_gap_ms` | `claude_wall_ms - duration_ms`: Claude Code's start (node, settings, MCP servers, the session) and exit, outside its own clock |
+| `input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `models` | From claude's `usage` and `modelUsage`. A large `cache_creation_tokens` on a resumed session means the prompt cache had expired and the whole conversation was sent again |
+
 ```sh
 ls -t ~/.local/state/jarvis-agent/records | head          # newest first
+jq -r '[.time[0:19], .duration_s, .timing.duration_api_ms, .timing.startup_gap_ms, .timing.num_turns, .timing.output_tokens] | @tsv' ~/.local/state/jarvis-agent/records/*.json
 jq '{time, project, outcome, prompt, gated_actions}' ~/.local/state/jarvis-agent/records/<turn id>.json
 jq -r 'select(.outcome != "ok") | [.time, .project, .outcome] | @tsv' ~/.local/state/jarvis-agent/records/*.json
 ```
