@@ -183,6 +183,7 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `timeout_s` | no (default `600`) | A turn's process group is killed after this long (`timeout`). |
 | `append_system_prompt_fallback` | no (default `false`) | Set only when a host check shows `--append-system-prompt-file` is missing. |
 | `session_rotation_fallback` | no (default `false`) | Set only when a host check shows `--system-prompt-snapshot off` does not work: a new session per project at the first turn after 04:00. |
+| `session_idle_minutes` | no (default `60`) | A project's next turn starts a new session instead of resuming, when that project's last turn ended more than this many minutes ago. `0`: always resume. See [How long a session lives](#how-long-a-session-lives). |
 | `confirm` | no (default `"on"`) | `"off"` lets gated calls through without a yes. |
 | `confirm_skip` | no | A list of classes that need no yes: `merge`, `deploy`, `delete`, `force`, `api`, `account`, `message`, `create`, `outward`, `root`. Never `self`. |
 | `confirm_program` | no (default `/usr/local/lib/jarvis-agent/confirm`) | The root-owned `confirm on\|off [class]` program: the one way to change the two keys above by voice. |
@@ -334,7 +335,8 @@ What else the records say:
   a trivial question and a follow-up, against 4.3-6.1 s fresh, with a time to first token
   of 4.7-5.4 s against 2.1-3.5 s. When the cache has expired (it lives one hour) the whole
   conversation is written to it again: Mark's turn of 09:47 sent 59,000 tokens to the cache
-  for "can you do web searches" (7.6 s).
+  for "can you do web searches" (7.6 s). Since then a session is not resumed after an hour
+  without a turn: [How long a session lives](#how-long-a-session-lives).
 - **The short-reply text** (a `second_prompt_file`, below) halves the output tokens and
   takes another 0.3 to 1 s off the short turns and 8 s off the status question, with the
   same spoken lines. But two of its three status runs began with one compound read,
@@ -373,6 +375,67 @@ An earlier wording that also said "use only the tool calls the answer needs" mad
 agent bundle its reads into one call; leave tool use alone. The last sentence matters:
 without it the agent put the whole answer into a 480-character summary line, which the
 bridge cuts at 160.
+
+## How long a session lives
+
+Each project has one Claude Code session, resumed turn after turn (`sessions/sessions.json`).
+Mark decided on 2026-11-17 ([#61](https://github.com/MWest2020/jarvis/issues/61)) that it
+does not live forever. Two things end it, besides the rotation fallback and a stored id
+that is not one (change `jarvis-session-lifetime`, `agent_host/lifetime.py`):
+
+- **An hour idle.** When the project's last turn ended more than `session_idle_minutes`
+  ago (default 60), the next turn starts a new session instead of `--resume`. An hour is
+  the prompt cache's lifetime: after it, resuming sends the whole conversation to the cache
+  again (a cold turn on a long session wrote about 83,000 cache tokens), and a resumed
+  60,000 to 90,000-token session costs about 3 s more per turn than a fresh one. A
+  follow-up within the hour resumes as before. What was said more than an hour ago is
+  gone from the conversation; memory and the coding session's notes still apply. `0`
+  switches this off.
+- **The driver closes the conversation.** The turn prompt (`agent_host/prompt.md`) lets
+  Jarvis offer, once, at the end of a request that is clearly finished, to close the
+  conversation ("Shall I close this conversation?"). Not after every turn, not in the
+  middle of a back-and-forth, not when a confirmation is pending or it just asked
+  something, not again after a no. When the driver says to close it ("close it", "that's
+  all", "we're done", "klaar", "sluit maar af") or says yes to the offer, Jarvis says a
+  short goodbye in its SPOKEN SUMMARY line and adds one last line, exactly
+  `SESSION: close`. The wrapper then forgets the project's session id, and the next turn
+  starts fresh.
+
+What the driver hears:
+
+| When | The bridge says |
+|---|---|
+| The first turn after an hour idle | "I started a new session for this project." and then the answer (notice `new_session`, as for a discarded id) |
+| The closing turn | Jarvis's goodbye, e.g. "Goodbye, talk soon." The marker line is never spoken |
+| The turn after a close | Only the answer: he asked for it, and heard the goodbye |
+| A project's very first turn | Only the answer, as before |
+
+The notice order is unchanged: `new_session` is the last of the six, so
+`settings_changed`, `target_changed`, `needs_desk`, `run_alone` and `out_of_budget` go
+before it, and it still rides on a pending read-back. The wire contract is unchanged (no
+new field, no new notice), so a bridge of before this change reads every reply as before;
+the app learns of a close only from the goodbye it speaks.
+
+The close marker's limits, each with a test in `tests/test_agent_host_lifetime.py`:
+
+- It counts only as the reply's **last** non-empty line (or at the end of a last line that
+  is the SPOKEN SUMMARY line, where it is cut off). The same words quoted in the middle of
+  a reply, or followed by the summary, are text.
+- It has **no argument**. `SESSION: close other-project` or `SESSION: close all` is not the
+  marker and closes nothing. The wrapper applies a close to the project the request named,
+  and to nothing else: no other project's session or last-turn time, no pending call, no
+  file outside `sessions/`. All the agent can do with it is shorten its own conversation.
+- It is **ignored while a call waits for a yes**: the conversation is not over, and the
+  confirming turn resumes the session (the record says `close_ignored`). A confirming turn
+  may close it.
+- It is ignored on a turn that failed or timed out.
+- It is cut off before the marker line is taken, so it reaches neither the bridge nor the
+  speech; the record keeps the reply as the agent wrote it.
+
+The agent can write `sessions/` directly, as all of `state_dir` (D40), and so could make a
+project resume or start fresh by itself; the marker adds no reach beyond that. A value in
+`last_turn.json` that is not a past time with a zone is read as unknown, and the session is
+then resumed as before.
 
 ## Checkouts that get read-only turns
 
@@ -567,8 +630,15 @@ In `state_dir`, owned by the coding session's user, 0700 with files 0600:
   received, the full reply, duration, outcome, and every pending,
   confirmed, cancelled or refused gated action with its read-back (a call a subagent made
   included: its hooks are the turn's). The bridge's log carries the same turn id. A turn
-  that ran `claude` also has `timing` (below).
+  that ran `claude` also has `timing` (below) and `session`: `start` is `resumed`, `new`
+  (the project's first turn), `closed` (the turn after a close), `idle` (more than
+  `session_idle_minutes` since the last turn), `discarded` (the stored value was no session
+  id) or `rotated` (the 04:00 fallback); `idle_minutes` is the time since the project's last
+  turn, when known; `end` is `closed` when the agent closed the conversation, or
+  `close_ignored` when it tried while a call waited for a yes.
 - `sessions/sessions.json`: the Claude Code session id per project.
+- `sessions/last_turn.json`: per project, when its last turn ended, or `closed` after
+  the agent closed the conversation ([How long a session lives](#how-long-a-session-lives)).
 - `actions/<turn id>.jsonl`: the action log, one line per tool call that can change
   something, with the tool, the command or target and the exit status.
 - `gate/`: what the gate noted per turn (a refused call, the one permitted repair).
@@ -596,6 +666,7 @@ ls -t ~/.local/state/jarvis-agent/records | head          # newest first
 jq -r '[.time[0:19], .duration_s, .timing.duration_api_ms, .timing.startup_gap_ms, .timing.num_turns, .timing.output_tokens] | @tsv' ~/.local/state/jarvis-agent/records/*.json
 jq '{time, project, outcome, prompt, gated_actions}' ~/.local/state/jarvis-agent/records/<turn id>.json
 jq -r 'select(.outcome != "ok") | [.time, .project, .outcome] | @tsv' ~/.local/state/jarvis-agent/records/*.json
+jq -r '[.time[0:19], .project, .session.start, .session.idle_minutes, .session.end] | @tsv' ~/.local/state/jarvis-agent/records/*.json
 ```
 
 Values shaped like an Anthropic key are redacted before a record is written. sshd logs
@@ -611,6 +682,9 @@ every connection of the bridge's key by itself (`journalctl -u ssh`).
 falls back to the pod's copies, nothing is cloned); an old bridge with a new agent host
 cannot read the reply of a confirming turn that created a repository. Before installing
 that change here, review `project_exclusions` (see [Configuration](#configuration)).
+`jarvis-session-lifetime` changes no wire contract: either side can be updated first.
+`session_idle_minutes` defaults to 60 without a line in `config.toml`; add the line from the
+template to choose another value.
 
 **Claude Code.** The gate depends on how Claude Code treats hooks and settings, and that
 can change with a version. On every version bump on the agent host, **before Jarvis uses

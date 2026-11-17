@@ -34,6 +34,9 @@ DEFAULT_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
 DEFAULT_CONFIRM_PROGRAM = Path("/usr/local/lib/jarvis-agent/confirm")
 DEFAULT_PR_STATUS_COMMAND = ("gh", "pr", "view")
 DEFAULT_RETENTION_DAYS = 90
+# A turn after this many minutes without one starts a new session (change
+# jarvis-session-lifetime): the prompt cache lives an hour. 0: never.
+DEFAULT_SESSION_IDLE_MINUTES = 60
 # After a confirmed `gh repo create` ran (jarvis-general-conversation D53).
 DEFAULT_CLONE_COMMAND = ("gh", "repo", "clone")
 DEFAULT_CLONE_TIMEOUT_S = 45
@@ -100,6 +103,9 @@ class AgentHostConfig:
     # settings, as before.
     voice_model: str | None = None
     voice_effort: str | None = None
+    # A project's next turn starts a new session when its last turn ended
+    # more than this many minutes ago (agent_host.lifetime). 0: always resume.
+    session_idle_minutes: int = DEFAULT_SESSION_IDLE_MINUTES
 
     @property
     def voice_profile(self) -> dict:
@@ -255,6 +261,11 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
     voice_effort = data.get("voice_effort")
     if voice_effort is not None and voice_effort not in EFFORT_LEVELS:
         raise ConfigError(f"voice_effort must be one of {', '.join(EFFORT_LEVELS)}")
+    session_idle_minutes = data.get("session_idle_minutes", DEFAULT_SESSION_IDLE_MINUTES)
+    if not isinstance(session_idle_minutes, int) or isinstance(session_idle_minutes, bool) \
+            or session_idle_minutes < 0:
+        raise ConfigError("session_idle_minutes must be a whole number of minutes, 0 or more "
+                          "(0: never start a new session for being idle)")
 
     return AgentHostConfig(
         enabled=bool(data.get("enabled", True)),
@@ -291,4 +302,5 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
         clone_timeout_s=clone_timeout_s,
         voice_model=voice_model,
         voice_effort=voice_effort,
+        session_idle_minutes=session_idle_minutes,
     )
