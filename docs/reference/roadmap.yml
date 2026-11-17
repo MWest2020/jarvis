@@ -11,6 +11,7 @@ phases:
   - {id: voice-and-speed, name: "Voice and speed", summary: "Mark (2026-11-16): Jarvis wakes on Mark's voice, hands-free, and answers fast; plus talking without a project"}
   - {id: notifications, name: "Notifications", summary: "Jarvis tells the phone that something needs Mark: a build, a question, a reply, a pending confirmation; self-hosted, tailnet-only, no Google"}
   - {id: biometric-confirm, name: "Fingerprint confirmation", summary: "an irreversible action can be released by a signature from the phone that needs Mark's fingerprint, verified on the agent host"}
+  - {id: drive-mode, name: "Drive mode", summary: "the drive as the unit (approved 2026-11-17): where was I, nothing lost, arrivals, a drive log at the desk, then the screen off with the wheel button"}
 done_means:
   - {item: "Change add-voice-bridge proposed (proposal, design, tasks, spec)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/openspec/changes/archive/2026-11-14-add-voice-bridge"}
   - {item: "Change approved by Mark (2026-11-14), his full tasks and spec in", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/1"}
@@ -25,7 +26,15 @@ done_means:
   - {item: "Android app: a spoken round trip on Mark's phone, recorded in the how-to", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/docs/how-to/android-app.md#test-record"}
   - {item: "Android app: main APKs signed with one stable key, so an update installs over the app (key and secrets 2026-11-16, #54)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/54"}
   - {item: "Android app: a release build attached to a GitHub release by CI (task 4.3)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-android-client/tasks.md"}
-  - {item: "Change add-drive-mode (the next phase) proposed (#9); approval waits on Mark: #10 (default: nothing is built until the PR is merged)", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/9"}
+  - {item: "Change add-drive-mode proposed (#9, 2026-11-14) and approved by Mark 2026-11-17 (#10: \"definitely approve\")", status: done, evidence: "https://github.com/MWest2020/jarvis/issues/10"}
+  - {item: "Change add-drive-mode rewritten against what exists (2026-11-17): handoffs replaced by the full agent's gated calls and the desk handoff, the web client by the app, the wake word left to #23, the plugin moved out; seven small phases; merged", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/9"}
+  - {item: "Drive mode 1: the journal on the bridge, \"where was I\" without an agent turn, \"note\"", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#1-journal-recap-and-notes-bridge"}
+  - {item: "Drive mode 2: nothing lost: a turn id runs once, slow turns and dropped connections become arrivals, \"what's new\", \"cancel\", an unheard read-back cancelled", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#2-nothing-lost-bridge"}
+  - {item: "Drive mode 3: the app in the drive (arrival and problem tones, one retry under the same turn id) and Mark's parked test", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#3-the-app-in-the-drive"}
+  - {item: "Drive mode 4: the drive log handed to the agent host; the coding session takes up the notes", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#4-the-drive-log-at-the-desk"}
+  - {item: "Drive mode 5: project by voice, the app following the bridge", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#5-project-by-voice"}
+  - {item: "Drive mode 6: long replies in parts (go on, repeat, back)", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#6-replies-in-parts"}
+  - {item: "Drive mode 7: screen off and the wheel button, then the first use on the road", status: open, evidence: "https://github.com/MWest2020/jarvis/blob/main/openspec/changes/add-drive-mode/tasks.md#7-screen-off-and-the-wheel-button"}
   - {item: "Change jarvis-full-agent proposed (proposal, design, tasks, spec delta); Mark decided 2026-11-15, nothing is built until the PR is reviewed and merged", status: open, evidence: "https://github.com/MWest2020/jarvis/pull/20"}
   - {item: "Full agent, agent host side: the wrapper and per-turn record are built (1a, #34)", status: done, evidence: "https://github.com/MWest2020/jarvis/tree/main/agent_host"}
   - {item: "Full agent, agent host side: the confirmation gate is built (1b1 #43, 1b2 #44): gated calls refused, read back from rules, released once by a grant, in CI with a fake claude", status: done, evidence: "https://github.com/MWest2020/jarvis/pull/44"}
