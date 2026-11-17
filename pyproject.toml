@@ -3,6 +3,8 @@ name = "jarvis-bridge"
 version = "0.1.0"
 description = "Weekend-slice bridge from an Android phone to headless Claude Code."
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "faster-whisper>=1.0",
     # av 17+ no longer accepts open(metadata_errors=...), which faster-whisper 1.2 still
