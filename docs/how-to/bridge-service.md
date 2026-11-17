@@ -54,6 +54,7 @@ your process manager.
 | `JARVIS_WHISPER_LANGUAGE` | no (default: detected per recording) | A language code (`en`, `nl`) to skip Whisper's language detection, which costs a second pass over the recording: on `agent-lxc` (base, int8) 0.8 s of the 1.7-1.9 s a short question takes. Set it only when you speak one language to Jarvis: Dutch speech with `en` comes out as a rough English translation. See "Where a turn's time goes". |
 | `JARVIS_WHISPER_BEAM_SIZE` | no (default `5`) | Whisper's beam width, 1 to 10. `1` (greedy) took another 0.05-0.2 s off with the same transcripts on the test recordings. |
 | `JARVIS_KOKORO_VOICE` | no (default `bm_george`) | A Kokoro voice name. The default is a British male voice; the image also carries `af_heart` (American female). Pick one by ear once the service runs (see below). |
+| `JARVIS_STREAM_REPLIES` | no (default on) | `0`: every client gets the whole WAV, also one that asks for a streamed reply. Unset or `1`: a client that asks gets the reply as it is rendered (see "Streamed replies"). Anything else is refused at start. |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
@@ -339,7 +340,7 @@ recorded audio as the body. Replies:
 
 | Status | When |
 |---|---|
-| 200 | `audio/wav` with the spoken summary. Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken), `X-Jarvis-Session-Id` and `X-Jarvis-Timing` (milliseconds per stage, see "Where a turn's time goes"). Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
+| 200 | `audio/wav` with the spoken summary, or a streamed reply for a client that asks for one (see "Streamed replies" below). Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken), `X-Jarvis-Session-Id` and `X-Jarvis-Timing` (milliseconds per stage, see "Where a turn's time goes"). Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
 | 400 | No project, an unknown project (in `full` mode: a name the agent host would not accept by its shape), an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
 | 409 | That project is still busy with another turn (one turn per session at a time). The lock lives only while that turn runs, so names asked for in `full` mode leave nothing behind. |
@@ -348,7 +349,83 @@ recorded audio as the body. Replies:
 | 408 | The request line and headers did not arrive within 10 seconds in total (any route, before the token is looked at). The connection is closed. |
 | 503 | Eight connections are already open (any route, before the token is looked at). `Retry-After: 5`. |
 
-Every reply closes its connection: the bridge answers HTTP/1.0 and keeps none alive.
+Every reply closes its connection: the bridge answers HTTP/1.0 and keeps none alive (a
+streamed reply's status line says HTTP/1.1, which a chunked body needs, and it closes too).
+
+### Streamed replies
+
+Change [`jarvis-streaming-speech`](../../openspec/changes/jarvis-streaming-speech/design.md)
+(S1 to S8). A client that sends `Accept: audio/L16;rate=24000;channels=1` over HTTP/1.1 (the
+phone app does since 2026-11-17) gets:
+
+```
+HTTP/1.1 200 OK
+Content-Type: audio/L16;rate=24000;channels=1
+Transfer-Encoding: chunked
+Cache-Control: no-store
+Connection: close
+X-Jarvis-Session-Id: …
+X-Jarvis-Summary: …
+X-Jarvis-Timing: read=4;stt=1702;vad=61;agent=7650;total=9430
+```
+
+as soon as the agent has answered, with every `X-Jarvis-*` header a WAV reply would have
+(`X-Jarvis-Needs-Confirmation`, `X-Jarvis-Projects-Changed` too), and then the audio:
+16-bit linear PCM, mono, 24 kHz, **big-endian** (that is what `audio/L16` means, RFC 2586),
+no header, one chunk per sentence. Kokoro renders the next sentence while the phone plays the
+first. A sentence ends at `.`, `!`, `?` or `…` followed by white space and a word that does
+not start in lower case, or at a line break; a sentence shorter than 30 characters is
+rendered together with the next one ("Done." alone would leave a gap of two seconds while
+the next sentence renders). The words and their order are never changed
+(`bridge/tts.py`, `pieces`).
+
+- **Who gets the WAV instead:** a request without that `Accept` value (`*/*`, `audio/wav`,
+  `audio/L16` without `rate=24000`, `channels=2`, `q=0`), an HTTP/1.0 request, and everyone
+  while `JARVIS_STREAM_REPLIES=0`. The WAV reply is exactly as before: HTTP Shortcuts and
+  older apps see no difference. A client tells the two apart by `Content-Type`.
+- **A read-back** (`X-Jarvis-Needs-Confirmation: 1`) is rendered whole, with the same Kokoro
+  call as the WAV reply, before the status line goes out, and only then sent in chunks. It is
+  never split or reordered, and a rendering error is still a 500 with nothing pending.
+- **An error after the headers** (Kokoro fails, or the phone stops reading): the bridge logs
+  it, writes no terminating zero-length chunk and closes the connection. A client sees a cut
+  chunked body (`IncompleteRead` in Python, an `IOException` on Android), never a complete
+  one. In `full` mode a read-back whose stream broke off on the bridge's side is cancelled
+  on the agent host, as one that could not be written before. That rarely happens: a
+  read-back fits in the socket buffers, so the bridge has usually written it, and kept it
+  pending, before the phone plays it. The phone cancels it itself (below).
+
+### Cancelling a read-back the phone did not play to its end
+
+A read-back reply (WAV or stream) carries `X-Jarvis-Confirmation-Id`, the id the agent host
+gave the pending call. When the phone did not play it to its end (a tap, a cut stream, a
+playback error, the screen closed), it sends:
+
+```
+POST /turn/cancel?project=<name>&id=<confirmation id>
+Authorization: Bearer <token>
+```
+
+The bridge answers `no` to the agent host for that call, as for a read-back it could not
+write, and replies `200` with `{"cancelled": true}`. An id that is not pending (already
+answered or cancelled, expired, another read-back, or `readonly` mode) changes nothing:
+`{"cancelled": false}`, also on a second call. A cancel that comes while the bridge is still
+writing the read-back is remembered for 60 seconds and applied when the write ends. No body
+is expected, and none (with or without `Content-Length: 0`) is fine; a body over 10 MB gets
+413. 401 without the token, 400 for a missing project or an id that is not 1 to 64 letters,
+digits, `_` or `-`. A cancel names its project: an id sent for another project cancels
+nothing. The route takes no project lock. If the phone cannot send it (killed, offline),
+the call expires on the agent host after its `expires_s`, at most 60 seconds.
+- `X-Jarvis-Timing` on a streamed reply has no `tts` (nothing is rendered yet when it goes
+  out, except for a read-back); the log line has it.
+
+Try it with curl (`--raw` shows the chunks; the PCM goes to a file):
+
+```sh
+curl -sS --http1.1 -D - -o reply.pcm \
+  -H "Authorization: Bearer $JARVIS_TOKEN" -H 'Accept: audio/L16;rate=24000;channels=1' \
+  --data-binary @question.wav "http://<bridge>:8787/turn?project=demo"
+play -t raw -r 24000 -e signed -b 16 -B -c 1 reply.pcm     # sox
+```
 
 How long a client can keep a connection without a turn running:
 
@@ -403,7 +480,7 @@ Every answered turn writes one INFO line, in the file and on stdout, with number
 (no transcript, no summary):
 
 ```
-project=jarvis-home timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=5420 write_ms=3 total_ms=14840 audio_in_s=5.5 audio_out_s=9.9 spoken_chars=143
+project=jarvis-home timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=5420 write_ms=3 first_audio_ms=14837 total_ms=14840 reply=wav audio_in_s=5.5 audio_out_s=9.9 spoken_chars=143
 ```
 
 | Field | What |
@@ -412,10 +489,12 @@ project=jarvis-home timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=
 | `stt_ms` | Decoding the recording and Whisper's transcript |
 | `vad_ms` | `full` mode only: the detected-speech measurement (D36, step 5) |
 | `agent_ms` | The agent: in `full` mode the ssh round trip to the agent host (the turn record there splits it further, see [the agent host's records](agent-host.md#reading-the-records)); in `readonly` mode the local Claude Code turn |
-| `tts_ms` | Kokoro rendering the spoken line |
-| `write_ms` | Writing the WAV to the phone |
+| `tts_ms` | Kokoro rendering the spoken line (for a streamed reply: all its sentences together) |
+| `write_ms` | Writing the WAV to the phone (for a streamed reply: all its chunks together; rendering and writing take turns) |
+| `first_audio_ms` | From the request's head to the first audio byte written: for a WAV the start of the whole file, for a streamed reply the first sentence. The number to compare between the two |
 | `total_ms` | From the request's head to the last byte written |
-| `audio_in_s`, `audio_out_s` | Seconds of the recording and of the reply, from their WAV headers (absent when the upload is not WAV) |
+| `reply` | `wav`, `stream`, or `stream_cut` when a streamed reply broke off (see "Streamed replies") |
+| `audio_in_s`, `audio_out_s` | Seconds of the recording and of the reply, from their WAV headers, or for a streamed reply from the bytes sent (`audio_in_s` is absent when the upload is not WAV) |
 | `spoken_chars` | Length of the spoken line |
 
 The same stages, without `write_ms` and with the total up to the moment the headers go
@@ -463,7 +542,7 @@ as a loose English translation, so `en` is for an English-only driver.
 
 Only the summary line is spoken (at most 160 characters), so speech is already as short
 as the bridge can make it without saying less. Kokoro's `speed=1.15` rendered 7 % faster.
-**Speech cannot start sooner** without streaming: the agent host answers once, at the end
+**Speech cannot start sooner** without streaming (built since, see "Streamed replies"): the agent host answers once, at the end
 of the turn, and the WAV goes out with a `Content-Length` after it is complete. Streaming
 is the next step: Kokoro yields audio per sentence, and the first sentence of a summary
 (about 70 characters) is ready after about 2.5 s instead of 5.5 s; the rest renders faster
@@ -471,6 +550,30 @@ than it plays. That needs a streamed response (a WAV header without a length, or
 and a player on the phone that starts on the first bytes (`AudioTrack` instead of the
 in-memory `MediaPlayer`): about half a day on the bridge and a day in the app, for about 3
 seconds off the time to the first word of every turn.
+
+### Streaming measured (2026-11-17)
+
+Kokoro run once on `agent-lxc` (4 vCPUs, the pod's size), voice `bm_george`, after a warm-up,
+with summaries of the usual length. "WAV" is the whole line rendered, the moment the old
+reply could start to go out; "first piece" is when the streamed reply's first chunk is ready.
+
+| Summary | Characters | WAV | First piece | All pieces | Speech |
+|---|---|---|---|---|---|
+| "I can't search the web from here. I can read the repository …" | 115 | 4.22 s | **1.68 s** | 4.64 s | 8.8 s |
+| "The pull request is green and has one approving review. Two comments …" | 116 | 5.43 s | **3.15 s** | 6.19 s | 9.1 s |
+| "Done. The branch is pushed and the build started; it takes about four minutes. …" | 117 | 5.74 s | 1.04 s ("Done." alone) | 7.42 s | 9.6 s |
+
+- The first word comes 2.3 to 2.5 s sooner on the bridge, plus the download of a WAV of about
+  400 KB that the phone no longer waits for.
+- Rendering in pieces costs 0.4 to 1.7 s more in all, but that time falls while the phone is
+  already speaking: each later piece was ready before the one before it had been spoken, except
+  after "Done.". There the next sentence took about 3 s to render after 0.6 s of speech, a gap
+  of over two seconds. So a sentence shorter than 30 characters now goes with the next one; for
+  the third summary the first piece is then "Done. The branch is pushed …" (78 characters), by
+  the rate above about 3.3 s, still about 2.4 s before the WAV (estimated, not run again).
+- On the phone the time to the first word is `first_audio_ms` in the log line plus the
+  tailnet and the 300 ms pre-roll; it is measured on the first turns with the new APK (task 3.3
+  of the change).
 
 ## Picking a Kokoro voice
 

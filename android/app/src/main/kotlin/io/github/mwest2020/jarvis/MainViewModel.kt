@@ -12,6 +12,11 @@ import io.github.mwest2020.jarvis.core.Built
 import io.github.mwest2020.jarvis.core.ListOutcome
 import io.github.mwest2020.jarvis.core.ListRequest
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.Playback
+import io.github.mwest2020.jarvis.core.PlaybackEnd
+import io.github.mwest2020.jarvis.core.CancelOutcome
+import io.github.mwest2020.jarvis.core.ReadBack
+import io.github.mwest2020.jarvis.core.ReadBackCancels
 import io.github.mwest2020.jarvis.core.ProjectEntry
 import io.github.mwest2020.jarvis.core.ProjectList
 import io.github.mwest2020.jarvis.core.ProjectMenu
@@ -24,6 +29,7 @@ import io.github.mwest2020.jarvis.core.TurnOutcome
 import io.github.mwest2020.jarvis.core.TurnRequest
 import io.github.mwest2020.jarvis.core.TurnRequests
 import io.github.mwest2020.jarvis.core.Wav
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +40,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.GeneralSecurityException
 import java.security.ProviderException
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 data class UiState(
     val phase: Phase = Phase.IDLE,
@@ -69,6 +77,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val gesture = TalkGesture()
     private val tone = WaitTone()
     private val player = ReplyPlayer()
+    private val streamPlayer = StreamPlayer()
     private val recorder = Recorder(onLimitReached = {
         viewModelScope.launch(Dispatchers.Main) {
             if (state.value.phase == Phase.RECORDING) stopAndSend()
@@ -81,6 +90,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Main thread only. A reply said a new project is ready: fetch the list once the reply has
     // finished playing or was stopped (D56).
     private var refreshAfterReply = false
+    // The read-back that is playing, and a cancel that has not reached the bridge yet: a
+    // read-back that does not play to its end is cancelled there, before any next turn
+    // (jarvis-streaming-speech S6).
+    private val readBacks = ReadBackCancels()
     // A refresh was asked for while one was running: one more follows it.
     private var refreshAgain = false
     // The message the last failed list fetch put on screen. A good fetch clears only that one,
@@ -199,7 +212,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             TalkAction.STOP_AND_SEND -> stopAndSend()
             TalkAction.STOP_PLAYBACK -> {
                 player.stop()
+                streamPlayer.stop()
                 _state.update { it.copy(phase = Phase.IDLE) }
+                playbackEnded(PlaybackEnd.STOPPED)
                 afterReply()
             }
             TalkAction.NONE -> Unit
@@ -243,16 +258,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     tone.tick()
                 }
             }
-            val outcome = withContext(Dispatchers.IO) {
-                // The token is read here, used for this one request, and not kept.
-                when (
-                    val built = TurnRequests.build(
-                        current.bridgeUrl, tokens.load(), current.project, typedList = !current.projectsFromBridge,
-                    )
-                ) {
-                    is Built.Refused -> TurnOutcome.Failed(built.failure)
-                    is Built.Ok -> send(built.value, Wav.encode(pcm))
+            // A streamed reply holds an open connection: if this coroutine is cancelled as the
+            // reply comes back (the screen closed), it is closed here instead of leaking.
+            val handed = AtomicReference<TurnOutcome?>(null)
+            val outcome = try {
+                withContext(Dispatchers.IO) {
+                    // An unheard read-back still pending on the bridge is cancelled first; if
+                    // that fails, this turn is not sent (a yes must never confirm it).
+                    val refused = readBacks.clearBeforeTurn(SystemClock.elapsedRealtime()) {
+                        cancelOnBridge(current, it)
+                    }
+                    if (refused != null) {
+                        TurnOutcome.Failed(refused)
+                    } else {
+                        // The token is read here, used for this one request, and not kept.
+                        when (
+                            val built = TurnRequests.build(
+                                current.bridgeUrl, tokens.load(), current.project, typedList = !current.projectsFromBridge,
+                            )
+                        ) {
+                            is Built.Refused -> TurnOutcome.Failed(built.failure)
+                            is Built.Ok -> send(built.value, Wav.encode(pcm))
+                        }
+                    }.also { handed.set(it) }
                 }
+            } catch (cancelled: CancellationException) {
+                (handed.get() as? TurnOutcome.Streamed)?.reply?.close()
+                throw cancelled
             }
             ticking.cancel()
             when (outcome) {
@@ -262,6 +294,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // A new project is ready on the agent host (jarvis-general-conversation D56):
                     // the list is fetched again once this reply has played.
                     refreshAfterReply = outcome.projectsChanged
+                    startedReadBack(current.project, outcome.needsConfirmation, outcome.confirmationId)
                     player.play(outcome.wav) { played ->
                         _state.update {
                             when {
@@ -270,12 +303,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 else -> it.copy(phase = Phase.IDLE, error = "The reply could not be played.")
                             }
                         }
+                        playbackEnded(if (played) PlaybackEnd.PLAYED else PlaybackEnd.FAILED)
+                        afterReply()
+                    }
+                }
+                is TurnOutcome.Streamed -> {
+                    // jarvis-streaming-speech: the headers are in and the audio is coming. The
+                    // summary shows now; the first sentence plays as soon as it has arrived.
+                    val reply = outcome.reply
+                    _state.update { it.copy(phase = Phase.PLAYING, summary = reply.summary, error = null) }
+                    refreshAfterReply = reply.projectsChanged
+                    startedReadBack(current.project, reply.needsConfirmation, reply.confirmationId)
+                    streamPlayer.play(reply) { end ->
+                        _state.update {
+                            when {
+                                it.phase != Phase.PLAYING -> it
+                                end == PlaybackEnd.PLAYED -> it.copy(phase = Phase.IDLE)
+                                else -> it.copy(phase = Phase.IDLE, error = Playback.message(end))
+                            }
+                        }
+                        playbackEnded(end)
                         afterReply()
                     }
                 }
             }
         }
     }
+
+    private fun startedReadBack(project: String, needsConfirmation: Boolean, id: String?) {
+        if (needsConfirmation && !id.isNullOrEmpty()) {
+            readBacks.started(project, id, SystemClock.elapsedRealtime())
+        } else {
+            readBacks.played()
+        }
+    }
+
+    /**
+     * A reply has ended. A read-back that did not play to its end was not heard: it is queued
+     * and the bridge is told to cancel it (`POST /turn/cancel`); the screen says so. When that
+     * fails the cancel stays queued and goes out again before the next turn. Main thread.
+     */
+    private fun playbackEnded(end: PlaybackEnd) {
+        if (end == PlaybackEnd.PLAYED) {
+            readBacks.played()
+            return
+        }
+        val item = readBacks.notPlayed(SystemClock.elapsedRealtime()) ?: return
+        val settings = state.value
+        // No new turn until the bridge has been told: a yes must never overtake the cancel.
+        _state.update { it.copy(phase = Phase.WAITING) }
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) { cancelOnBridge(settings, item) }
+            val message = if (outcome is CancelOutcome.Done) {
+                readBacks.sent(item)
+                ReadBack.CANCELLED
+            } else {
+                ReadBack.NOT_CANCELLED
+            }
+            _state.update { it.copy(phase = Phase.IDLE, error = message) }
+        }
+    }
+
+    /** Blocking: the cancel request for one read-back, with the same route rules as a turn. */
+    private fun cancelOnBridge(settings: UiState, item: ReadBackCancels.Item): CancelOutcome =
+        when (val built = TurnRequests.cancel(settings.bridgeUrl, tokens.load(), item.project, item.id)) {
+            is Built.Refused -> CancelOutcome.Failed(built.failure)
+            is Built.Ok -> {
+                val request = built.value
+                val client = if (request.cleartext) route.boundClient() else BridgeClient()
+                client?.cancel(request) ?: CancelOutcome.Failed(TurnErrors.tailscaleOff())
+            }
+        }
 
     /** The reply has finished playing, or was stopped: the refresh it asked for, if any. */
     private fun afterReply() {
@@ -378,6 +476,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         recorder.stop()
         player.stop()
+        streamPlayer.stop()
+        // The screen is gone while a read-back plays: cancel it on a thread of its own, the
+        // view model's scope is already cancelled. If the process dies first, the agent host
+        // drops the call when it expires (at most a minute).
+        readBacks.outstanding(SystemClock.elapsedRealtime())?.let { item ->
+            val settings = state.value
+            thread(name = "jarvis-cancel-read-back") {
+                try {
+                    cancelOnBridge(settings, item)
+                } catch (_: RuntimeException) {
+                    // Best effort; the call expires by itself.
+                }
+            }
+        }
         tone.release()
     }
 

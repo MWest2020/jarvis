@@ -74,6 +74,17 @@ def _behind_tailscale_proxy() -> bool:
     raise ConfigError(f"JARVIS_BEHIND_TAILSCALE_PROXY must be 1 or unset, not {raw!r}")
 
 
+def _stream_replies() -> bool:
+    """jarvis-streaming-speech S1: a client that asks gets a streamed reply, unless
+    JARVIS_STREAM_REPLIES=0 says every client gets the WAV."""
+    raw = os.environ.get("JARVIS_STREAM_REPLIES", "").strip()
+    if raw in ("", "1"):
+        return True
+    if raw == "0":
+        return False
+    raise ConfigError(f"JARVIS_STREAM_REPLIES must be 0, 1 or unset, not {raw!r}")
+
+
 def _check_private_host(host: str, *, behind_proxy: bool = False) -> str:
     # AGENTS.md: reachable only over a private network, never public.
     try:
@@ -427,6 +438,8 @@ class BridgeConfig:
     confirm_min_speech_s: float = DEFAULT_CONFIRM_MIN_SPEECH_S
     whisper_beam_size: int = DEFAULT_WHISPER_BEAM_SIZE
     whisper_language: str | None = None
+    # jarvis-streaming-speech S1: stream a reply to a client that asks for it.
+    stream_replies: bool = True
 
     @property
     def whisper_options(self) -> dict:
@@ -539,6 +552,7 @@ def load_config() -> BridgeConfig:
         kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "bm_george"),
         whisper_beam_size=_whisper_beam_size(),
         whisper_language=_whisper_language(),
+        stream_replies=_stream_replies(),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,

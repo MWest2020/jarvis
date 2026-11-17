@@ -23,6 +23,19 @@ def _wav(seconds: float, rate: int = 16000) -> bytes:
     return buffer.getvalue()
 
 
+def timing_lines(caplog, count: int, *, within: float = 5.0) -> list[str]:
+    """The `timing` log lines, once `count` of them are there. The handler logs the line
+    after the reply's last byte is written, on its own (daemon) thread, so a client can
+    have read the whole reply before the line exists: wait for it, with a deadline."""
+    import time
+    deadline = time.monotonic() + within
+    while True:
+        lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
+        if len(lines) >= count or time.monotonic() >= deadline:
+            return lines
+        time.sleep(0.01)
+
+
 class Clock:
     def __init__(self):
         self.now = 100.0
@@ -71,10 +84,12 @@ def test_a_wrapped_function_is_timed_on_every_call():
 
 
 def test_a_full_turn_sends_the_timing_header_and_logs_one_line(tmp_path, monkeypatch, caplog):
+    # For the whole test, not a with-block: the line comes after the reply (timing_lines).
+    caplog.set_level(logging.INFO, logger="bridge")
     b = Bridge(tmp_path, monkeypatch)
     try:
-        with caplog.at_level(logging.INFO, logger="bridge"):
-            response, said = b.say("what is open?")
+        response, said = b.say("what is open?")
+        lines = timing_lines(caplog, 1)
     finally:
         b.stop()
     assert said == "WAV:Done on the agent host."
@@ -82,7 +97,6 @@ def test_a_full_turn_sends_the_timing_header_and_logs_one_line(tmp_path, monkeyp
     names = [part.split("=")[0] for part in header.split(";")]
     assert names == ["read", "stt", "vad", "agent", "tts", "total"]
     assert all(part.split("=")[1].isdigit() for part in header.split(";"))
-    lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
     assert len(lines) == 1
     line = lines[0]
     assert line.startswith("project=demo timing ")

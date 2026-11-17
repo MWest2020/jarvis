@@ -52,6 +52,27 @@ class BridgeClient(
                 val body = connection.errorStream?.use { readLimited(it, ERROR_BODY_LIMIT) }
                 return TurnOutcome.Failed(TurnErrors.fromStatus(status, body?.toString(Charsets.UTF_8).orEmpty()))
             }
+            val contentType = connection.contentType
+            if (StreamFormat.isStream(contentType)) {
+                // jarvis-streaming-speech: the headers are in, the audio is still coming. The
+                // connection is handed to the reply, which the player closes.
+                val rate = StreamFormat.sampleRate(contentType) ?: return TurnOutcome.Failed(
+                    TurnFailure(FailureKind.BAD_REPLY, "The bridge's reply is not playable audio."),
+                )
+                val open = connection
+                val reply = StreamedReply(
+                    summary = TurnErrors.decodeSummary(open.getHeaderField("X-Jarvis-Summary")),
+                    sessionId = open.getHeaderField("X-Jarvis-Session-Id"),
+                    projectsChanged = open.getHeaderField("X-Jarvis-Projects-Changed")?.trim() == "1",
+                    needsConfirmation = open.getHeaderField("X-Jarvis-Needs-Confirmation")?.trim() == "1",
+                    confirmationId = open.getHeaderField(CONFIRMATION_HEADER)?.trim(),
+                    sampleRate = rate,
+                    reader = PcmReader(open.inputStream),
+                    onClose = { open.disconnect() },
+                )
+                connection = null
+                return TurnOutcome.Streamed(reply)
+            }
             val audio = connection.inputStream.use { readLimited(it, REPLY_LIMIT + 1) }
             if (audio.size < Wav.HEADER_SIZE || audio.size > REPLY_LIMIT) {
                 return TurnOutcome.Failed(
@@ -63,6 +84,8 @@ class BridgeClient(
                 summary = TurnErrors.decodeSummary(connection.getHeaderField("X-Jarvis-Summary")),
                 sessionId = connection.getHeaderField("X-Jarvis-Session-Id"),
                 projectsChanged = connection.getHeaderField("X-Jarvis-Projects-Changed")?.trim() == "1",
+                needsConfirmation = connection.getHeaderField("X-Jarvis-Needs-Confirmation")?.trim() == "1",
+                confirmationId = connection.getHeaderField(CONFIRMATION_HEADER)?.trim(),
             )
         } catch (error: IOException) {
             TurnOutcome.Failed(TurnErrors.fromException(error))
@@ -107,6 +130,38 @@ class BridgeClient(
         }
     }
 
+    /**
+     * `POST /turn/cancel` (jarvis-streaming-speech S6): the read-back was not played to its end.
+     * The same route rules as [turn]. The bridge answers `{"cancelled": true|false}`.
+     */
+    fun cancel(request: TurnRequest): CancelOutcome {
+        var connection: HttpURLConnection? = null
+        return try {
+            if (request.cleartext) notRouted(request.url)?.let { return CancelOutcome.Failed(it) }
+            connection = (open(request.url) as HttpURLConnection).apply {
+                requestMethod = "POST"
+                instanceFollowRedirects = false
+                useCaches = false
+                connectTimeout = connectTimeoutMs
+                readTimeout = LIST_READ_TIMEOUT_MS
+                doOutput = true
+                request.headers.forEach { (name, value) -> setRequestProperty(name, value) }
+            }
+            connection.outputStream.use { }
+            val status = connection.responseCode
+            if (status != 200) {
+                val body = connection.errorStream?.use { readLimited(it, ERROR_BODY_LIMIT) }
+                return CancelOutcome.Failed(TurnErrors.fromStatus(status, body?.toString(Charsets.UTF_8).orEmpty()))
+            }
+            val body = connection.inputStream.use { readLimited(it, ERROR_BODY_LIMIT) }.toString(Charsets.UTF_8)
+            CancelOutcome.Done(cancelled = CANCELLED_TRUE.containsMatchIn(body))
+        } catch (error: IOException) {
+            CancelOutcome.Failed(TurnErrors.fromException(error))
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     /** Null when a plain-http request to [url] may go out; otherwise why not. Throws on a failed lookup. */
     private fun notRouted(url: URL): TurnFailure? {
         if (!requireTailnetForCleartext) return null
@@ -133,5 +188,7 @@ class BridgeClient(
         const val ERROR_BODY_LIMIT = 2_048
         const val REPLY_LIMIT = 32 * 1024 * 1024
         const val LIST_READ_TIMEOUT_MS = 20_000
+        const val CONFIRMATION_HEADER = "X-Jarvis-Confirmation-Id"
+        private val CANCELLED_TRUE = Regex("\"cancelled\"\\s*:\\s*true")
     }
 }

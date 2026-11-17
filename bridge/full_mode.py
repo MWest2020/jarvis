@@ -41,6 +41,11 @@ logger = logging.getLogger("bridge.full")
 # D36, step 4: the bridge keeps a read-back's id and hash this long. The agent
 # host keeps the call for the same 60 seconds, counted from a little earlier.
 PENDING_TTL_S = 60.0
+# A cancel from the phone can arrive while the bridge is still writing the read-back
+# (jarvis-streaming-speech S6): its id is remembered this long, at most this many, so
+# that delivered() cancels instead of keeping it.
+EARLY_CANCEL_TTL_S = PENDING_TTL_S
+MAX_EARLY_CANCELS = 32
 
 CANCELLED = "Cancelled."
 # The same words as for a silent recording (server.NOT_HEARD).
@@ -151,6 +156,9 @@ class Outcome:
     to_keep: tuple[PendingConfirmation, float] | None = None   # with its deadline
     # A new project is ready on the agent host: the phone fetches its list again.
     projects_changed: bool = False
+    # The read-back's id, sent to the phone so it can cancel a read-back it did not
+    # play to the end (jarvis-streaming-speech S6). Empty when nothing is read back.
+    confirmation_id: str = ""
 
 
 class PendingStore:
@@ -190,6 +198,16 @@ class PendingStore:
                 return None
             return entry
 
+    def take_if(self, project: str, confirmation_id: str) -> tuple[PendingConfirmation, float] | None:
+        """Remove the project's pending confirmation only when it has this id; None when
+        there is none, it is another one (left as it is), or it is too late."""
+        with self._lock:
+            entry = self._pending.get(project)
+            if entry is None or entry[0].id != confirmation_id:
+                return None
+            del self._pending[project]
+            return entry if self._clock() < entry[1] else None
+
     def take(self, project: str) -> PendingConfirmation | None:
         entry = self.take_entry(project)
         return None if entry is None else entry[0]
@@ -205,6 +223,10 @@ class FullMode:
         self._no = frozenset(confirm_no)
         self._min_speech_s = min_speech_s
         self._pending = pending if pending is not None else PendingStore()
+        # delivered() and cancel_read_back() decide under this lock, so a cancel that
+        # comes while the read-back is still being written is never lost.
+        self._delivery_lock = threading.Lock()
+        self._early_cancels: dict[tuple[str, str], float] = {}
 
     def project_names(self, fallback: Callable[[], list[str]]) -> tuple[list[str], str]:
         """The phone's project list in `full` mode (D52): the agent host's, or, when
@@ -284,8 +306,47 @@ class FullMode:
         """The reply was synthesised and written to the phone. Only now does a
         read-back count as heard, and only now can a yes release it. The time is
         counted from when it arrived, not from now."""
-        if outcome.to_keep is not None:
-            self._pending.put_until(project.name, *outcome.to_keep)
+        if outcome.to_keep is None:
+            return
+        confirmation = outcome.to_keep[0]
+        with self._delivery_lock:
+            cancelled = self._early_cancels.pop((project.name, confirmation.id), None) is not None
+            if not cancelled:
+                self._pending.put_until(project.name, *outcome.to_keep)
+        if cancelled:
+            logger.warning("project=%s agent=full: the phone cancelled the read-back before it "
+                           "was written to the end; the pending call is cancelled", project.name)
+            self._cancel(project, confirmation)
+
+    def cancel_read_back(self, project: ProjectConfig, confirmation_id: str) -> bool:
+        """The phone did not play the read-back to its end (a tap, a cut stream, a
+        playback error, the app closed): it was not heard, so it may not stay pending.
+        The agent host gets a `no`, as for a read-back that could not be written
+        (undelivered). True when a pending read-back with this id was cancelled now.
+
+        Idempotent and safe late: an id that is not pending (answered, expired, already
+        cancelled, or another read-back) changes nothing pending. When the reply is
+        still being written, the id is remembered and delivered() cancels it.
+        """
+        with self._delivery_lock:
+            entry = self._pending.take_if(project.name, confirmation_id)
+            if entry is None:
+                self._remember_early_cancel(project.name, confirmation_id)
+        if entry is None:
+            return False
+        logger.warning("project=%s agent=full: the phone did not play the read-back to its "
+                       "end; the pending call is cancelled", project.name)
+        self._cancel(project, entry[0])
+        return True
+
+    def _remember_early_cancel(self, project: str, confirmation_id: str) -> None:
+        now = time.monotonic()
+        for key, until in list(self._early_cancels.items()):
+            if until <= now:
+                del self._early_cancels[key]
+        while len(self._early_cancels) >= MAX_EARLY_CANCELS:
+            del self._early_cancels[next(iter(self._early_cancels))]
+        self._early_cancels[(project, confirmation_id)] = now + EARLY_CANCEL_TTL_S
 
     def undelivered(self, project: ProjectConfig, outcome: Outcome) -> None:
         """The reply could not be spoken or sent. A read-back nobody heard is not
@@ -323,7 +384,8 @@ class FullMode:
                 # Nothing ran and nothing was refused for good. The read-back is put
                 # back as it was, same id, same deadline: the yes is not lost.
                 self._pending.put_until(project.name, *answered)
-                return Outcome(SAY_YES_AGAIN, needs_confirmation=True)
+                return Outcome(SAY_YES_AGAIN, needs_confirmation=True,
+                               confirmation_id=answered[0].id)
             news = exc.project
             line = _failure_line(exc, confirmed=confirm is not None)
             return Outcome(_with_news(line, news, typed_list=typed_list), exc.turn_id,
@@ -342,7 +404,8 @@ class FullMode:
         spoken = _with_news(turn.spoken, news, typed_list=typed_list,
                             before=turn.confirmation is not None)
         return Outcome(spoken, turn.ref, turn.confirmation is not None, to_keep,
-                       projects_changed=news is not None and news.ready)
+                       projects_changed=news is not None and news.ready,
+                       confirmation_id=turn.confirmation.id if turn.confirmation else "")
 
     def _fallback(self, project: ProjectConfig, prompt: str, reason: str) -> Outcome:
         """The one turn answered read-only instead, saying so first (D30)."""

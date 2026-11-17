@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-17
 ---
 # The Android app: install, set up, use
 
@@ -132,6 +132,13 @@ project once.
 - A beep confirms the recording has gone out; a soft tick every three seconds means the
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
+- Since 2026-11-17 the reply starts while it is still arriving (change
+  [`jarvis-streaming-speech`](../../openspec/changes/jarvis-streaming-speech/design.md)): the
+  app asks the bridge for a streamed reply, the tick stops and the summary appears as soon as
+  the agent has answered, and the first sentence plays about two seconds later while the
+  bridge renders the next one. Before, the whole reply was rendered and downloaded first,
+  about three seconds more. A bridge from before that date sends the whole WAV, and the app
+  plays it as before; nothing needs to be set.
 - The summary (and an error) can be selected: long-press it to copy a link or a command.
 - When a reply says a new project is ready (the bridge's header
   `X-Jarvis-Projects-Changed: 1`), the app fetches the project list again by itself once the
@@ -160,6 +167,11 @@ project once.
 | The recording is too large | 413 | Ask a shorter question |
 | The bridge is busy with other connections | 503: the bridge already serves its maximum of eight connections | Wait a few seconds, try again |
 | The agent turn failed on the bridge | 502 | Try again; details are in the bridge's log |
+| Cancelled. Nothing was confirmed. | A read-back (a reply waiting for your yes) did not play to its end: you tapped, it broke off, or it could not be played. The app cancelled it on the bridge | Ask again if you still want it |
+| The read-back was stopped, but the bridge could not be told yet. The app tells it before your next question; do not say yes to it. | As above, but the cancel did not reach the bridge; it stays queued | Nothing; the next question sends it first |
+| I couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a minute. | The queued cancel failed again before this question; the question was not sent | Check Tailscale and the bridge; after a minute the read-back has expired and questions go again |
+| The spoken reply broke off. Its text is above. | A streamed reply stopped before its end: speech failed on the bridge, or the connection went. What arrived has played; the summary on screen is the whole spoken text | Read it; if it happens often, check the bridge's log for `reply=stream_cut` |
+| The reply could not be played. | The phone could not play the audio (no audio output, or a format it does not take) | Try again; restart the app |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
 
 ## Why plain HTTP, and why only there
@@ -258,13 +270,51 @@ touches `android/`, and on `main`.
 
 ```sh
 cd android
-./gradlew :core:test                 # request, errors, WAV, address check; no Android SDK needed
+./gradlew :core:test                 # request, errors, WAV, stream reader, address check; no Android SDK needed
 ./gradlew check :app:assembleDebug   # lint, the dependency check, the APK; needs the Android SDK
 ```
 
 - `core/` is plain Kotlin and holds everything that can be tested without a phone. Its
   tests talk to a real HTTP server on loopback that behaves like the bridge.
 - `app/` is the Android part: microphone, playback, Keystore, screens.
+
+### How a streamed reply is played
+
+- The request says `Accept: audio/L16;rate=24000;channels=1, audio/wav;q=0.5`. The reply's
+  `Content-Type` decides: `audio/L16` is played as a stream, `audio/wav` as before
+  (`MediaPlayer`, from memory). An `audio/L16` the app cannot play (not mono, a rate outside
+  8 to 48 kHz) is "not playable audio".
+- `:core` reads the body (`PcmReader` in `StreamedReply.kt`): big-endian samples, a sample cut
+  in two by a read put together again, at most 32 MB, and a body that breaks off (no
+  terminating chunk) as an error.
+- `:app` writes the samples to an `AudioTrack` in streaming mode that starts once 300 ms of
+  audio is buffered, so a short hiccup on the network is not heard (`StreamPlayer` in
+  `Audio.kt`). From Android 12 the buffer holds a second; before, the buffer is the 300 ms
+  (a streaming track there starts only when its buffer is full). A tap stops playback within
+  about a tenth of a second and closes the connection. Nothing is written to storage.
+
+### A read-back that you did not hear to its end
+
+In `full` mode a reply that waits for your spoken yes (a read-back) is kept pending by the
+bridge as soon as it has sent it, which is before the phone has played it. So when a
+read-back does not play to its end (you tap, the stream breaks off, the phone cannot play
+it, or the app's screen closes while it plays) the app tells the bridge
+(`POST /turn/cancel`, with the read-back's id from `X-Jarvis-Confirmation-Id`), the bridge
+answers `no` to the agent host, and the screen says **"Cancelled. Nothing was confirmed."**
+The button takes no new question until the bridge has answered (normally a second or two),
+so a yes cannot overtake the cancel. A later yes is then an ordinary question. Ask again to
+hear the read-back again.
+
+When the app could not reach the bridge for that, it says "The read-back was stopped, but
+the bridge could not be told yet. The app tells it before your next question; do not say yes
+to it." The cancel stays queued: before the next question is sent the app tries again, and if
+that still fails it does not send the question (the recording is not uploaded) and says "I
+couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a
+minute." A minute after the read-back arrived the queued cancel is dropped: the bridge no
+longer keeps the read-back by then. When the app is killed while a read-back plays, nothing
+tells the bridge, and the call expires by itself after at most a minute. Do not say yes in
+that minute. Leaving the app
+(home button) does not stop a reply; it plays to its end.
 - Versions are exact, in `android/gradle/libs.versions.toml`. The Gradle wrapper is pinned
   by checksum.
 - `:app:checkSovereignDependencies` fails the build on any runtime dependency outside

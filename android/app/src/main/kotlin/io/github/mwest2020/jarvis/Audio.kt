@@ -5,12 +5,21 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaDataSource
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.ToneGenerator
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import io.github.mwest2020.jarvis.core.PlaybackEnd
+import io.github.mwest2020.jarvis.core.StreamFormat
+import io.github.mwest2020.jarvis.core.StreamedReply
 import io.github.mwest2020.jarvis.core.Wav
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import kotlin.concurrent.thread
 
 /**
@@ -203,5 +212,169 @@ class ReplyPlayer {
         override fun getSize(): Long = bytes.size.toLong()
 
         override fun close() = Unit
+    }
+}
+
+/**
+ * Plays a streamed reply while it arrives (change jarvis-streaming-speech, S7): an
+ * [AudioTrack] in [AudioTrack.MODE_STREAM] that starts once [StreamFormat.PREROLL_MS] of audio
+ * is buffered (the jitter buffer). One worker thread reads the connection and owns the track:
+ * every call on the track is made there, so a stop can never race its release. Nothing is
+ * stored.
+ */
+class StreamPlayer {
+    private val main = Handler(Looper.getMainLooper())
+
+    // Main thread only.
+    private var current: Session? = null
+
+    private class Session(val reply: StreamedReply) {
+        @Volatile
+        var stopped = false
+    }
+
+    /** [onDone] runs on the main thread when the reply has played, broke off or failed; never after [stop]. */
+    fun play(reply: StreamedReply, onDone: (PlaybackEnd) -> Unit) {
+        stop()
+        val session = Session(reply)
+        current = session
+        thread(name = "jarvis-reply") {
+            val end = try {
+                playAll(session)
+            } catch (_: RuntimeException) {
+                // Whatever the audio stack throws: say so on screen, never crash the app.
+                PlaybackEnd.FAILED
+            } finally {
+                session.reply.close()
+            }
+            main.post {
+                if (current === session && !session.stopped) {
+                    current = null
+                    onDone(end)
+                }
+            }
+        }
+    }
+
+    /**
+     * Stops: the worker sees the flag within one read or write (about 85 ms of audio), pauses
+     * and empties the track and releases it. Closing the connection unblocks a read that waits
+     * on the network; that happens off the main thread.
+     */
+    fun stop() {
+        val session = current ?: return
+        current = null
+        session.stopped = true
+        thread(name = "jarvis-reply-close") { session.reply.close() }
+    }
+
+    private fun playAll(session: Session): PlaybackEnd {
+        val rate = session.reply.sampleRate
+        val minBuffer = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBuffer <= 0) return PlaybackEnd.FAILED
+        val preroll = StreamFormat.prerollSamples(rate)
+        // From Android 12 the start threshold can be set apart from the buffer, so the buffer can
+        // hold a second against network hiccups. Before, a streaming track starts only when its
+        // buffer is full, so the buffer is the pre-roll.
+        val thresholdApi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        val bufferBytes = maxOf(
+            minBuffer,
+            Wav.BYTES_PER_SAMPLE * if (thresholdApi) rate * StreamFormat.TRACK_BUFFER_MS / 1_000 else preroll,
+        )
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+            )
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setBufferSizeInBytes(bufferBytes)
+            .build()
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            track.release()
+            return PlaybackEnd.FAILED
+        }
+        try {
+            val threshold = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                track.setStartThresholdInFrames(preroll)
+            } else {
+                track.bufferSizeInFrames
+            }
+            return stream(session, track, rate, threshold)
+        } finally {
+            try {
+                track.pause()
+                track.flush()
+            } catch (_: IllegalStateException) {
+                // Not playing.
+            }
+            track.release()
+        }
+    }
+
+    private fun stream(session: Session, track: AudioTrack, rate: Int, threshold: Int): PlaybackEnd {
+        // Playing from the start: the track itself waits until `threshold` frames are buffered,
+        // so a blocking write always has a track that drains it.
+        track.play()
+        val samples = ShortArray(READ_SAMPLES)
+        var written = 0L
+        var end = PlaybackEnd.PLAYED
+        while (!session.stopped) {
+            val n = try {
+                session.reply.read(samples)
+            } catch (_: IOException) {
+                // The bridge cut the stream, or the connection went: play what arrived, then say so.
+                if (!session.stopped) end = PlaybackEnd.BROKE_OFF
+                break
+            }
+            if (n < 0) break
+            if (!writeAll(session, track, samples, n)) return if (session.stopped) PlaybackEnd.STOPPED else PlaybackEnd.FAILED
+            written += n
+        }
+        if (session.stopped) return PlaybackEnd.STOPPED
+        if (written == 0L) return end
+        // Silence after the reply, a threshold's worth: a reply (or its last part) shorter than
+        // the threshold would otherwise never start. It is not heard: the wait below ends when
+        // the reply's own frames have played, and the track is emptied then. The track keeps
+        // playing (no stop()), so its head position stays meaningful.
+        samples.fill(0)
+        var silence = threshold.toLong()
+        while (silence > 0 && !session.stopped) {
+            val n = minOf(silence, samples.size.toLong()).toInt()
+            if (!writeAll(session, track, samples, n)) break
+            silence -= n
+        }
+        val deadline = SystemClock.elapsedRealtime() + (written + threshold) * 1_000 / rate + DRAIN_SLACK_MS
+        while (!session.stopped && SystemClock.elapsedRealtime() < deadline) {
+            if ((track.playbackHeadPosition.toLong() and 0xFFFFFFFFL) >= written) break
+            SystemClock.sleep(POLL_MS)
+        }
+        return if (session.stopped) PlaybackEnd.STOPPED else end
+    }
+
+    /** Blocking writes of `samples[0, n)`; false when the track refused or a stop came. */
+    private fun writeAll(session: Session, track: AudioTrack, samples: ShortArray, n: Int): Boolean {
+        var offset = 0
+        while (offset < n) {
+            if (session.stopped) return false
+            val count = track.write(samples, offset, n - offset)
+            if (count <= 0) return false
+            offset += count
+        }
+        return true
+    }
+
+    private companion object {
+        const val READ_SAMPLES = 2_048
+        const val DRAIN_SLACK_MS = 1_500L
+        const val POLL_MS = 20L
     }
 }
