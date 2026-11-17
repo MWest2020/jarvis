@@ -106,7 +106,9 @@ object TurnRequests {
         val headers = buildMap {
             put("Authorization", "Bearer $token")
             put("Content-Type", "audio/wav")
-            put("Accept", "audio/wav")
+            // A streamed reply first (jarvis-streaming-speech S1); an older bridge ignores
+            // it and sends the WAV.
+            put("Accept", StreamFormat.ACCEPT)
             if (typedList) put(TYPED_LIST_HEADER, TYPED_LIST_VALUE)
         }
         return Built.Ok(TurnRequest(BridgeUrl.turnUrl(base, project.trim()), headers))

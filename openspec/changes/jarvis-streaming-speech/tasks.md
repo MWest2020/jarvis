@@ -20,11 +20,11 @@ Built in the same pull request as the proposal (Mark asked for it). Every step u
 
 ## 2. App
 
-- [ ] 2.1 `:core`: the `Accept` header, the reply format, the stream reader (byte order, a
+- [x] 2.1 `:core`: the `Accept` header, the reply format, the stream reader (byte order, a
   sample split across reads, the size cap, a cut body), `TurnOutcome.Streamed` (S7).
-- [ ] 2.2 `:app`: `AudioTrack` player with pre-roll and tap-to-stop; the view model plays a
+- [x] 2.2 `:app`: `AudioTrack` player with pre-roll and tap-to-stop; the view model plays a
   stream or a WAV, says "The spoken reply broke off. Its text is above." on a cut body.
-- [ ] 2.3 Tests in `:core` against a loopback server that sends chunked bodies, cut bodies
+- [x] 2.3 Tests in `:core` against a loopback server that sends chunked bodies, cut bodies
   and odd chunk boundaries.
 
 ## 3. Docs and evidence

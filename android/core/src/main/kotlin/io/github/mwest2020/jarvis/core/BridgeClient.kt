@@ -52,6 +52,26 @@ class BridgeClient(
                 val body = connection.errorStream?.use { readLimited(it, ERROR_BODY_LIMIT) }
                 return TurnOutcome.Failed(TurnErrors.fromStatus(status, body?.toString(Charsets.UTF_8).orEmpty()))
             }
+            val contentType = connection.contentType
+            if (StreamFormat.isStream(contentType)) {
+                // jarvis-streaming-speech: the headers are in, the audio is still coming. The
+                // connection is handed to the reply, which the player closes.
+                val rate = StreamFormat.sampleRate(contentType) ?: return TurnOutcome.Failed(
+                    TurnFailure(FailureKind.BAD_REPLY, "The bridge's reply is not playable audio."),
+                )
+                val open = connection
+                val reply = StreamedReply(
+                    summary = TurnErrors.decodeSummary(open.getHeaderField("X-Jarvis-Summary")),
+                    sessionId = open.getHeaderField("X-Jarvis-Session-Id"),
+                    projectsChanged = open.getHeaderField("X-Jarvis-Projects-Changed")?.trim() == "1",
+                    needsConfirmation = open.getHeaderField("X-Jarvis-Needs-Confirmation")?.trim() == "1",
+                    sampleRate = rate,
+                    reader = PcmReader(open.inputStream),
+                    onClose = { open.disconnect() },
+                )
+                connection = null
+                return TurnOutcome.Streamed(reply)
+            }
             val audio = connection.inputStream.use { readLimited(it, REPLY_LIMIT + 1) }
             if (audio.size < Wav.HEADER_SIZE || audio.size > REPLY_LIMIT) {
                 return TurnOutcome.Failed(

@@ -12,6 +12,8 @@ import io.github.mwest2020.jarvis.core.Built
 import io.github.mwest2020.jarvis.core.ListOutcome
 import io.github.mwest2020.jarvis.core.ListRequest
 import io.github.mwest2020.jarvis.core.Phase
+import io.github.mwest2020.jarvis.core.Playback
+import io.github.mwest2020.jarvis.core.PlaybackEnd
 import io.github.mwest2020.jarvis.core.ProjectEntry
 import io.github.mwest2020.jarvis.core.ProjectList
 import io.github.mwest2020.jarvis.core.ProjectMenu
@@ -69,6 +71,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val gesture = TalkGesture()
     private val tone = WaitTone()
     private val player = ReplyPlayer()
+    private val streamPlayer = StreamPlayer()
     private val recorder = Recorder(onLimitReached = {
         viewModelScope.launch(Dispatchers.Main) {
             if (state.value.phase == Phase.RECORDING) stopAndSend()
@@ -199,6 +202,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             TalkAction.STOP_AND_SEND -> stopAndSend()
             TalkAction.STOP_PLAYBACK -> {
                 player.stop()
+                streamPlayer.stop()
                 _state.update { it.copy(phase = Phase.IDLE) }
                 afterReply()
             }
@@ -268,6 +272,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 it.phase != Phase.PLAYING -> it
                                 played -> it.copy(phase = Phase.IDLE)
                                 else -> it.copy(phase = Phase.IDLE, error = "The reply could not be played.")
+                            }
+                        }
+                        afterReply()
+                    }
+                }
+                is TurnOutcome.Streamed -> {
+                    // jarvis-streaming-speech: the headers are in and the audio is coming. The
+                    // summary shows now; the first sentence plays as soon as it has arrived.
+                    val reply = outcome.reply
+                    _state.update { it.copy(phase = Phase.PLAYING, summary = reply.summary, error = null) }
+                    refreshAfterReply = reply.projectsChanged
+                    streamPlayer.play(reply) { end ->
+                        _state.update {
+                            when {
+                                it.phase != Phase.PLAYING -> it
+                                end == PlaybackEnd.PLAYED -> it.copy(phase = Phase.IDLE)
+                                else -> it.copy(phase = Phase.IDLE, error = Playback.message(end))
                             }
                         }
                         afterReply()
@@ -378,6 +399,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         recorder.stop()
         player.stop()
+        streamPlayer.stop()
         tone.release()
     }
 

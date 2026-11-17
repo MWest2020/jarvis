@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-17
 ---
 # The Android app: install, set up, use
 
@@ -132,6 +132,13 @@ project once.
 - A beep confirms the recording has gone out; a soft tick every three seconds means the
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
+- Since 2026-11-17 the reply starts while it is still arriving (change
+  [`jarvis-streaming-speech`](../../openspec/changes/jarvis-streaming-speech/design.md)): the
+  app asks the bridge for a streamed reply, the tick stops and the summary appears as soon as
+  the agent has answered, and the first sentence plays about two seconds later while the
+  bridge renders the next one. Before, the whole reply was rendered and downloaded first,
+  about three seconds more. A bridge from before that date sends the whole WAV, and the app
+  plays it as before; nothing needs to be set.
 - The summary (and an error) can be selected: long-press it to copy a link or a command.
 - When a reply says a new project is ready (the bridge's header
   `X-Jarvis-Projects-Changed: 1`), the app fetches the project list again by itself once the
@@ -160,6 +167,8 @@ project once.
 | The recording is too large | 413 | Ask a shorter question |
 | The bridge is busy with other connections | 503: the bridge already serves its maximum of eight connections | Wait a few seconds, try again |
 | The agent turn failed on the bridge | 502 | Try again; details are in the bridge's log |
+| The spoken reply broke off. Its text is above. | A streamed reply stopped before its end: speech failed on the bridge, or the connection went. What arrived has played; the summary on screen is the whole spoken text | Read it; if it happens often, check the bridge's log for `reply=stream_cut` |
+| The reply could not be played. | The phone could not play the audio (no audio output, or a format it does not take) | Try again; restart the app |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
 
 ## Why plain HTTP, and why only there
@@ -258,13 +267,29 @@ touches `android/`, and on `main`.
 
 ```sh
 cd android
-./gradlew :core:test                 # request, errors, WAV, address check; no Android SDK needed
+./gradlew :core:test                 # request, errors, WAV, stream reader, address check; no Android SDK needed
 ./gradlew check :app:assembleDebug   # lint, the dependency check, the APK; needs the Android SDK
 ```
 
 - `core/` is plain Kotlin and holds everything that can be tested without a phone. Its
   tests talk to a real HTTP server on loopback that behaves like the bridge.
 - `app/` is the Android part: microphone, playback, Keystore, screens.
+
+### How a streamed reply is played
+
+- The request says `Accept: audio/L16;rate=24000;channels=1, audio/wav;q=0.5`. The reply's
+  `Content-Type` decides: `audio/L16` is played as a stream, `audio/wav` as before
+  (`MediaPlayer`, from memory). An `audio/L16` the app cannot play (not mono, a rate outside
+  8 to 48 kHz) is "not playable audio".
+- `:core` reads the body (`PcmReader` in `StreamedReply.kt`): big-endian samples, a sample cut
+  in two by a read put together again, at most 32 MB, and a body that breaks off (no
+  terminating chunk) as an error.
+- `:app` writes the samples to an `AudioTrack` in streaming mode with a one-second buffer and
+  starts it after 300 ms of audio (or at the end of a shorter reply), so a short hiccup on
+  the network is not heard (`StreamPlayer` in `Audio.kt`). A tap pauses and empties the
+  track and closes the connection. Nothing is written to storage.
+- In `full` mode a read-back that you stop with a tap before the bridge has sent all of it
+  is cancelled on the agent host (it was not heard); ask again.
 - Versions are exact, in `android/gradle/libs.versions.toml`. The Gradle wrapper is pinned
   by checksum.
 - `:app:checkSovereignDependencies` fails the build on any runtime dependency outside

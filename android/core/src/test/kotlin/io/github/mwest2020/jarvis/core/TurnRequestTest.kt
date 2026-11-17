@@ -55,6 +55,12 @@ class TurnRequestTest {
     }
 
     @Test
+    fun asksForTheStreamFirstAndTheWavAsTheFallback() {
+        val request = ok("http://jarvis.example.ts.net:8787")
+        assertEquals("audio/L16;rate=24000;channels=1, audio/wav;q=0.5", request.headers["Accept"])
+    }
+
+    @Test
     fun neverPrintsTheToken() {
         val text = ok("http://jarvis.example.ts.net:8787").toString()
         assertFalse(text.contains("s3cret-token"))

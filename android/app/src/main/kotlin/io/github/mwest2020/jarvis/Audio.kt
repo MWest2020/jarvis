@@ -5,12 +5,20 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaDataSource
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import io.github.mwest2020.jarvis.core.PlaybackEnd
+import io.github.mwest2020.jarvis.core.StreamFormat
+import io.github.mwest2020.jarvis.core.StreamedReply
 import io.github.mwest2020.jarvis.core.Wav
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import kotlin.concurrent.thread
 
 /**
@@ -203,5 +211,157 @@ class ReplyPlayer {
         override fun getSize(): Long = bytes.size.toLong()
 
         override fun close() = Unit
+    }
+}
+
+/**
+ * Plays a streamed reply while it arrives (change jarvis-streaming-speech, S7): an
+ * [AudioTrack] in [AudioTrack.MODE_STREAM] with a one-second buffer, started once
+ * [StreamFormat.PREROLL_MS] of audio is in it (the jitter buffer), or at the end of a shorter
+ * reply. One worker thread reads the connection and writes the track; nothing is stored.
+ */
+class StreamPlayer {
+    private val main = Handler(Looper.getMainLooper())
+
+    // Main thread only.
+    private var current: Session? = null
+
+    private class Session(val reply: StreamedReply) {
+        @Volatile
+        var stopped = false
+
+        @Volatile
+        var track: AudioTrack? = null
+    }
+
+    /** [onDone] runs on the main thread when the reply has played, broke off or failed; never after [stop]. */
+    fun play(reply: StreamedReply, onDone: (PlaybackEnd) -> Unit) {
+        stop()
+        val session = Session(reply)
+        current = session
+        thread(name = "jarvis-reply") {
+            val end = try {
+                playAll(session)
+            } finally {
+                session.reply.close()
+            }
+            main.post {
+                if (current === session && !session.stopped) {
+                    current = null
+                    onDone(end)
+                }
+            }
+        }
+    }
+
+    /** Stops at once: the track is paused and emptied, the connection closed. */
+    fun stop() {
+        val session = current ?: return
+        current = null
+        session.stopped = true
+        session.track?.let { track ->
+            try {
+                track.pause()
+                track.flush()
+            } catch (_: IllegalStateException) {
+                // Already released by the worker.
+            }
+        }
+        // Closing the connection unblocks a read; the network is not touched on the main thread.
+        thread(name = "jarvis-reply-close") { session.reply.close() }
+    }
+
+    private fun playAll(session: Session): PlaybackEnd {
+        val rate = session.reply.sampleRate
+        val minBuffer = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBuffer <= 0) return PlaybackEnd.FAILED
+        val track = try {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(rate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(maxOf(minBuffer, rate * Wav.BYTES_PER_SAMPLE * StreamFormat.TRACK_BUFFER_MS / 1_000))
+                .build()
+        } catch (_: IllegalArgumentException) {
+            return PlaybackEnd.FAILED
+        } catch (_: UnsupportedOperationException) {
+            return PlaybackEnd.FAILED
+        }
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            track.release()
+            return PlaybackEnd.FAILED
+        }
+        session.track = track
+        try {
+            return stream(session, track, rate)
+        } catch (_: IllegalStateException) {
+            return if (session.stopped) PlaybackEnd.PLAYED else PlaybackEnd.FAILED
+        } finally {
+            session.track = null
+            try {
+                track.stop()
+            } catch (_: IllegalStateException) {
+                // Never started.
+            }
+            track.release()
+        }
+    }
+
+    private fun stream(session: Session, track: AudioTrack, rate: Int): PlaybackEnd {
+        val preroll = StreamFormat.prerollSamples(rate)
+        // 2048 samples (85 ms) per read: with the pre-roll this stays well inside the buffer
+        // before playback starts, so a blocking write cannot wait on a track that is not playing.
+        val samples = ShortArray(READ_SAMPLES)
+        var written = 0L
+        var started = false
+        var end = PlaybackEnd.PLAYED
+        while (!session.stopped) {
+            val n = try {
+                session.reply.read(samples)
+            } catch (_: IOException) {
+                // The bridge cut the stream, or the connection went: play what arrived, then say so.
+                if (!session.stopped) end = PlaybackEnd.BROKE_OFF
+                break
+            }
+            if (n < 0) break
+            var offset = 0
+            while (offset < n && !session.stopped) {
+                val count = track.write(samples, offset, n - offset)
+                if (count <= 0) return if (session.stopped) PlaybackEnd.PLAYED else PlaybackEnd.FAILED
+                offset += count
+            }
+            written += n
+            if (!started && written >= preroll && !session.stopped) {
+                track.play()
+                started = true
+            }
+        }
+        if (session.stopped || written == 0L) return end
+        if (!started) track.play()
+        // In streaming mode stop() plays out what is buffered; then wait until it has.
+        track.stop()
+        val deadline = SystemClock.elapsedRealtime() + written * 1_000 / rate + DRAIN_SLACK_MS
+        while (!session.stopped && SystemClock.elapsedRealtime() < deadline) {
+            if ((track.playbackHeadPosition.toLong() and 0xFFFFFFFFL) >= written) break
+            SystemClock.sleep(POLL_MS)
+        }
+        return end
+    }
+
+    private companion object {
+        const val READ_SAMPLES = 2_048
+        const val DRAIN_SLACK_MS = 1_500L
+        const val POLL_MS = 20L
     }
 }
