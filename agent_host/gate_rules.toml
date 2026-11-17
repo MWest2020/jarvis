@@ -304,17 +304,54 @@ message = ["send", "reply", "forward", "post", "message", "comment", "invite"]
 # one of these two lists is gated: a tool nobody decided about does not run
 # by voice. Such a call has no sentence, so it needs the desk.
 [tools]
-# Read, search, plan, and start or stop the agent's own work. A subagent's
-# tool calls come through the gate themselves.
+# Read, search, plan, and start or stop the agent's own work. The tools that
+# start a subagent are not here: [subagents] judges them by their input.
+# `SubagentHandback` is how a subagent hands its report to the turn: text to
+# the agent that started it, nothing else.
 ungated = [
     "Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch",
-    "TodoWrite", "TodoRead", "Task", "Agent", "TaskOutput", "TaskStop",
+    "TodoWrite", "TodoRead", "TaskOutput", "TaskStop",
     "BashOutput", "KillShell", "KillBash", "ExitPlanMode", "EnterPlanMode",
     "AskUserQuestion", "ToolSearch", "ListMcpResourcesTool",
-    "ReadMcpResourceTool", "EnterWorktree", "ExitWorktree",
+    "ReadMcpResourceTool", "EnterWorktree", "ExitWorktree", "SubagentHandback",
 ]
 # Write a file: not gated, unless the file is one of Jarvis's own rules.
 write = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+# --- subagents: read-only helpers only (#57, D58) ----------------------------
+#
+# A voice turn may start a subagent only of a built-in type with no edit tools,
+# in the turn itself. Every tool call the subagent makes goes through this
+# gate like the turn's own (host check 13 in docs/how-to/agent-host.md):
+# the type is a seatbelt on top of that, not the wall (D40). Anything else is
+# gated with no class, so it needs the desk and goes to the coding session.
+[subagents]
+# The tools that start a subagent (`Task` is the older name of `Agent`).
+tools = ["Agent", "Task"]
+# The types a voice turn may start, as Claude Code 2.1.322 builds them in. No
+# edit tools; their Bash and connector calls are gated per call:
+#   web-fetch          WebFetch only
+#   Explore, Plan      everything but Agent, Edit, Write, NotebookEdit and
+#                      the artifact tools
+#   claude-code-guide  Bash, Read, WebFetch, WebSearch
+# Not: general-purpose, claude and fork (every tool, Agent included),
+# statusline-setup (edits settings), and any agent defined in a file.
+# Compared the way Claude Code compares agent names (case, spaces, dashes
+# and underscores do not count). A type that an agent file also defines is
+# gated, and so is one when an agent file cannot be read with certainty:
+# then it may not be the built-in that would run (classify.py,
+# `_agent_file_names`). Writing an agent file is the class `self`.
+read_only_types = ["web-fetch", "Explore", "Plan", "claude-code-guide"]
+# The input a call may hold. Any other field gates: `isolation` (a worktree,
+# or a remote session where this gate does not run), `name` and `team_name`
+# (an agent that outlives the turn and takes messages), `mode` (another
+# permission mode), and whatever a new version adds.
+fields = ["description", "prompt", "subagent_type", "model", "effort"]
+# Fields that may only be absent or JSON false. `run_in_background: true` is
+# the declared intent to run on after the turn. (Left out, 2.1.322 launches
+# in the background by default; the subagent still ends with the turn's
+# `claude` process, before the record: host check 13.)
+off_fields = ["run_in_background"]
 
 # --- the class `self`: Jarvis's own rules (D36). Always desk-only. -------------
 #

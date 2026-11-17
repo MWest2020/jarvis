@@ -706,7 +706,7 @@ def test_a_connector_tool_whose_name_says_it_sends_is_gated(ctx, tool):
 
 @pytest.mark.parametrize("tool", [
     "mcp__x__get_thing", "mcp__mail__search_threads", "mcp__docs__read", "mcp__x__list_labels",
-    "Read", "Grep", "Glob", "WebFetch", "Task",
+    "Read", "Grep", "Glob", "WebFetch", "SubagentHandback",
 ])
 def test_a_connector_tool_that_reads_and_a_listed_built_in_tool_are_not_gated(ctx, tool):
     assert not classify.classify(tool, {"anything": 1}, ctx).gated

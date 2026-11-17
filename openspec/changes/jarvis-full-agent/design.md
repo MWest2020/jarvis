@@ -322,7 +322,7 @@ subcommand nobody thought of (`gh issue delete`, `gh gist create --public`, `kub
 | create | `gh repo create`, `gh repo fork`, `gh gist create`, changing a repository's visibility |
 | outward | copying files to or from another host with `scp`, `rsync` or `sftp` |
 | root | `sudo`, `su`, `pkexec`, `doas`, in any position: the inner command must itself be nameable |
-| self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user and managed settings, `~/.claude.json` (connector definitions), `~/.claude/CLAUDE.md`, `~/.claude/agents`, `skills`, `plugins`; every file that a configured hook runs; the shell rc files; the checkout's own `.claude/settings*.json`; any file whose directory is the home directory, `~/.claude`, `~/.ssh` or a `.claude`; and a repository's `.git/config`, `.git/hooks/` and `.git/info/` (a push mapping or a hook planted there changes what a later git call does). A shell command that names one of these is a write unless every program in it only reads and nothing is redirected; a redirection to `/dev/null` (or `2>&1`) is no redirection for this (#59) |
+| self | a write (by `Edit`, `Write` or a shell command) to: the gate, the wrapper, their rules, settings and configuration; `~/.ssh/authorized_keys`; Claude Code's user and managed settings, `~/.claude.json` (connector definitions), `~/.claude/CLAUDE.md`, `~/.claude/agents`, `skills`, `plugins`; every file that a configured hook runs; the shell rc files; the checkout's own `.claude/settings*.json`; any `.claude/agents` and what is in it (D58); any file whose directory is the home directory, `~/.claude`, `~/.ssh` or a `.claude`; and a repository's `.git/config`, `.git/hooks/` and `.git/info/` (a push mapping or a hook planted there changes what a later git call does). A shell command that names one of these is a write unless every program in it only reads and nothing is redirected; a redirection to `/dev/null` (or `2>&1`) is no redirection for this (#59) |
 
 A gated call that no naming rule covers has no sentence, and therefore **needs the desk**
 (below). The default rules decide *that* a call is gated; the naming rules decide whether it
@@ -829,6 +829,26 @@ needs the desk", the bridge says "I passed that on to the coding session.", and 
 session takes the request over from the turn record (docs/how-to/agent-host.md, "Refused
 turns go to the coding session"). A read-back that cannot be spoken is the exception: it is
 cancelled like a no and Jarvis says so. Nothing about what is confirmable by voice changes.
+
+### D58. A voice turn may start read-only helper subagents (2026-11-17, #57)
+
+Mark decided 2026-11-17 ("stuff like that can be really useful"). Claude Code runs the
+turn's PreToolUse hooks for every tool call a subagent makes (host check 13), so the gate
+judges each of them as it judges the turn's own; the subagent adds no road around it. On top
+of that, as a seatbelt (D40), `[subagents]` in the rules lets an `Agent` call through only
+for a built-in type with no edit tools, whose `Bash` and connector calls are gated per call
+(`web-fetch`, `Explore`, `Plan`, `claude-code-guide` on 2.1.322), with no `isolation`,
+`name`, `team_name` or `mode`, `run_in_background` absent or false, and not when an agent
+file redefines that name or cannot be read with certainty (the gate finds the front matter as
+Claude Code does, checks it with PyYAML, which is required, and fails closed on any YAML
+form it does not read; the directories are read again on every call). Writing into any
+`.claude/agents` is the class `self`: an agent file carries hooks, MCP servers and a
+permission mode that run outside the gate. A remote
+session (`isolation: remote`) would run where this gate does not. Any other subagent is
+refused with a sentence that names what can be started and is not passed to the coding
+session (D57): the agent can do the same work itself under the same gate. `SubagentHandback`
+is ungated. Until this change `Agent` was listed as ungated outright, so every type started;
+the refusal behind #57 was the subagent's `SubagentHandback`.
 
 ## Risks / Trade-offs
 

@@ -86,6 +86,10 @@ done
 [ -x "$PYTHON" ] || die "$PYTHON not found"
 "$PYTHON" -I -c 'import sys, tomllib; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null \
     || die "$PYTHON must be Python 3.11 or newer (the wrapper reads its configuration with tomllib)"
+# The gate reads agent files with PyYAML (#57, D58). Without it every subagent
+# is refused by voice: said here, not found out in a turn.
+"$PYTHON" -I -c 'import yaml' 2>/dev/null \
+    || echo "install.sh: warning: $PYTHON has no PyYAML (python3-yaml): the gate will refuse every subagent by voice" >&2
 
 # --- the authorized_keys line (D32) -------------------------------------------------
 
