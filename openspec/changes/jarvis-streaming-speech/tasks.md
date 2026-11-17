@@ -34,6 +34,8 @@ Built in the same pull request as the proposal (Mark asked for it). Every step u
   agent host (S6).
 - [x] 2.5 App: cancel a read-back that ended any other way than played (tap, cut stream,
   playback error, screen closed); "Cancelled. Nothing was confirmed."
+- [x] 2.7 App: a failed cancel stays queued, is sent before the next turn, and refuses that
+  turn when it fails again; dropped after 60 seconds (delta review of #66).
 - [x] 2.6 Tests: the route (token, twice, another id, after the yes, during the write, bad
   requests, `readonly`), the app's decision and request in `:core`.
 

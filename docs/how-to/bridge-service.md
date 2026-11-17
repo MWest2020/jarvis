@@ -409,9 +409,11 @@ The bridge answers `no` to the agent host for that call, as for a read-back it c
 write, and replies `200` with `{"cancelled": true}`. An id that is not pending (already
 answered or cancelled, expired, another read-back, or `readonly` mode) changes nothing:
 `{"cancelled": false}`, also on a second call. A cancel that comes while the bridge is still
-writing the read-back is remembered for 60 seconds and applied when the write ends. 401
-without the token, 400 for a missing project or an id that is not 1 to 64 letters, digits,
-`_` or `-`. The route takes no project lock. If the phone cannot send it (killed, offline),
+writing the read-back is remembered for 60 seconds and applied when the write ends. No body
+is expected, and none (with or without `Content-Length: 0`) is fine; a body over 10 MB gets
+413. 401 without the token, 400 for a missing project or an id that is not 1 to 64 letters,
+digits, `_` or `-`. A cancel names its project: an id sent for another project cancels
+nothing. The route takes no project lock. If the phone cannot send it (killed, offline),
 the call expires on the agent host after its `expires_s`, at most 60 seconds.
 - `X-Jarvis-Timing` on a streamed reply has no `tts` (nothing is rendered yet when it goes
   out, except for a read-back); the log line has it.

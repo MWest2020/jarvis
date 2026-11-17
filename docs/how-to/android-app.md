@@ -168,7 +168,8 @@ project once.
 | The bridge is busy with other connections | 503: the bridge already serves its maximum of eight connections | Wait a few seconds, try again |
 | The agent turn failed on the bridge | 502 | Try again; details are in the bridge's log |
 | Cancelled. Nothing was confirmed. | A read-back (a reply waiting for your yes) did not play to its end: you tapped, it broke off, or it could not be played. The app cancelled it on the bridge | Ask again if you still want it |
-| The read-back was stopped, but the bridge could not be told. Do not say yes; it expires within a minute. | As above, but the cancel did not reach the bridge | Wait a minute before saying yes to anything |
+| The read-back was stopped, but the bridge could not be told yet. The app tells it before your next question; do not say yes to it. | As above, but the cancel did not reach the bridge; it stays queued | Nothing; the next question sends it first |
+| I couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a minute. | The queued cancel failed again before this question; the question was not sent | Check Tailscale and the bridge; after a minute the read-back has expired and questions go again |
 | The spoken reply broke off. Its text is above. | A streamed reply stopped before its end: speech failed on the bridge, or the connection went. What arrived has played; the summary on screen is the whole spoken text | Read it; if it happens often, check the bridge's log for `reply=stream_cut` |
 | The reply could not be played. | The phone could not play the audio (no audio output, or a format it does not take) | Try again; restart the app |
 | Plain http is only allowed for a Tailscale name | The address is `http://` to something that is not `*.ts.net` | Use the Tailscale name, or https |
@@ -305,9 +306,14 @@ so a yes cannot overtake the cancel. A later yes is then an ordinary question. A
 hear the read-back again.
 
 When the app could not reach the bridge for that, it says "The read-back was stopped, but
-the bridge could not be told. Do not say yes; it expires within a minute." The same holds
-when the app is killed while a read-back plays: nothing tells the bridge, and the call
-expires by itself after at most a minute. Do not say yes in that minute. Leaving the app
+the bridge could not be told yet. The app tells it before your next question; do not say yes
+to it." The cancel stays queued: before the next question is sent the app tries again, and if
+that still fails it does not send the question (the recording is not uploaded) and says "I
+couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a
+minute." A minute after the read-back arrived the queued cancel is dropped: the bridge no
+longer keeps the read-back by then. When the app is killed while a read-back plays, nothing
+tells the bridge, and the call expires by itself after at most a minute. Do not say yes in
+that minute. Leaving the app
 (home button) does not stop a reply; it plays to its end.
 - Versions are exact, in `android/gradle/libs.versions.toml`. The Gradle wrapper is pinned
   by checksum.

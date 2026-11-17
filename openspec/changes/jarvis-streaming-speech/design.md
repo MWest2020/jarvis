@@ -96,9 +96,12 @@ sentences.
   when the app is killed, or the phone loses the network, before the cancel goes out, nothing
   tells the bridge; the pending call then expires on the agent host after its `expires_s`
   (at most 60 seconds) and on the bridge after the same deadline. A yes within that minute
-  still confirms a read-back that was only partly heard. When the cancel fails the app says
-  "The read-back was stopped, but the bridge could not be told. Do not say yes; it expires
-  within a minute."
+  still confirms a read-back that was only partly heard. When the cancel fails it stays
+  queued in the app (`ReadBackCancels`) and is sent again before the next turn; if it fails
+  again, that turn is refused before the audio is uploaded ("I couldn't cancel the last
+  question on the bridge, so I'm not sending this one. Try again in a minute."). The queued
+  cancel is dropped 60 seconds after the read-back arrived, when the bridge no longer keeps
+  it. So a failed cancel cannot let a yes from this app through either.
 - The phone sees a cut body as an `IOException` on read. It stops after what it played, keeps
   the summary on screen and says "The spoken reply broke off. Its text is above." (for a
   read-back: "Cancelled. Nothing was confirmed.", above).

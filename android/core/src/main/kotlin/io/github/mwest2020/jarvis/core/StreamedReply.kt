@@ -133,7 +133,13 @@ object Playback {
 object ReadBack {
     const val CANCELLED = "Cancelled. Nothing was confirmed."
     const val NOT_CANCELLED =
-        "The read-back was stopped, but the bridge could not be told. Do not say yes; it expires within a minute."
+        "The read-back was stopped, but the bridge could not be told yet. " +
+            "The app tells it before your next question; do not say yes to it."
+    const val TURN_REFUSED =
+        "I couldn't cancel the last question on the bridge, so I'm not sending this one. Try again in a minute."
+
+    /** How long the bridge keeps a read-back pending at most (bridge.full_mode.PENDING_TTL_S). */
+    const val PENDING_MS = 60_000L
 
     /** True when a reply that asked for a spoken yes ended any other way than played to its end. */
     fun mustCancel(needsConfirmation: Boolean, confirmationId: String?, end: PlaybackEnd): Boolean =

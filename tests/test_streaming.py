@@ -638,3 +638,37 @@ def test_readonly_mode_has_nothing_to_cancel(stream_server):
     response = conn.getresponse()
     assert response.status == 200 and json.loads(response.read()) == {"cancelled": False}
     conn.close()
+
+
+def test_a_cancel_naming_another_project_leaves_this_read_back_pending(full):
+    confirmation_id = _read_back(full)
+    response, data = _cancel(full, confirmation_id, project="other")
+    assert response.status == 200 and json.loads(data) == {"cancelled": False}
+    _say(full, "yes")
+    assert full.kinds() == ["agent", "confirmed"]
+
+
+def test_a_cancel_without_a_body_or_content_length_is_accepted(full):
+    confirmation_id = _read_back(full)
+    raw = Raw(full.httpd.server_address[1],
+              (f"POST /turn/cancel?project=demo&id={confirmation_id} HTTP/1.1\r\nHost: x\r\n"
+               "Authorization: Bearer test-token\r\n\r\n").encode())
+    try:
+        status, _ = raw.head()
+        body = raw.rest()
+    finally:
+        raw.close()
+    assert status.endswith("200 OK") and json.loads(body) == {"cancelled": True}
+    assert full.kinds() == ["agent", "cancel"]
+
+
+def test_a_cancel_with_a_body_over_the_cap_is_refused(full):
+    raw = Raw(full.httpd.server_address[1],
+              (f"POST /turn/cancel?project=demo&id=abc HTTP/1.1\r\nHost: x\r\n"
+               f"Authorization: Bearer test-token\r\nContent-Length: {server.MAX_AUDIO_BYTES + 1}"
+               "\r\n\r\n").encode())
+    try:
+        status, _ = raw.head()
+    finally:
+        raw.close()
+    assert " 413 " in status

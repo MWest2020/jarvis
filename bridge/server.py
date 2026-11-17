@@ -366,9 +366,13 @@ class Handler(BaseHTTPRequestHandler):
         Idempotent: `{"cancelled": false}` when nothing with that id is pending (answered,
         expired, cancelled before, another read-back, or `readonly` mode). No project
         lock: the cancel can come while the read-back's turn is still writing."""
+        # No body is expected; without a Content-Length it is empty (_parse_content_length).
         length = self._body_length
-        if length is None or length > MAX_AUDIO_BYTES:
+        if length is None:
             self._reject(400, "Content-Length is not a valid number")
+            return
+        if length > MAX_AUDIO_BYTES:
+            self._reject(413, "body too large")
             return
         if length and not self._drain(length):
             self._respond_error(400, "the body did not arrive", close=True)
