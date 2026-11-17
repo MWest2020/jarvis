@@ -10,11 +10,31 @@ import re
 
 SUMMARY_MARKER = "SPOKEN SUMMARY:"
 
+
+# jarvis-sing, the easter egg: the tunes the bridge can sing (bridge/singing.py owns
+# the melodies; a test keeps the two in step) and the agent's part of it. The same
+# words are in agent_host/prompt.md for `full` mode.
+SING_TUNES = (
+    ("happy-birthday", (6, 6, 7, 6)),
+    ("twinkle", (7, 7)),
+    ("frere-jacques", (4, 4, 3, 3, 6, 6, 3, 3)),
+)
+SING_INSTRUCTION = (
+    "Only when the user explicitly asks you to sing, start the text after the marker "
+    "with a tag naming one of these tunes, then short lyrics in your own words, in "
+    "English, one syllable per note, the syllables of a word joined by hyphens "
+    "(hap-py): "
+    + "; ".join(f"[sing: {name}] {sum(lines)} syllables ({', '.join(map(str, lines))})"
+                for name, lines in SING_TUNES)
+    + ". A sung line may be up to 220 characters. Never use the tag in any other reply."
+)
+
 SYSTEM_PROMPT_ADDITION = (
     "After your normal reply, add one final line starting with exactly "
     f'"{SUMMARY_MARKER}" followed by a short, plain-language summary suitable '
     "for being read aloud over the phone: one sentence, two at most, about "
-    "100 to 150 characters, no code, no file paths, no markdown."
+    "100 to 150 characters, no code, no file paths, no markdown. "
+    + SING_INSTRUCTION
 )
 
 FALLBACK_SUMMARY = "Done. Check the log for details."
@@ -23,6 +43,10 @@ FALLBACK_SUMMARY = "Done. Check the log for details."
 # Speech is the slow part of a turn: Kokoro renders at about real time, some
 # 0.055 s per character (measured 2026-11-15), so 160 characters is under 9 s.
 MAX_SPOKEN_CHARS = 160
+# A sung line (it starts with a [sing: …] tag) may be longer: its lyrics are not read
+# at speaking speed, and the song itself is capped at 20 seconds (bridge/singing.py).
+MAX_SUNG_CHARS = 240
+_SUNG = re.compile(r"\[\s*sing\s*:", re.IGNORECASE)
 
 # Anything that looks like code or a path is never spoken (Requirement: Spoken
 # output), whatever the model wrote after the marker.
@@ -70,7 +94,7 @@ def extract_summary(reply_text: str) -> str:
             summary = _clean(rest[0]) if rest else ""
         # The filters see the whole summary, also the part a cut would drop.
         if summary and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary):
-            return shorten(summary)
+            return shorten(summary, MAX_SUNG_CHARS if _SUNG.match(summary) else MAX_SPOKEN_CHARS)
         break
     # No marker, or a summary with code, paths or a credential: a short, safe
     # line instead of reading it aloud. The full reply is in the log.
