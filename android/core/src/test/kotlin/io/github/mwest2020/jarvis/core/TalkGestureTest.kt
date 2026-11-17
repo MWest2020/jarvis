@@ -36,4 +36,17 @@ class TalkGestureTest {
         // The microphone could not be opened, so the phase is still IDLE.
         assertEquals(TalkAction.NONE, gesture.onRelease(Phase.IDLE, 2_000))
     }
+
+    @Test
+    fun holdingLastsFromThePressToItsRelease() {
+        val gesture = TalkGesture(holdThresholdMs = 500)
+        assertEquals(false, gesture.holding)
+        gesture.onPress(Phase.IDLE, 0)
+        assertEquals(true, gesture.holding)
+        // A tap: released, still recording, no longer held (jarvis-silence-send H7).
+        gesture.onRelease(Phase.RECORDING, 120)
+        assertEquals(false, gesture.holding)
+        gesture.onPress(Phase.RECORDING, 4_000)
+        assertEquals(false, gesture.holding)
+    }
 }

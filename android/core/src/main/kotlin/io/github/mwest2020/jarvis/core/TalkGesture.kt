@@ -12,6 +12,9 @@ enum class TalkAction { NONE, START_RECORDING, STOP_AND_SEND, STOP_PLAYBACK }
 class TalkGesture(private val holdThresholdMs: Long = 500) {
     private var startedAt: Long? = null
 
+    /** True from a press that started a recording until its release: the button is held. */
+    val holding: Boolean get() = startedAt != null
+
     fun onPress(phase: Phase, nowMs: Long): TalkAction = when (phase) {
         Phase.IDLE -> {
             startedAt = nowMs

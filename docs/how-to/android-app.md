@@ -270,7 +270,7 @@ touches `android/`, and on `main`.
 
 ```sh
 cd android
-./gradlew :core:test                 # request, errors, WAV, stream reader, address check; no Android SDK needed
+./gradlew :core:test                 # request, errors, WAV, stream reader, end of speech, address check; no Android SDK needed
 ./gradlew check :app:assembleDebug   # lint, the dependency check, the APK; needs the Android SDK
 ```
 
@@ -292,6 +292,31 @@ cd android
   `Audio.kt`). From Android 12 the buffer holds a second; before, the buffer is the 300 ms
   (a streaming track there starts only when its buffer is full). A tap stops playback within
   about a tenth of a second and closes the connection. Nothing is written to storage.
+
+### How the end of a question is found
+
+Change [`jarvis-silence-send`](../../openspec/changes/jarvis-silence-send/design.md) (jarvis#67).
+`Endpointer` in `:core` (`Endpointer.kt`) gets the recorded PCM as the recorder reads it and
+decides from loudness alone; it is plain Kotlin, no library, nothing leaves the phone.
+
+- The recording is cut into 20 ms frames; a frame's loudness is its RMS.
+- The noise floor is the quieter quarter of the first 300 ms, at least RMS 50 (a muted
+  microphone) and at most RMS 600 (so a word at the tap is not taken for the room). After
+  that it follows the frames that are not speech: down within about 60 ms, up over about a
+  second.
+- A frame is speech at three times the floor (about +9.5 dB).
+- **Send:** at least 0.6 s of speech in one utterance (0.3 s for a yes right after a
+  read-back), then the set silence (3 s by default) without speech. Pauses between words
+  shorter than that add nothing.
+- **Short sound:** less speech than that, then the silence: it is set aside and never adds to
+  later speech; the app keeps listening.
+- **Nothing heard:** no speech that counts for 10 s since the start or the last sound: the
+  recording is dropped. At the 2-minute limit a hands-free recording without speech is
+  dropped too.
+- **What is sent:** the recording up to half a second after the last speech frame.
+- The constants are in `Endpointing`; the tests (`EndpointerTest.kt`) feed synthetic PCM:
+  speech-silence-speech, a loud room, a muted microphone, a cough, long silence first,
+  clipping, speech from the first frame, reads of odd sizes.
 
 ### A read-back that you did not hear to its end
 

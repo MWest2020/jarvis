@@ -7,13 +7,13 @@ updates `docs/` in the same commit (AGENTS.md).
 
 ## 1. Core
 
-- [ ] 1.1 `Endpointer.kt`: 20 ms frames, RMS, the noise floor from the first 300 ms and its
+- [x] 1.1 `Endpointer.kt`: 20 ms frames, RMS, the noise floor from the first 300 ms and its
   tracking, speech and silence, the send, the short sound, nothing heard, the countdown, the
   length to send (H1, H3, H4, H6, H9).
-- [ ] 1.2 `Endpointing`: the defaults, the silence setting clamped to 1.5-6 s in half
+- [x] 1.2 `Endpointing`: the defaults, the silence setting clamped to 1.5-6 s in half
   seconds, the shorter minimum for a yes (H5, H8); `SilenceSend.action` (H7);
   `TalkGesture.holding`.
-- [ ] 1.3 Tests with synthetic PCM: speech-silence-speech, the noise floor, a short noise,
+- [x] 1.3 Tests with synthetic PCM: speech-silence-speech, the noise floor, a short noise,
   long silence first, clipping, speech from the first frame, reads of odd sizes, the yes
   minimum, the decision while held.
 
