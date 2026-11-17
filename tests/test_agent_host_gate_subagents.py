@@ -245,6 +245,10 @@ BYPASSES = {
     "u2028": "---\nname: Ex\u2028 plore\ndescription: x\n---\n",
     "nel": "---\ndescription: x\x85name: Explore\n---\n",
     "lone-cr": "---\ndescription: x\rname: Explore\n---\n",
+    # Review 3 of #58: an invisible character JS and Python YAML may read differently.
+    "bom-mid": "---\ndescription: x\n\ufeffname: Explore\n---\n",
+    "zero-width": "---\nname: Expl\u200bore\ndescription: x\n---\n",
+    "control": "---\nname: Explore\x1c\ndescription: x\n---\n",
 }
 
 

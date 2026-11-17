@@ -611,6 +611,11 @@ def _front_matter_names(path: str) -> set[str]:
             raise _Unknown(f"the front matter of {path} does not end in its first bytes")
         return set()  # no front matter: no agent
     inner = match.group(1)
+    # A BOM or another invisible/control character inside the front matter may
+    # be read differently by Claude Code's YAML and by the parser here: refuse.
+    if any(ch == "\ufeff" or (not ch.isprintable() and ch not in "\n\r\t")
+           for ch in inner):
+        raise _Unknown(f"the front matter of {path} holds an invisible character")
     rest = text[match.end(1) + 3:]
     if (inner and not inner.endswith("\n")) or rest.split("\n", 1)[0].strip():
         raise _Unknown(f"the front matter of {path} ends inside a line")

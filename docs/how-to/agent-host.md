@@ -487,7 +487,7 @@ only when all of this holds:
   for the gate's `/usr/bin/python3`) every agent file gates, and `install.sh` warns. Anything
   else gates too: a folded, escaped, tagged, anchored, next-line or continued value, a quoted
   or complex key, a merge key, a flow mapping, a `...` line, a line break other than `\n`
-  (NEL, U+2028, a lone CR), front matter that does not end in the first 16 KB or ends inside
+  (NEL, U+2028, a lone CR), a BOM or another invisible or control character inside the front matter, front matter that does not end in the first 16 KB or ends inside
   a line, a parser that reads another name, an agents directory or file that cannot be read,
   more than 500 entries. The directories are read again on every `Agent` call, so a file
   that arrived in the meantime counts at once.
