@@ -187,18 +187,19 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
     for a write to git's configuration, never for a push whose destination
     the configuration or the environment decides or the gate could not
     place, never for a call reached by unwrapping a shell (`bash -c`),
-    never for a tool nobody listed: "off" means "do not ask me", not "do not
-    look". With `confirm_skip`, every class of the call must be skipped,
+    never for a tool nobody listed, never for a subagent that is not a
+    read-only helper (#57): "off" means "do not ask me", not "do not look". With `confirm_skip`, every class of the call must be skipped,
     and a call in no class is in no skipped class.
     """
     if "self" in verdict.classes or verdict.run_alone:
         return False
     if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
         return False
-    if verdict.rule.startswith(("interpreter:", "shell:", "tool:", "git:config")):
-        # Inline code, a shell on stdin, a tool nobody listed, and a change to
-        # git's configuration (which changes what every later git call does):
-        # desk-only, whatever the switch says.
+    if verdict.rule.startswith(("interpreter:", "shell:", "tool:", "subagent:", "git:config")):
+        # Inline code, a shell on stdin, a tool nobody listed, a subagent that
+        # is not a read-only helper, and a change to git's configuration
+        # (which changes what every later git call does): desk-only, whatever
+        # the switch says.
         return False
     if verdict.rule in classify.PUSH_UNRESOLVED:
         return False  # a push that lands where the gate could not see

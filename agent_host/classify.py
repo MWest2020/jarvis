@@ -49,7 +49,9 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -335,6 +337,9 @@ class Context:
     git: GitRunner = field(default=run_git)
     # The root-owned program that switches confirmation (D36).
     confirm_program: str = ""
+    # Claude Code's user directory (where the user settings are): its
+    # `agents/` can define a subagent type (#57).
+    claude_dir: Path | None = None
 
 
 def context_for(
@@ -354,6 +359,7 @@ def context_for(
         temp_roots=tuple(os.path.realpath(root) for root in roots if root),
         git=git,
         confirm_program=str(config.confirm_program),
+        claude_dir=config.user_settings_path.parent,
     )
 
 
@@ -380,6 +386,9 @@ def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
             raise ValueError("a Bash call without a command string")
         return _classify_bash(command, ctx)
 
+    if tool_name in rules.subagent_tools:
+        return _judge_subagent(tool_input, ctx)
+
     if tool_name in rules.tools_write:
         path = tool_input.get("file_path", tool_input.get("notebook_path"))
         if not isinstance(path, str) or not path:
@@ -401,6 +410,116 @@ def classify(tool_name: str, tool_input: dict, ctx: Context) -> Verdict:
     # A built-in tool nobody decided about (an artifact, a message to
     # another agent, a schedule, a skill, a workflow ...): default-deny.
     return Verdict(gated=True, rule="tool:not-listed")
+
+
+# --- subagents (#57, D58) ---------------------------------------------------------
+
+# Bounds for reading agent files: they are looked at on every subagent call.
+_AGENT_FILE_HEAD_BYTES = 16 * 1024
+_AGENT_FILES_MAX = 500
+_FRONTMATTER_NAME_RE = re.compile(r"""name\s*:\s*["']?([^"'\r\n#]*?)["']?\s*(?:#.*)?$""")
+
+
+def agent_name_key(name: str) -> str:
+    """An agent type as Claude Code 2.1.322 compares it: NFKC, lower case,
+    without white space, dashes and underscores (`Web Fetch` is web-fetch)."""
+    text = unicodedata.normalize("NFKC", name).lower()
+    return "".join(ch for ch in text
+                   if not ch.isspace() and ch != "_" and unicodedata.category(ch) != "Pd")
+
+
+def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
+    """A call that starts a subagent runs by voice only as a read-only type,
+    in the turn itself, with nothing in its input the rules do not know.
+    Every call the subagent makes comes through the gate on its own (host
+    check 13); this rule keeps the helpers to the ones that only read."""
+    rules = ctx.rules
+    if set(tool_input) - rules.subagent_fields - rules.subagent_off_fields:
+        return Verdict(gated=True, rule="subagent:field")
+    if any(tool_input.get(key) not in (None, False) for key in rules.subagent_off_fields):
+        return Verdict(gated=True, rule="subagent:background")
+    kind = tool_input.get("subagent_type")
+    # No type is Claude Code's general-purpose agent: every tool.
+    if not isinstance(kind, str) or not kind.strip():
+        return Verdict(gated=True, rule="subagent:type")
+    key = agent_name_key(kind)
+    if key not in {agent_name_key(t) for t in rules.subagent_types}:
+        return Verdict(gated=True, rule="subagent:type")
+    names = _agent_file_names(ctx)
+    if names is None or key in names:
+        return Verdict(gated=True, rule="subagent:shadowed")
+    return UNGATED
+
+
+def _agent_dirs(ctx: Context) -> list[Path]:
+    """Where an agent file could define a type for this call: the user's
+    agents directory, and `.claude/agents` in the call's directory and in
+    every directory above it."""
+    dirs = [ctx.claude_dir / "agents"] if ctx.claude_dir is not None else []
+    here = Path(os.path.abspath(ctx.cwd))
+    dirs += [d / ".claude" / "agents" for d in (here, *here.parents)]
+    return dirs
+
+
+def _agent_file_names(ctx: Context) -> set[str] | None:
+    """The names (as `agent_name_key`) that agent files define, by their
+    front matter and by their file name; None when that cannot be known
+    (a directory that cannot be read, too many files): the call is gated."""
+    names: set[str] = set()
+    count = 0
+    for top in _agent_dirs(ctx):
+        try:
+            info = os.stat(top)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        failed: list[OSError] = []
+        for root, _dirs, files in os.walk(top, onerror=failed.append):
+            for name in files:
+                if not name.endswith(".md"):
+                    continue
+                count += 1
+                if count > _AGENT_FILES_MAX:
+                    return None
+                names.add(agent_name_key(name[:-3]))
+                declared = _front_matter_name(Path(root) / name)
+                if declared is None:
+                    return None
+                if declared:
+                    names.add(agent_name_key(declared))
+        if failed:
+            return None
+    return names
+
+
+def _front_matter_name(path: Path) -> str | None:
+    """The `name:` of an agent file's front matter, "" when it has none,
+    None when the file cannot be read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        head = os.read(fd, _AGENT_FILE_HEAD_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    lines = head.lstrip("\ufeff").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        match = _FRONTMATTER_NAME_RE.match(line)
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _resolve(path: str, ctx: Context) -> str:

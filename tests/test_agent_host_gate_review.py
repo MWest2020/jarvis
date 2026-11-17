@@ -514,7 +514,7 @@ def test_l_a_built_in_tool_nobody_listed_is_gated(ctx, tool):
 
 
 @pytest.mark.parametrize("tool", [
-    "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoWrite", "Task", "Agent",
+    "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoWrite", "SubagentHandback",
     "ExitPlanMode", "ToolSearch",
 ])
 def test_l_the_listed_read_and_plan_tools_are_not(ctx, tool):
