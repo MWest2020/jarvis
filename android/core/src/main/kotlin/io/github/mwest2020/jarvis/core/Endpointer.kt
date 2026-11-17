@@ -13,8 +13,10 @@ data class Endpointing(
     val silenceMs: Long = (DEFAULT_SILENCE_SECONDS * 1_000).roundToLong(),
     /** Speech needed in one utterance before a silence sends it (H3, H5). */
     val minSpeechMs: Long = MIN_SPEECH_MS,
-    /** The start of the recording that gives the noise floor (H1). */
+    /** The start of the recording that gives the noise floor (H1), not counting digital silence. */
     val calibrationMs: Long = 300,
+    /** The floor is taken by then at the latest, however much of the start was digital silence. */
+    val maxCalibrationMs: Long = 1_000,
     /** No speech for this long since the start or the last sound: the recording is dropped (H4). */
     val nothingHeardMs: Long = 10_000,
     /** The countdown shows once the silence after speech has lasted this long (H6). */
@@ -88,13 +90,15 @@ data class Endpoint(
 class Endpointer(private val config: Endpointing = Endpointing()) {
     private val frameSamples = Wav.SAMPLE_RATE * FRAME_MS.toInt() / 1_000
     private val calibrationFrames = (config.calibrationMs / FRAME_MS).toInt().coerceAtLeast(1)
+    private val maxCalibrationFrames = maxOf(calibrationFrames, (config.maxCalibrationMs / FRAME_MS).toInt())
 
     private var sumSquares = 0.0
     private var samplesInFrame = 0
     // The low byte of a sample whose high byte is in the next read; -1 when there is none.
     private var lowByte = -1
 
-    private val calibration = ArrayList<Double>(calibrationFrames)
+    private val calibration = ArrayList<Double>(maxCalibrationFrames)
+    private var sounding = 0
     private var calibrated = false
     private var floorRms = config.minFloor
 
@@ -155,10 +159,13 @@ class Endpointer(private val config: Endpointing = Endpointing()) {
             return
         }
         calibration += rms
-        if (calibration.size < calibrationFrames) return
+        // Many phones give zeros for the first moment of a recording: that is not the room.
+        if (rms >= DIGITAL_SILENCE) sounding++
+        if (sounding < calibrationFrames && calibration.size < maxCalibrationFrames) return
         // The lower quartile: the quiet part of the start, the room rather than a first word.
-        val sorted = calibration.sorted()
-        floorRms = sorted[(sorted.size - 1) / 4].coerceIn(config.minFloor, maxOf(config.minFloor, config.maxInitialFloor))
+        val sorted = calibration.filter { it >= DIGITAL_SILENCE }.sorted()
+        val quartile = if (sorted.isEmpty()) config.minFloor else sorted[(sorted.size - 1) / 4]
+        floorRms = quartile.coerceIn(config.minFloor, maxOf(config.minFloor, config.maxInitialFloor))
         calibrated = true
         // The start is classified now that the floor is known, so a word at the tap counts.
         calibration.forEach(::classify)
@@ -181,8 +188,11 @@ class Endpointer(private val config: Endpointing = Endpointing()) {
         } else {
             silenceRunMs += FRAME_MS
             // The floor follows the room: quickly down, slowly up, on frames that are not speech.
-            val step = if (rms < floorRms) FLOOR_DOWN else FLOOR_UP
-            floorRms = maxOf(config.minFloor, floorRms + (rms - floorRms) * step)
+            // Zeros (the start on some phones, a dropout) say nothing about the room.
+            if (rms >= DIGITAL_SILENCE) {
+                val step = if (rms < floorRms) FLOOR_DOWN else FLOOR_UP
+                floorRms = maxOf(config.minFloor, floorRms + (rms - floorRms) * step)
+            }
             if (!qualified && utteranceSpeechMs > 0 && silenceRunMs >= config.silenceMs) {
                 // Too short to be a question: set aside, it never adds to later speech (H4).
                 utteranceSpeechMs = 0
@@ -205,6 +215,8 @@ class Endpointer(private val config: Endpointing = Endpointing()) {
         const val FRAME_MS = 20L
         private const val FLOOR_DOWN = 0.3
         private const val FLOOR_UP = 0.02
+        // Below one step of a 16-bit sample: zeros, not a microphone.
+        private const val DIGITAL_SILENCE = 1.0
     }
 }
 

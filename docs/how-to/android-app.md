@@ -325,9 +325,10 @@ decides from loudness alone; it is plain Kotlin, no library, nothing leaves the 
 
 - The recording is cut into 20 ms frames; a frame's loudness is its RMS.
 - The noise floor is the quieter quarter of the first 300 ms, at least RMS 50 (a muted
-  microphone) and at most RMS 600 (so a word at the tap is not taken for the room). After
-  that it follows the frames that are not speech: down within about 60 ms, up over about a
-  second.
+  microphone) and at most RMS 600 (so a word at the tap is not taken for the room). Zeros
+  (many phones give them for the first moment of a recording) do not count and never move
+  the floor; it is taken after a second at the latest. After that it follows the frames that
+  are not speech: down within about 60 ms, up over about a second.
 - A frame is speech at three times the floor (about +9.5 dB).
 - **Send:** at least 0.6 s of speech in one utterance (0.3 s for a yes right after a
   read-back), then the set silence (3 s by default) without speech. Pauses between words
@@ -339,7 +340,7 @@ decides from loudness alone; it is plain Kotlin, no library, nothing leaves the 
   dropped too.
 - **What is sent:** the recording up to half a second after the last speech frame.
 - The constants are in `Endpointing`; the tests (`EndpointerTest.kt`) feed synthetic PCM:
-  speech-silence-speech, a loud room, a muted microphone, a cough, long silence first,
+  speech-silence-speech, a loud room, a muted microphone, zeros at the start, a cough, long silence first,
   clipping, speech from the first frame, reads of odd sizes.
 
 ### A read-back that you did not hear to its end

@@ -28,8 +28,10 @@ from another (`jarvis-speaker-verification`), any change on the bridge.
 
 **H1. Loudness against a noise floor, in `:core`.** The recording is cut into 20 ms frames
 and each frame's loudness is its RMS. The noise floor is the lower quartile of the first
-300 ms, at least an RMS of 50 (about -56 dBFS, so a muted or digital-silent microphone does
-not make every breath speech). A frame is speech when its RMS is at least three times the
+300 ms, at least an RMS of 50 (about -56 dBFS, so a muted microphone does not make every
+breath speech). Frames of digital silence (zeros, which many phones give for the first moment
+of a recording) do not count toward the 300 ms and never move the floor; the floor is taken
+after one second at the latest. A frame is speech when its RMS is at least three times the
 floor (about +9.5 dB). After the first 300 ms the floor follows the quiet frames: down
 within about 60 ms when the room gets quieter, up over about a second when it gets louder.
 The 300 ms are classified once the floor is known, so speech that starts at the tap counts;

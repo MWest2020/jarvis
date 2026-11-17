@@ -125,13 +125,28 @@ class EndpointerTest {
 
     @Test
     fun aMutedMicrophoneDoesNotMakeABreathSpeech() {
-        // Digital silence at the start, then faint noise: the floor stays at its minimum.
-        val pcm = Pcm(noise = 0.0).silence(500).bytes() + Pcm(noise = 100.0).silence(11_000).bytes()
-        val endpointer = Endpointer()
-        val steps = run(endpointer, pcm)
-        assertEquals(50.0, Endpointer().also { run(it, Pcm(noise = 0.0).silence(500).bytes()) }.noiseFloor, 0.001)
+        // Zeros only: the floor stays at its minimum, and faint noise after is no speech.
+        val zeros = Endpointer()
+        run(zeros, Pcm(noise = 0.0).silence(1_200).bytes())
+        assertEquals(50.0, zeros.noiseFloor, 0.001)
+        val steps = run(Endpointer(), Pcm(noise = 0.0).silence(1_200).bytes() + Pcm(noise = 100.0).silence(10_000).bytes())
         assertNull(steps.first(EndpointEvent.SEND))
         assertEquals(EndpointEvent.NOTHING_HEARD, steps.last().endpoint.event)
+    }
+
+    @Test
+    fun zerosAtTheStartAreNotTheRoom() {
+        // Some phones give zeros first: the floor comes from the room that follows.
+        val endpointer = Endpointer()
+        val pcm = Pcm(noise = 0.0).silence(500).bytes() +
+            Pcm(noise = 250.0).silence(10_500).bytes()
+        val steps = run(endpointer, pcm)
+        assertEquals(250.0, endpointer.noiseFloor, 40.0)
+        assertNull(steps.first(EndpointEvent.SEND))
+        assertEquals(10_000L, steps.first(EndpointEvent.NOTHING_HEARD))
+        val question = Pcm(noise = 0.0).silence(500).bytes() +
+            Pcm(noise = 250.0).silence(2_000).speech(1_000).silence(3_200).bytes()
+        assertEquals(6_500L, run(Endpointer(), question).first(EndpointEvent.SEND))
     }
 
     @Test
