@@ -163,23 +163,26 @@ def _decide(tmp_path, tool, data, **config):
 def test_a_refused_subagent_says_what_can_be_started_whatever_the_switch(tmp_path, confirm, extra):
     result = _decide(tmp_path, *_agent("general-purpose", **extra), confirm=confirm)
     assert not result.allow
-    assert result.reason.startswith("[subagent]") and "web-fetch, Explore" in result.reason
+    assert result.reason.startswith("[needs_desk]") and "web-fetch, Explore" in result.reason
+    assert "coding session" in result.reason
 
 
-def test_a_refused_subagent_is_noted_but_not_passed_to_the_desk(tmp_path):
+def test_a_refused_builder_subagent_is_passed_to_the_desk(tmp_path):
+    # Mark 2026-11-17: a build asked for by voice must reach the coding session,
+    # not vanish as a refusal the agent was meant to work around.
     from agent_host import pending
     cfg = make_config(tmp_path)
     checkout = tmp_path / "projects" / "demo"
     turn = str(uuid.uuid4())
-    for kind in ("general-purpose", "general-purpose", "Explore"):
-        tool, data = _agent(kind)
-        decision.decide({"tool_name": tool, "tool_input": data, "cwd": str(checkout)},
-                        cfg, turn_checkout=checkout, turn_id=turn,
-                        home=tmp_path / "home", lib_dir=tmp_path / "lib")
+    tool, data = _agent("general-purpose", run_in_background=True)
+    result = decision.decide({"tool_name": tool, "tool_input": data, "cwd": str(checkout)},
+                             cfg, turn_checkout=checkout, turn_id=turn,
+                             home=tmp_path / "home", lib_dir=tmp_path / "lib")
+    assert not result.allow
     state = pending.TurnState.load(cfg.gate_dir, turn).data
-    assert [e["code"] for e in state["events"]] == [None, None]
-    assert [e["rule"] for e in state["events"]] == ["subagent:type"] * 2
-    assert not state["desk"] and state["refused"] is None and state["pending"] is None
+    assert [e["code"] for e in state["events"]] == ["needs_desk"]
+    assert [e["rule"] for e in state["events"]] == ["subagent:background"]
+    # the record carries code needs_desk; the coding session picks it up from there
 
 
 def test_a_read_only_subagent_is_let_through_and_so_is_its_report(tmp_path):
@@ -383,7 +386,7 @@ def test_the_gate_passes_the_call_directory_as_named(tmp_path):
         {"tool_name": tool, "tool_input": data, "cwd": str(tmp_path / "named" / "demo")},
         cfg, turn_checkout=real, turn_id=str(uuid.uuid4()),
         home=tmp_path / "home", lib_dir=tmp_path / "lib")
-    assert not result.allow and result.reason.startswith("[subagent]")
+    assert not result.allow and result.reason.startswith("[needs_desk]")
 
 
 # --- a write into an agents directory is the class `self` ----------------------------------

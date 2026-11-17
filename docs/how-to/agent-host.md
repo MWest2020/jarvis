@@ -482,8 +482,9 @@ the coding session at the desk takes these turns over from their records
 
 - a gated call refused for the desk: an entry in `gated_actions` with `outcome: refused` and
   `code` one of `needs_desk`, `settings_changed`, `target_changed` (other refusals, such as
-  a split or a missing target the agent repairs, `run_alone`, or a `[subagent]` refusal of a
-  helper that is not read-only, are part of a normal turn);
+  a split or a missing target the agent repairs, or `run_alone`, are part of a normal turn).
+  A refused helper that is not read-only (a builder, a background job) has code `needs_desk`
+  since 2026-11-17, so the coding session builds what was asked;
 - a new repository that could not be set up as a project: `outcome: confirmed` with a
   `project` field that starts with `not ready` (`name_taken`, `needs_desk`, a name no
   project can have).
@@ -590,9 +591,12 @@ named (a `git pull`, a whole-branch `git checkout`) is not stopped by this. It i
 the next `Agent` call, which reads the agents directories again: one that redefines an
 allowed type, or cannot be read with certainty, gates that call.
 
-Anything else is refused with `[subagent]`, a sentence that names what can be started, and
-is **not** passed to the coding session: whatever that subagent would have done, the agent
-can do itself, under the same gate, or hand a read to one of the helpers. It stays refused
+Anything else is refused with `[needs_desk]`: a sentence that names what can be started, and
+that the request goes to the coding session at the desk. By voice such a helper is a build or
+a long job; on 2026-11-17 a Bazibo change Mark asked for was refused this way while the
+refusal was not passed on (it had no code), so nothing happened. Since then it carries code
+`needs_desk`, the turn stops, and the coding session takes the request over from the record
+and pings Mark. A small step the agent can do itself in its own worktree it still does itself. It stays refused
 with confirmation off. `SubagentHandback`, the tool with which a subagent hands its report
 back, is ungated: until this change the gate refused it as a tool nobody listed, which is
 what sent turn `3e0b6159…` (a `web-fetch` read for a washing-machine search) to the desk.
@@ -945,7 +949,7 @@ agent-lxc, user `agent`.
   | `e8d18585…` | `general-purpose` (test rule) | `git log --oneline -1`; `gh repo delete MWest2020/jarvis-subagent-probe-does-not-exist --yes` | `gh` refused: `default:gh:repo delete`, class `delete`, `needs_desk` | `git log`; no action log line for `gh` |
   | `672a4cd4…` | `Explore` | `git status --short` (it declined the probe by itself, as a read-only agent) | the `Agent` call let through | `git status`, logged by the PostToolUse hook from inside the subagent |
   | `daf6cf4d…` | `general-purpose` (no test rule) | none | `Agent` refused: `subagent:type` | nothing; no subagent transcript |
-  | `498903ee…` | the same, after the `[subagent]` refusal text | none | refused, code none, not passed on | nothing; no `needs_desk` notice |
+  | `498903ee…` | the same, after the `[subagent]` refusal text | none | refused, code none, not passed on (since #72, 2026-11-17: code `needs_desk`, passed on) | nothing; no `needs_desk` notice |
   | `d635e74b…` | `Explore`, `run_in_background` left out (after the review of #58) | `git log --oneline -1` | the `Agent` call let through (input: `description`, `prompt`, `subagent_type`) | launched **in the background by default** (`launchedWithDefaults: true`, `requestShape: background`); the `Agent` call returned at :38.8, the subagent's `git log` ran at :40.3, its report at :43.0, the turn's answer included it, and the record was written at :46.3, after `claude` ended |
 
   In every turn the subagent's `SubagentHandback` passed (ungated now), and the action log
