@@ -374,7 +374,9 @@ claude_dir_paths = ["CLAUDE.md", "agents", "skills", "plugins", "hooks", "settin
 # Claude Code user directory and every checkout's `.claude` are added.
 home_dirs = ["", ".ssh"]
 # A shell command that names a protected path is a write unless every
-# program in it is one of these and nothing is redirected.
+# program in it is one of these and nothing is redirected (a redirection
+# that sends nothing anywhere, `2>/dev/null`, `>/dev/null`, `&>/dev/null`,
+# `2>&1`, does not count: #59).
 read_programs = [
     "cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg",
     "ls", "stat", "wc", "diff", "cmp", "file", "jq", "bat", "test", "[",

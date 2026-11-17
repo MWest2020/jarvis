@@ -550,7 +550,12 @@ switch it off, all recorded as "not confirmed: confirmation is off" in the turn 
   a yes; no other edit of the configuration can be made by voice.
 
 The class `self` (Jarvis's own rules, settings, hooks, `authorized_keys`) stays desk-only
-whatever the setting.
+whatever the setting. A shell command that names one of those places is in the class unless
+every program in it only reads (`cat`, `ls`, `cd`, `grep`, the `read_programs` of
+`gate_rules.toml`) and nothing is redirected. A redirection that sends nothing anywhere
+(`2>/dev/null`, `>/dev/null`, `&>/dev/null`, `2>&1`) writes no file and does not count, so
+`cd ~/x 2>/dev/null || cd ~/X` is a read; any other redirection still makes it a write
+(#59).
 
 ## Reading the records
 
