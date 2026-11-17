@@ -15,7 +15,8 @@ is loaded here and nothing beyond numpy is needed.
 It is off the normal path: a reply is sung only when all of these hold (`choose`):
 the tag stands at the very start of the agent's summary and names a known tune, the
 driver's own words in this turn ask for a song, the reply is not a read-back, and
-JARVIS_SING is not 0. Otherwise every tag is removed and the lyrics are spoken.
+JARVIS_SING is not 0 (and, for a parody tune, JARVIS_SING_PARODY is not 0). Otherwise
+every tag is removed and the lyrics are spoken.
 """
 from __future__ import annotations
 
@@ -33,6 +34,11 @@ TAG = re.compile(r"\[\s*sing\s*:?\s*([A-Za-z _-]*?)\s*\]\s*", re.IGNORECASE)
 # A broken tag the agent may write ("[sing: twinkle hi", no closing bracket): never
 # spoken aloud, always taken out (review of #78).
 OPEN_TAG = re.compile(r"\[\s*sing\b\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECASE)
+# A closed tag with a name TAG does not take ("[sing: Iron Man!]", "[sing: In the Hall
+# of the Mountain King (Grieg)]"): taken out up to its bracket, so no part of the name
+# is spoken. Bounded, so an unclosed tag never swallows the lyrics after it (review of
+# #81).
+ODD_TAG = re.compile(r"\[\s*sing\b[^\]\[\n]{0,60}\]\s*", re.IGNORECASE)
 # What the driver must have said in this turn for a reply to be sung: a word that asks
 # for a song, in English or Dutch. The agent's tag alone is not enough.
 ASKED = re.compile(
@@ -61,6 +67,9 @@ class Tune:
     title: str
     bpm: float
     lines: tuple[tuple[Note, ...], ...]
+    # A parody or pastiche of a song still under copyright: switched off on its own
+    # with JARVIS_SING_PARODY=0 (see `tunes`).
+    parody: bool = False
 
     @property
     def notes(self) -> tuple[Note, ...]:
@@ -80,8 +89,15 @@ def _line(*notes) -> tuple[Note, ...]:
     return tuple(Note(*n) for n in notes)
 
 
-# Public-domain melodies only (see docs/how-to/bridge-service.md, "Singing"). The lyrics
-# are the agent's own. Steps are semitones from the tonic (C = 0, G below it = -5).
+def _quicker(factor: float, line: tuple[Note, ...]) -> tuple[Note, ...]:
+    """The same notes, each `factor` times as long: a written-out accelerando (the
+    table has one tempo per tune, so a line that should go faster gets shorter notes)."""
+    return tuple(Note(n.step, n.beats * factor, n.chord) for n in line)
+
+
+# Public-domain melodies, and one marked parody (see docs/how-to/bridge-service.md,
+# "Singing"). The lyrics are always the agent's own. Steps are semitones from the tonic
+# (C = 0, G below it = -5).
 TUNES: dict[str, Tune] = {t.id: t for t in (
     # "Good Morning to All" (Mildred and Patty Hill, 1893), 3/4.
     Tune("happy-birthday", "Happy Birthday", 110, (
@@ -106,7 +122,53 @@ TUNES: dict[str, Tune] = {t.id: t for t in (
         _line((0, 1), (-5, 1, V), (0, 2, I)),
         _line((0, 1), (-5, 1, V), (0, 2, I)),
     )),
+    # "In the Hall of the Mountain King" (Grieg, Peer Gynt, 1875), the opening theme as
+    # the score has it, in B minor (B = 0): a bar per line, eighths and quarters. The
+    # organ holds only the dominant (F sharp), no third. The last two bars are a
+    # quarter faster, so the riff builds the way the piece does.
+    Tune("mountain-king", "In the Hall of the Mountain King", 100, (
+        _line((0, .5, (7,)), (2, .5), (3, .5), (5, .5), (7, .5), (3, .5), (7, 1)),
+        _line((6, .5), (2, .5), (6, 1), (5, .5), (1, .5), (5, 1)),
+        *(_quicker(.8, line) for line in (
+            _line((0, .5), (2, .5), (3, .5), (5, .5), (7, .5), (3, .5), (7, .5), (12, .5)),
+            _line((10, .5), (7, .5), (3, .5), (7, .5), (10, 2)),
+        )),
+    )),
+    # PARODY / PASTICHE, not a public-domain melody: riff after Black Sabbath, "Iron Man"
+    # (1970). Only the main riff motif is evoked, once, transcribed from memory, in B
+    # (B = 0) with a power chord (root and fifth) under every note; no other part of the
+    # song. Non-commercial, the words are always the agent's own parody about Jarvis,
+    # never the song's. Relies on the parody/pastiche exception (Dutch Auteurswet
+    # art. 18b; EU Directive 2001/29/EC art. 5(3)(k)); removed on request of the rights
+    # holder. Off on its own with JARVIS_SING_PARODY=0.
+    Tune("iron-man", "Iron Man (parody)", 80, (
+        _line((0, 1.5, (0, 7)), (3, 1, (3, 10)), (3, .5), (5, 1, (5, 12)), (5, 1)),
+        _line((8, .5, (8, 15)), (7, .5, (7, 14)), (8, .5, (8, 15)), (7, .5, (7, 14)),
+              (8, .5, (8, 15)), (7, .5, (7, 14))),
+        _line((3, 1, (3, 10)), (3, .5), (5, 1, (5, 12)), (5, 1.5)),
+    ), parody=True),
+    # "Ode to Joy" (Beethoven, Symphony No. 9, 1824), the first two phrases.
+    Tune("ode-to-joy", "Ode to Joy", 120, (
+        _line((4, 1, I), (4, 1), (5, 1), (7, 1), (7, 1, V), (5, 1), (4, 1), (2, 1)),
+        _line((0, 1, I), (0, 1), (2, 1), (4, 1), (4, 1.5), (2, .5, V), (2, 2)),
+        _line((4, 1, I), (4, 1), (5, 1), (7, 1), (7, 1, V), (5, 1), (4, 1), (2, 1)),
+        _line((0, 1, I), (0, 1), (2, 1), (4, 1), (2, 1.5, V), (0, .5, I), (0, 2)),
+    )),
 )}
+
+# Other names the agent may write for a tune (after normalising: lower case, spaces and
+# underscores to "-").
+ALIASES = {
+    "hall-of-the-mountain-king": "mountain-king",
+    "in-the-hall-of-the-mountain-king": "mountain-king",
+    "black-sabbath": "iron-man",
+}
+
+
+def tunes(parody: bool = True) -> dict[str, Tune]:
+    """The table the bridge sings from: without the parody tunes when `parody` is off
+    (JARVIS_SING_PARODY=0); a tag naming one is then removed and its words spoken."""
+    return {name: t for name, t in TUNES.items() if parody or not t.parody}
 
 
 # --- the tag and who may sing ----------------------------------------------------------
@@ -164,14 +226,16 @@ def plain(lyrics: str) -> str:
     return re.sub(r"(?<=[^\W\d_])-(?=[^\W\d_])", "", lyrics)
 
 
-def split_tag(spoken: str) -> tuple[Tune | None, str, bool]:
+def split_tag(spoken: str, *, parody: bool = True) -> tuple[Tune | None, str, bool]:
     """(the tune, the text without any tag, whether there was a tag). The tune only
-    when the tag is the very first thing and names a known tune."""
+    when the tag is the very first thing and names a known tune (of `tunes(parody)`)."""
     match = TAG.match(spoken)
     name = re.sub(r"[\s_]+", "-", match.group(1).strip().lower()) if match else ""
-    tune = TUNES.get(name) if match else None
+    tune = tunes(parody).get(ALIASES.get(name, name)) if match else None
     rest, count = TAG.subn("", spoken)
+    rest, odd = ODD_TAG.subn("", rest)
     rest, broken = OPEN_TAG.subn("", rest)
+    broken += odd
     return tune, " ".join(rest.split()), count + broken > 0
 
 
@@ -180,7 +244,8 @@ def asked_to_sing(transcript: str) -> bool:
 
 
 def choose(spoken: str, *, transcript: str, enabled: bool, read_back: bool,
-           framing: tuple[str, ...] = ()) -> tuple[str, SongRequest | None]:
+           framing: tuple[str, ...] = (), parody: bool = True,
+           ) -> tuple[str, SongRequest | None]:
     """What to say, and the song when this reply is sung.
 
     A read-back is returned exactly as built and never sung. A reply without a tag is
@@ -192,7 +257,7 @@ def choose(spoken: str, *, transcript: str, enabled: bool, read_back: bool,
     if read_back:
         return spoken, None
     before, core, after = peel(spoken, framing)
-    tune, rest, tagged = split_tag(core)
+    tune, rest, tagged = split_tag(core, parody=parody)
     if not tagged:
         return spoken, None
     if tune is None or not enabled or not asked_to_sing(transcript) or not words(rest):

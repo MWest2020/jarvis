@@ -18,6 +18,9 @@ SING_TUNES = (
     ("happy-birthday", (6, 6, 7, 6)),
     ("twinkle", (7, 7)),
     ("frere-jacques", (4, 4, 3, 3, 6, 6, 3, 3)),
+    ("mountain-king", (7, 6, 8, 5)),
+    ("iron-man", (5, 6, 4)),
+    ("ode-to-joy", (8, 7, 8, 7)),
 )
 SING_INSTRUCTION = (
     "Only when the user explicitly asks you to sing, start the text after the marker "
@@ -26,7 +29,11 @@ SING_INSTRUCTION = (
     "(hap-py): "
     + "; ".join(f"[sing: {name}] {sum(lines)} syllables ({', '.join(map(str, lines))})"
                 for name, lines in SING_TUNES)
-    + ". A sung line may be up to 220 characters. Never use the tag in any other reply."
+    + ". iron-man is a parody of the riff only: write your own funny lines about "
+    "being Jarvis, the voice assistant in the car, never the song's own words or title "
+    "line. Asked for any other song still under copyright, say without the tag that "
+    "you cannot sing that one and offer mountain-king or iron-man. "
+    "A sung line may be up to 220 characters. Never use the tag in any other reply."
 )
 
 SYSTEM_PROMPT_ADDITION = (
