@@ -194,7 +194,7 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
 | `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name> <destination> -- --depth 1`. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
 | `clone_timeout_s` | no (default `45`, at most `90`) | How long one clone attempt may take before it is stopped and removed. |
-| `voice_model` | no (default none) | The voice profile's model: `--model=<value>` on every turn, an alias (`sonnet`, `opus`) or a full name. Unset: Claude Code's own choice from `user_settings_path`, as at the desk. See [The voice profile](#the-voice-profile). |
+| `voice_model` | no (default none) | The voice profile's model: `--model=<value>` on every turn, an alias (`sonnet`, `opus`) or a full name. Unset: Claude Code's own choice from `user_settings_path`, as at the desk. A wrong name is only noticed when a turn runs (it fails as `agent_failed`); run host check 4 again before setting a model, since it is not proven that `--model` leaves the hook environment unchanged. See [The voice profile](#the-voice-profile). |
 | `voice_effort` | no (default none) | The voice profile's effort: `--effort=<value>`, one of `low`, `medium`, `high`, `xhigh`, `max`. Unset: the user's settings decide (on `agent-lxc`: `high` for Opus, `modelSettings`). |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie

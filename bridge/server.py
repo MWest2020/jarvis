@@ -401,8 +401,7 @@ class Handler(BaseHTTPRequestHandler):
         with timer.stage("write"):
             self.wfile.write(audio_reply)
         # One line per turn, in the file and on stdout: numbers only, no text.
-        logger.info("project=%s turn=%s timing %s", project, session_id or "-",
-                    timer.log_fields())
+        logger.info("project=%s timing %s", project, timer.log_fields())
 
     def _reject(self, status: int, message: str) -> None:
         """Answer a request that is refused before its body was read.

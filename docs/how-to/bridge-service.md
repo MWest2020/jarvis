@@ -403,7 +403,7 @@ Every answered turn writes one INFO line, in the file and on stdout, with number
 (no transcript, no summary):
 
 ```
-project=jarvis-home turn=<turn id> timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=5420 write_ms=3 total_ms=14840 audio_in_s=5.5 audio_out_s=9.9 spoken_chars=143
+project=jarvis-home timing read_ms=4 stt_ms=1702 vad_ms=61 agent_ms=7650 tts_ms=5420 write_ms=3 total_ms=14840 audio_in_s=5.5 audio_out_s=9.9 spoken_chars=143
 ```
 
 | Field | What |

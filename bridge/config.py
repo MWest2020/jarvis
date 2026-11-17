@@ -386,10 +386,21 @@ def _whisper_language() -> str | None:
     raw = os.environ.get("JARVIS_WHISPER_LANGUAGE", "").strip()
     if not raw:
         return None
-    if not _WHISPER_LANGUAGE.fullmatch(raw):
-        raise ConfigError(f"JARVIS_WHISPER_LANGUAGE={raw!r} must be a language code such as "
-                          f"en or nl, or unset to detect it")
+    codes = _whisper_codes()
+    if not _WHISPER_LANGUAGE.fullmatch(raw) or (codes is not None and raw not in codes):
+        raise ConfigError(f"JARVIS_WHISPER_LANGUAGE={raw!r} must be a language code whisper "
+                          f"knows, such as en or nl, or unset to detect it")
     return raw
+
+
+def _whisper_codes() -> frozenset[str] | None:
+    """The language codes faster-whisper accepts, or None when it is not installed (a test
+    environment; the shape check then stands). Importing the tokenizer loads no model."""
+    try:
+        from faster_whisper.tokenizer import _LANGUAGE_CODES
+    except ImportError:
+        return None
+    return frozenset(_LANGUAGE_CODES)
 
 
 @dataclass(frozen=True)

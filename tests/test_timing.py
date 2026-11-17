@@ -85,7 +85,7 @@ def test_a_full_turn_sends_the_timing_header_and_logs_one_line(tmp_path, monkeyp
     lines = [r.getMessage() for r in caplog.records if " timing " in r.getMessage()]
     assert len(lines) == 1
     line = lines[0]
-    assert line.startswith("project=demo turn=turn-1 timing ")
+    assert line.startswith("project=demo timing ")
     for field in ("stt_ms=", "vad_ms=", "agent_ms=", "tts_ms=", "write_ms=", "total_ms=",
                   "spoken_chars=23"):
         assert field in line
@@ -216,3 +216,10 @@ def test_the_server_hands_the_whisper_options_to_transcribe(tmp_path, monkeypatc
         b.stop()
     assert seen == {"beam_size": 1, "language": "en"}
     assert server.Handler.config.whisper_options == {"beam_size": 1, "language": "en"}
+
+
+def test_wav_seconds_never_raises_on_a_broken_header():
+    from bridge.timing import wav_seconds
+    good = b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
+    for data in (b"", b"RIFF", good, good + b"\xff" * 7, b"RIFF\xff\xff\xff\xffWAVEdata"):
+        assert wav_seconds(data) is None or isinstance(wav_seconds(data), float)

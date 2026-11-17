@@ -31,7 +31,7 @@ def wav_seconds(data: bytes) -> float | None:
         with wave.open(io.BytesIO(data), "rb") as wav:
             rate = wav.getframerate()
             return wav.getnframes() / rate if rate > 0 else None
-    except (wave.Error, EOFError, OSError, ValueError):
+    except Exception:  # only used in the log; a bad header must never fail a turn
         return None
 
 
