@@ -85,6 +85,17 @@ def _stream_replies() -> bool:
     raise ConfigError(f"JARVIS_STREAM_REPLIES must be 0, 1 or unset, not {raw!r}")
 
 
+def _sing() -> bool:
+    """jarvis-sing: a reply the driver asked to be sung is sung, unless JARVIS_SING=0
+    says every reply is spoken (the lyrics then as words)."""
+    raw = os.environ.get("JARVIS_SING", "").strip()
+    if raw in ("", "1"):
+        return True
+    if raw == "0":
+        return False
+    raise ConfigError(f"JARVIS_SING must be 0, 1 or unset, not {raw!r}")
+
+
 def _check_private_host(host: str, *, behind_proxy: bool = False) -> str:
     # AGENTS.md: reachable only over a private network, never public.
     try:
@@ -440,6 +451,8 @@ class BridgeConfig:
     whisper_language: str | None = None
     # jarvis-streaming-speech S1: stream a reply to a client that asks for it.
     stream_replies: bool = True
+    # jarvis-sing: the easter egg; JARVIS_SING=0 switches it off.
+    sing: bool = True
 
     @property
     def whisper_options(self) -> dict:
@@ -553,6 +566,7 @@ def load_config() -> BridgeConfig:
         whisper_beam_size=_whisper_beam_size(),
         whisper_language=_whisper_language(),
         stream_replies=_stream_replies(),
+        sing=_sing(),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,
