@@ -194,6 +194,8 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
 | `clone_command` | no (default `["gh", "repo", "clone"]`) | Run by the wrapper after a confirmed `gh repo create` ran; it adds `<owner>/<name> <destination> -- --depth 1`. See [A new repository becomes a project](#a-new-repository-becomes-a-project). |
 | `clone_timeout_s` | no (default `45`, at most `90`) | How long one clone attempt may take before it is stopped and removed. |
+| `voice_model` | no (default none) | The voice profile's model: `--model=<value>` on every turn, an alias (`sonnet`, `opus`) or a full name. Unset: Claude Code's own choice from `user_settings_path`, as at the desk. See [The voice profile](#the-voice-profile). |
+| `voice_effort` | no (default none) | The voice profile's effort: `--effort=<value>`, one of `low`, `medium`, `high`, `xhigh`, `max`. Unset: the user's settings decide (on `agent-lxc`: `high` for Opus, `modelSettings`). |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
 directly under the root, and it must be a git repository with a work tree. **This list is
@@ -282,6 +284,24 @@ call. Give it the coding session user's `HOME` and a
 nothing a shell rc file sets reaches the turn. **Run `install.sh` again after editing this
 file**: it pins `PATH` and `HOME` in the turn settings to the file's values (a checkout's
 `env` cannot change a pinned name), and only an install writes them there.
+
+## The voice profile
+
+Every turn on this host is a voice turn, and by default it runs as the desk does: the
+model and effort of `user_settings_path` (on `agent-lxc`, Opus at effort `high`). Two
+keys change that for Jarvis only, without touching the user's settings:
+
+```toml
+voice_model = "sonnet"   # --model=sonnet
+voice_effort = "low"     # --effort=low
+```
+
+The wrapper passes each as one `--option=value` token; a value that is not a model name
+or one of the five effort levels is refused when the configuration is read. Nothing else
+about the turn changes: the same prompt, settings, hooks and gate. Claude Code gives the
+effort to every hook process as `CLAUDE_EFFORT`, a name the gate already leaves out of its
+environment comparison (`agent_host/trusted.py`, `CLAUDE_ADDED`), so the gate behaves the
+same with any profile. The record's `timing.profile` says which profile a turn ran with.
 
 ## Checkouts that get read-only turns
 
@@ -417,6 +437,7 @@ hash again from the stored call.
 | `duration_ms`, `duration_api_ms`, `num_turns`, `ttft_ms` | What `claude --output-format json` says: its own clock, the time spent waiting on the API, the number of model calls, the time to the first token |
 | `startup_gap_ms` | `claude_wall_ms - duration_ms`: Claude Code's start (node, settings, MCP servers, the session) and exit, outside its own clock |
 | `input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `models` | From claude's `usage` and `modelUsage`. A large `cache_creation_tokens` on a resumed session means the prompt cache had expired and the whole conversation was sent again |
+| `profile` | The voice profile's `model` and `effort`, when configured |
 
 ```sh
 ls -t ~/.local/state/jarvis-agent/records | head          # newest first

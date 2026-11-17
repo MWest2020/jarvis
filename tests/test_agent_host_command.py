@@ -80,3 +80,35 @@ def test_settings_default_to_bypass_false_for_auto(tmp_path):
 
 def test_settings_default_to_bypass_false_when_missing(tmp_path):
     assert settings_default_to_bypass(tmp_path / "does-not-exist.json") is False
+
+
+# --- the voice profile (voice-and-speed) ---------------------------------------------
+
+def test_the_voice_profile_adds_model_and_effort_as_single_tokens():
+    command = build_command(settings_path=SETTINGS, prompt_path=PROMPT, session_id=None,
+                            model="sonnet", effort="low")
+    assert command[:12] == [
+        "claude", "-p", "--output-format", "json",
+        "--permission-mode", "auto", "--permission-prompts", "none",
+        "--system-prompt-snapshot", "off", "--model=sonnet", "--effort=low",
+    ]
+    assert "--model" not in command and "--effort" not in command
+
+
+def test_a_full_model_name_is_accepted():
+    for name in ("claude-sonnet-5-5", "opus[1m]", "claude-haiku-4-5-20251001"):
+        command = build_command(settings_path=SETTINGS, prompt_path=PROMPT, session_id=None,
+                                model=name)
+        assert f"--model={name}" in command
+
+
+def test_a_model_or_effort_that_could_be_an_option_is_refused():
+    import pytest
+    for model in ("--dangerously-skip-permissions", "-x", "", "a b", "sonnet\n"):
+        with pytest.raises(ValueError):
+            build_command(settings_path=SETTINGS, prompt_path=PROMPT, session_id=None,
+                          model=model)
+    for effort in ("none", "LOW", "--tools", ""):
+        with pytest.raises(ValueError):
+            build_command(settings_path=SETTINGS, prompt_path=PROMPT, session_id=None,
+                          effort=effort)

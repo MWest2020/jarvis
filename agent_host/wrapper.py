@@ -627,6 +627,8 @@ def _run_turn(
         session_id=stored_id,
         append_prompt_inline=inline,
         prompt_text=_prompt_text(config) if inline else "",
+        model=config.voice_model,
+        effort=config.voice_effort,
     )
 
     started = time.monotonic()
@@ -703,7 +705,7 @@ def _run_turn(
         except (json.JSONDecodeError, KeyError, TypeError):
             reply_text, new_session_id, outcome = stdout, stored_id, "agent_failed"
     timing = timing_mod.turn_timing(pre_s=started - request_started, wall_s=duration,
-                                    payload=payload)
+                                    payload=payload, profile=config.voice_profile)
 
     actions, pending_fields, notice, project_field = _after_turn(
         config, project, turn_id, working_dir, env, confirmed,
