@@ -76,3 +76,10 @@ clone_command = ["gh", "repo", "clone"]
 # Seconds one attempt may take (at most 90); then it is stopped, nothing of it is left, and it is
 # tried again by the next requests, three attempts in all.
 clone_timeout_s = 45
+
+# The voice profile: the model and effort of every turn, as `--model=` and `--effort=`.
+# Unset (the default): Claude Code's own choice from user_settings_path, as at the desk.
+# voice_model: an alias (sonnet, opus) or a full model name. voice_effort: low, medium,
+# high, xhigh or max. Measurements and a proposal: docs/how-to/agent-host.md.
+# voice_model = "sonnet"
+# voice_effort = "low"

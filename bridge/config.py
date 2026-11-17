@@ -363,6 +363,46 @@ def _confirm_min_speech_s() -> float:
     return value
 
 
+# Whisper's decoding (voice-and-speed). The defaults are faster-whisper's own, so an
+# unset variable changes nothing: beam search of 5, and the language detected per
+# recording (which costs a second encoder pass over the first 30 s).
+DEFAULT_WHISPER_BEAM_SIZE = 5
+MAX_WHISPER_BEAM_SIZE = 10
+# A language code as Whisper knows them: two or three lowercase letters ("en", "nl", "haw").
+_WHISPER_LANGUAGE = re.compile(r"[a-z]{2,3}")
+
+
+def _whisper_beam_size() -> int:
+    raw = os.environ.get("JARVIS_WHISPER_BEAM_SIZE", "").strip()
+    if not raw:
+        return DEFAULT_WHISPER_BEAM_SIZE
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= MAX_WHISPER_BEAM_SIZE:
+        raise ConfigError(f"JARVIS_WHISPER_BEAM_SIZE={raw!r} must be a whole number, 1 to "
+                          f"{MAX_WHISPER_BEAM_SIZE}")
+    return int(raw)
+
+
+def _whisper_language() -> str | None:
+    raw = os.environ.get("JARVIS_WHISPER_LANGUAGE", "").strip()
+    if not raw:
+        return None
+    codes = _whisper_codes()
+    if not _WHISPER_LANGUAGE.fullmatch(raw) or (codes is not None and raw not in codes):
+        raise ConfigError(f"JARVIS_WHISPER_LANGUAGE={raw!r} must be a language code whisper "
+                          f"knows, such as en or nl, or unset to detect it")
+    return raw
+
+
+def _whisper_codes() -> frozenset[str] | None:
+    """The language codes faster-whisper accepts, or None when it is not installed (a test
+    environment; the shape check then stands). Importing the tokenizer loads no model."""
+    try:
+        from faster_whisper.tokenizer import _LANGUAGE_CODES
+    except ImportError:
+        return None
+    return frozenset(_LANGUAGE_CODES)
+
+
 @dataclass(frozen=True)
 class BridgeConfig:
     bind_host: str
@@ -385,6 +425,19 @@ class BridgeConfig:
     confirm_yes: tuple[str, ...] = DEFAULT_CONFIRM_YES
     confirm_no: tuple[str, ...] = DEFAULT_CONFIRM_NO
     confirm_min_speech_s: float = DEFAULT_CONFIRM_MIN_SPEECH_S
+    whisper_beam_size: int = DEFAULT_WHISPER_BEAM_SIZE
+    whisper_language: str | None = None
+
+    @property
+    def whisper_options(self) -> dict:
+        """Keyword arguments for stt.transcribe beyond the model: only what differs
+        from faster-whisper's defaults, so an unset variable passes nothing."""
+        options: dict = {}
+        if self.whisper_beam_size != DEFAULT_WHISPER_BEAM_SIZE:
+            options["beam_size"] = self.whisper_beam_size
+        if self.whisper_language is not None:
+            options["language"] = self.whisper_language
+        return options
 
     def current_projects(self) -> dict[str, ProjectConfig]:
         if self.project_scanner is not None:
@@ -484,6 +537,8 @@ def load_config() -> BridgeConfig:
         log_path=state_dir / "bridge.log",
         whisper_model=os.environ.get("JARVIS_WHISPER_MODEL", "base"),
         kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "bm_george"),
+        whisper_beam_size=_whisper_beam_size(),
+        whisper_language=_whisper_language(),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,

@@ -14,10 +14,18 @@ def _model(model_size: str):
     return WhisperModel(model_size, device="cpu", compute_type="int8")
 
 
-def transcribe(audio_bytes, *, model_size: str = "base") -> str:
-    """The recording as text. Takes the uploaded bytes, or what decode() made of them."""
+def transcribe(audio_bytes, *, model_size: str = "base", beam_size: int = 5,
+               language: str | None = None) -> str:
+    """The recording as text. Takes the uploaded bytes, or what decode() made of them.
+
+    `beam_size` and `language` are faster-whisper's own (defaults 5 and detection).
+    A fixed language skips the detection pass, measured on agent-lxc for base/int8
+    on 4 to 9 s recordings: 1.7-1.9 s down to 0.9-1.1 s; beam 1 takes another
+    0.05-0.2 s off (docs/how-to/bridge-service.md, "Where a turn's time goes").
+    """
     model = _model(model_size)
-    segments, _info = model.transcribe(_source(audio_bytes))
+    segments, _info = model.transcribe(_source(audio_bytes), beam_size=beam_size,
+                                       language=language)
     return " ".join(segment.text.strip() for segment in segments).strip()
 
 
