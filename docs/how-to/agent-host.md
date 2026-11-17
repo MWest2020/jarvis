@@ -303,6 +303,75 @@ effort to every hook process as `CLAUDE_EFFORT`, a name the gate already leaves 
 environment comparison (`agent_host/trusted.py`, `CLAUDE_ADDED`), so the gate behaves the
 same with any profile. The record's `timing.profile` says which profile a turn ran with.
 
+### Measured on `agent-lxc`, 2026-11-17
+
+Claude Code 2.1.322, through this branch's real wrapper and gate (a scratch `state_dir`
+and configuration, `projects` = `jarvis-home` and `jarvis-sandbox`, the installed turn
+settings with the hooks pointing at the checkout), a fresh session per turn, 33 `claude`
+runs in all. Seconds are `claude_wall_ms`; the wrapper adds about 0.1 s around it.
+
+| Prompt | Current (Opus 5.5, effort `high`) | Opus, `low` | Sonnet 5.5, `low` | Opus, `low`, plus the short-reply text |
+|---|---|---|---|---|
+| "Jarvis, can you do web searches by the way?" | 6.1, 4.3, 5.7 | 4.3, 6.4 | 3.7, 3.6 | 3.9 |
+| "How many pods are running in the Jarvis namespace of the cluster?" (one `kubectl` read) | 8.0, 8.7 | 7.2, 8.1 | 7.2, 8.9 | 7.0 |
+| "Search the web. What is the latest stable version of the Linux kernel?" | 21.5, 21.8 | 16.8, 17.4 | 16.2, 36.4 | 16.1, 16.3 |
+| "Jarvis, what's the status on Wordsworth?" (git, roadmap, PRs, issues) | 25.7 | 18.1 | not run | 10.2 (two more runs refused, see below) |
+
+What else the records say:
+
+- **Every turn pays about 0.7 to 1.1 s of `startup_gap_ms`** (Claude Code starting, its
+  settings, MCP servers and session), whatever the profile.
+- **Effort `low` takes the thinking away** (thinking tokens 50-220 at `high`, 0-56 at
+  `low`) and with it some output: 4.6 s off the web question, 7.6 s off the status
+  question, about 0.6 s off the cluster read, nothing measurable off a trivial question.
+  The answers were the same: the kernel version (7.3.4, from news sites, both noting that
+  kernel.org was not checked), the one pod, the same Wordsworth facts and open questions.
+- **Sonnet 5.5 at `low` is faster on a trivial question (1.4 s) but got the web question
+  wrong both times** ("probably 7.2.9", "probably 7.1 something", where Opus found 7.3.4
+  twice at both efforts), and one of its runs took 36 s. Not proposed.
+- **A resumed long session costs about 3 s more.** A copy of the live `jarvis-home`
+  session (about 90,000 tokens of conversation, prompt cache warm) took 8.2 and 9.1 s for
+  a trivial question and a follow-up, against 4.3-6.1 s fresh, with a time to first token
+  of 4.7-5.4 s against 2.1-3.5 s. When the cache has expired (it lives one hour) the whole
+  conversation is written to it again: Mark's turn of 09:47 sent 59,000 tokens to the cache
+  for "can you do web searches" (7.6 s).
+- **The short-reply text** (a `second_prompt_file`, below) halves the output tokens and
+  takes another 0.3 to 1 s off the short turns and 8 s off the status question, with the
+  same spoken lines. But two of its three status runs began with one compound read,
+  `cd ~/wordsworth 2>/dev/null || cd ~/Wordsworth; …`, which the gate refuses as a write
+  to its own files (`self:shell`, a false positive of the shell classifier for a redirect
+  after `cd` in an `||` form; the default profile's runs happened to use other shapes).
+  Use it after that is fixed.
+- `duration_api_ms` is **summed over the whole session** on a resumed one (264 s for a
+  9 s turn); use it for fresh sessions only. `duration_ms`, `ttft_ms` and the token counts
+  are per turn.
+- The gate is unchanged under a profile: a `gh repo create` asked for under Opus `low`
+  was held and read back ("Create the private repository jarvis-speed-probe. Say yes to
+  go ahead."), not refused as `settings_changed`, and nothing was created.
+
+### Proposed values
+
+```toml
+voice_effort = "low"     # Opus stays the model (the user's settings)
+# voice_model unset
+```
+
+Expected: about 5 s off multi-step turns (web, status), up to 8 s on longer ones, the
+same answers. The short-reply text, once the gate's false positive is fixed, as
+`second_prompt_file = "/etc/jarvis-agent/prompt.local.md"` with:
+
+```
+This turn is heard, not read: the driver only hears the SPOKEN SUMMARY line.
+So keep the text before it short: no headings, no lists, no recap of what you
+did, at most two short sentences, or nothing. The SPOKEN SUMMARY line itself
+stays as asked: one or two sentences, under 160 characters.
+```
+
+An earlier wording that also said "use only the tool calls the answer needs" made the
+agent bundle its reads into one call; leave tool use alone. The last sentence matters:
+without it the agent put the whole answer into a 480-character summary line, which the
+bridge cuts at 160.
+
 ## Checkouts that get read-only turns
 
 A project's own `.claude/settings.json` and `.claude/settings.local.json` are loaded by
@@ -434,7 +503,7 @@ hash again from the stored call.
 | `wrapper_pre_ms` | From the request on stdin to `claude` started: checks, lock, sessions, environment |
 | `claude_wall_ms` | From `claude` started to `claude` exited, by the wrapper's clock |
 | `wrapper_post_ms` | From `claude` exited to the record written: the gate's state, a read-back, a notify, a clone |
-| `duration_ms`, `duration_api_ms`, `num_turns`, `ttft_ms` | What `claude --output-format json` says: its own clock, the time spent waiting on the API, the number of model calls, the time to the first token |
+| `duration_ms`, `duration_api_ms`, `num_turns`, `ttft_ms` | What `claude --output-format json` says: its own clock, the time spent waiting on the API (on a resumed session summed over the whole session, Claude Code 2.1.322), the number of model calls, the time to the first token |
 | `startup_gap_ms` | `claude_wall_ms - duration_ms`: Claude Code's start (node, settings, MCP servers, the session) and exit, outside its own clock |
 | `input_tokens`, `output_tokens`, `thinking_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `models` | From claude's `usage` and `modelUsage`. A large `cache_creation_tokens` on a resumed session means the prompt cache had expired and the whole conversation was sent again |
 | `profile` | The voice profile's `model` and `effort`, when configured |
