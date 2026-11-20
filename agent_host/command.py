@@ -45,6 +45,7 @@ def build_command(
     prompt_text: str = "",
     model: str | None = None,
     effort: str | None = None,
+    settings_inline: str | None = None,
 ) -> list[str]:
     """argv for one headless turn, fixed by a test (D34):
 
@@ -56,6 +57,10 @@ def build_command(
     `model` and `effort` are the voice profile; without them the line is the
     one of D34, byte for byte, and Claude Code takes both from the user's
     own settings, as at the desk.
+
+    `settings_inline`, when given, is passed to `--settings` in place of the
+    path: the turn settings as one JSON string, with the egress proxy's
+    variables pinned (jarvis-credential-proxy, task 0.13).
 
     `session_id`, if given, must already be validated as a canonical UUID
     (agent_host.sessions.is_canonical_uuid): it is passed as one token,
@@ -87,7 +92,7 @@ def build_command(
         command += ["--append-system-prompt", prompt_text]
     else:
         command += ["--append-system-prompt-file", str(prompt_path)]
-    command += ["--settings", str(settings_path)]
+    command += ["--settings", settings_inline if settings_inline is not None else str(settings_path)]
     if session_id:
         command.append(f"--resume={session_id}")
     return command

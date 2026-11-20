@@ -82,11 +82,16 @@ is logged. Nothing is enforced, nothing is denied, nothing is decrypted, no cred
 - [ ] 0.12 Not seen by stage 0, said in the how-to: programs that ignore the proxy
   variables, DNS lookups and ssh. Seeing them needs the turn's cgroup (E1, E2): the first
   task of stage 1 logs them (an nftables rule that logs and accepts) before anything drops
-- [ ] 0.13 Pin the proxy variables (`HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`,
+- [x] 0.13 Pin the proxy variables (`HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`,
   `NO_PROXY`, `no_proxy`) in the turn settings while egress is on, as `PATH` and `HOME` are
   pinned. Found in the host check of 0.10: a checkout's `env` can redirect them in the
   middle of a turn. Gated calls are still refused, but ungated reads after that moment are
-  missing from the log. Stage 1's kernel filter does not depend on them
+  missing from the log. Stage 1's kernel filter does not depend on them. Built: with
+  `"observe"` the wrapper passes the turn settings inline to `--settings` with the six
+  variables in `env` (the URL, or empty when the proxy is down or full); the same values are
+  in the `claude` process's environment, so the gate's comparison is unchanged. Tests in
+  CI, including the `evil-proxy` case; checked on the host from the branch (the how-to).
+  Needs a reinstall (`install.sh --memory-dir … --egress`)
 
 ## 1. Enforce egress (no new user)
 
