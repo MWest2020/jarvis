@@ -139,8 +139,10 @@ phase on top.
 ## Open questions
 
 Mark approved the change; these are the choices inside it, each with the default that is
-built if nobody answers. They are put to him in
-[#70](https://github.com/MWest2020/jarvis/issues/70).
+built if nobody answers. They were put to him in
+[#70](https://github.com/MWest2020/jarvis/issues/70). **Decided on 18 Nov 2026** (Mark, by
+mail, answering the daily digest): "defaults en proposals ok". Every choice below takes its
+default; nothing in the change moves.
 
 1. **The patience window.** How long the bridge waits before it says "I'll chime when it's
    done". Measured turns take 15 to 25 s, a web question about 20 s.

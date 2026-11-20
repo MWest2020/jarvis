@@ -309,6 +309,23 @@ class FullMode:
                            "(%s)", project.name, exc.code)
             logger.warning("project=%s cancel failed: %s", project.name, exc, extra=FILE_ONLY)
 
+    def drop_pending(self, project: ProjectConfig) -> bool:
+        """A control word of the drive (add-drive-mode D18) was the next utterance of
+        this project: like any utterance that is not a yes, it uses up the read-back,
+        and the agent host gets a `no`. True when one was pending."""
+        entry = self._pending.take_entry(project.name)
+        if entry is None:
+            return False
+        logger.info("project=%s agent=full: a control word came instead of a yes; the "
+                    "pending call is cancelled", project.name)
+        self._cancel(project, entry[0])
+        return True
+
+    def is_answer(self, transcript: str) -> bool:
+        """The utterance is on the yes or the no list (for the journal only)."""
+        said = normalise_utterance(transcript)
+        return said in self._yes or said in self._no
+
     def delivered(self, project: ProjectConfig, outcome: Outcome) -> None:
         """The reply was synthesised and written to the phone. Only now does a
         read-back count as heard, and only now can a yes release it. The time is

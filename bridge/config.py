@@ -206,6 +206,14 @@ DEFAULT_CONFIRM_YES: tuple[str, ...] = ("yes", "ja")
 DEFAULT_CONFIRM_NO: tuple[str, ...] = ("no", "nee")
 DEFAULT_CONFIRM_MIN_SPEECH_S = 0.3
 
+# add-drive-mode phase 1 (D10, D18): the drive journal and the drive's own words.
+DEFAULT_DRIVE_GAP_MINUTES = 30
+DEFAULT_JOURNAL_DAYS = 30
+# Whole utterances, in the form they are compared in (normalise_utterance).
+DEFAULT_RECAP_WORDS: tuple[str, ...] = ("where was i", "what was i doing")
+# The first words of an utterance; what follows them is the note.
+DEFAULT_NOTE_WORDS: tuple[str, ...] = ("note", "make a note", "take a note")
+
 # How long the bridge waits for the agent host before it answers the phone that
 # the turn is still running. The phone gives up after 180 s (the Android app's read
 # timeout), and the bridge must have spoken before that, so the wait is 170 s and
@@ -380,6 +388,36 @@ def _confirm_words() -> tuple[tuple[str, ...], tuple[str, ...]]:
     return yes, no
 
 
+def _bounded_int(name: str, default: int, *, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= maximum:
+        raise ConfigError(f"{name}={raw!r} must be a whole number, 1 to {maximum}")
+    return int(raw)
+
+
+def _drive_words(confirm: tuple[str, ...]) -> dict:
+    """The drive's control words (D18) and the journal's settings (D10). A control word
+    may not also be a yes or a no: those stay the read-back's answer."""
+    recap = _word_list("JARVIS_RECAP_WORDS", DEFAULT_RECAP_WORDS)
+    note = _word_list("JARVIS_NOTE_WORDS", DEFAULT_NOTE_WORDS)
+    for word in (*recap, *note):
+        if word in confirm:
+            raise ConfigError(f"{word!r} is a control word and a confirmation word")
+    both = sorted(set(recap) & set(note))
+    if both:
+        raise ConfigError(f"{both[0]!r} is in JARVIS_RECAP_WORDS and in JARVIS_NOTE_WORDS")
+    return {
+        "recap_words": recap,
+        "note_words": note,
+        "drive_gap_minutes": _bounded_int("JARVIS_DRIVE_GAP_MINUTES",
+                                          DEFAULT_DRIVE_GAP_MINUTES, maximum=24 * 60),
+        "journal_days": _bounded_int("JARVIS_JOURNAL_DAYS", DEFAULT_JOURNAL_DAYS,
+                                     maximum=366),
+    }
+
+
 def _confirm_min_speech_s() -> float:
     raw = os.environ.get("JARVIS_CONFIRM_MIN_SPEECH_S", "")
     if not raw:
@@ -466,6 +504,18 @@ class BridgeConfig:
     sing: bool = True
     # JARVIS_SING_PARODY=0 takes the parody tunes out of the table on their own.
     sing_parody: bool = True
+    # add-drive-mode phase 1: the journal (D10) and the drive's own words (D18).
+    # `journal_dir` None: "journal" next to the session store, on the state volume.
+    journal_dir: Path | None = None
+    drive_gap_minutes: int = DEFAULT_DRIVE_GAP_MINUTES
+    journal_days: int = DEFAULT_JOURNAL_DAYS
+    recap_words: tuple[str, ...] = DEFAULT_RECAP_WORDS
+    note_words: tuple[str, ...] = DEFAULT_NOTE_WORDS
+
+    @property
+    def journal_path(self) -> Path:
+        return (self.journal_dir if self.journal_dir is not None
+                else self.session_store_path.parent / "journal")
 
     @property
     def whisper_options(self) -> dict:
@@ -584,5 +634,7 @@ def load_config() -> BridgeConfig:
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,
+        journal_dir=state_dir / "journal",
+        **_drive_words(full.get("confirm_yes", ()) + full.get("confirm_no", ())),
         **full,
     )

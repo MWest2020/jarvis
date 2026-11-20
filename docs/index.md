@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-17
+last_reviewed: 2026-11-20
 ---
 # Jarvis docs
 
@@ -11,7 +11,7 @@ Start here. Agents: read this page and follow the links; there is no need to sca
 | What we are building and why | [`openspec/changes/archive/2026-11-14-add-voice-bridge/proposal.md`](../openspec/changes/archive/2026-11-14-add-voice-bridge/proposal.md) |
 | Design decisions (D1 to D9) | [`openspec/changes/archive/2026-11-14-add-voice-bridge/design.md`](../openspec/changes/archive/2026-11-14-add-voice-bridge/design.md) |
 | Tasks, with the weekend slice on top | [`openspec/changes/archive/2026-11-14-add-voice-bridge/tasks.md`](../openspec/changes/archive/2026-11-14-add-voice-bridge/tasks.md) |
-| Approved by Mark 2026-11-17 (#10), not built yet; five choices with defaults in #70: drive mode. The drive as the unit: "where was I" from a journal on the bridge, notes, slow results and lost connections kept as arrivals ("what's new"), the drive's tones, project by voice, long replies in parts, a drive log handed to the coding session at the desk, then the screen off with the wheel button. Rewritten 2026-11-17 against what exists: handoffs replaced by the full agent's gated calls and the desk handoff (#55), the web client by the app, the wake word left to #23 | [`openspec/changes/add-drive-mode/proposal.md`](../openspec/changes/add-drive-mode/proposal.md) (what was superseded, by what), with [`design.md`](../openspec/changes/add-drive-mode/design.md) (D10 to D29; D11, D16, D21 to D23 and D25 withdrawn) and [`tasks.md`](../openspec/changes/add-drive-mode/tasks.md) (seven phases) |
+| Approved by Mark 2026-11-17 (#10); the five choices of #70 took their defaults (Mark, 18 Nov); phase 1 built (the journal on the bridge, "where was I", "note ...": [`how-to/bridge-service.md`](how-to/bridge-service.md#the-drive-journal)): drive mode. The drive as the unit: "where was I" from a journal on the bridge, notes, slow results and lost connections kept as arrivals ("what's new"), the drive's tones, project by voice, long replies in parts, a drive log handed to the coding session at the desk, then the screen off with the wheel button. Rewritten 2026-11-17 against what exists: handoffs replaced by the full agent's gated calls and the desk handoff (#55), the web client by the app, the wake word left to #23 | [`openspec/changes/add-drive-mode/proposal.md`](../openspec/changes/add-drive-mode/proposal.md) (what was superseded, by what), with [`design.md`](../openspec/changes/add-drive-mode/design.md) (D10 to D29; D11, D16, D21 to D23 and D25 withdrawn) and [`tasks.md`](../openspec/changes/add-drive-mode/tasks.md) (seven phases) |
 | Requirements as they stand (the living spec) | [`openspec/specs/voice-bridge/spec.md`](../openspec/specs/voice-bridge/spec.md) |
 | Roadmap (feeds westerweel.work/nu) | [`reference/roadmap.yml`](reference/roadmap.yml) |
 | Working rules for agents | [`../AGENTS.md`](../AGENTS.md) |
