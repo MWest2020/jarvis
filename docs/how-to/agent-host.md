@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-17
+last_reviewed: 2026-11-20
 ---
 # The agent host: installing the side that runs `full` turns
 
@@ -69,23 +69,26 @@ Read this before installing. It is design D40 in plain words.
 
 ## What is installed where
 
-`agent_host/install.sh` writes two directories, both owned by root, and nothing else.
+`agent_host/install.sh` writes two directories, both owned by root, and nothing else;
+with `--egress` also one systemd unit, a system user and a group.
 
 | Path | What |
 |---|---|
 | `/usr/local/lib/jarvis-agent/turn` | The wrapper: the forced command of the bridge's key. Reads one JSON request on stdin, answers one JSON object (D33). |
 | `/usr/local/lib/jarvis-agent/gate` | The PreToolUse hook that refuses a gated call without a grant (D36). |
 | `/usr/local/lib/jarvis-agent/confirm` | The switch for voice confirmation: `sudo /usr/local/lib/jarvis-agent/confirm on\|off [class]`. |
+| `/usr/local/lib/jarvis-agent/egress-proxy` | The egress proxy of stage 0, observe only (see [Egress](#egress-what-a-turn-reaches)). Started by `jarvis-egress.service`, never by a turn. |
 | `/usr/local/lib/jarvis-agent/action-log` | The PostToolUse and PostToolUseFailure hook that writes one line per tool call that can change something, also for a call that failed (D38). |
 | `/usr/local/lib/jarvis-agent/gate_rules.toml` | The gate's rules from the repository. |
 | `/usr/local/lib/jarvis-agent/prompt.md` | The appended prompt (D35). |
 | `/usr/local/lib/jarvis-agent/turn-settings.json` | The static settings every turn gets with `--settings`: the hooks (the gate with a hook `timeout` of 30 seconds, the action log for calls that succeeded and for calls that failed, 10 seconds), `disableAllHooks: false`, `env` pins (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT` empty, `GIT_CONFIG_COUNT=0`, and `PATH` and `HOME` from the environment file), and `autoMemoryDirectory`. Written by the installer only. |
-| `/usr/local/lib/jarvis-agent/src/` | The code itself (`agent_host/` and the one module of `bridge/` it imports). The six paths above the settings are symbolic links into it. The Python entry points get the shebang `#!/usr/bin/python3 -I` at install: a fixed interpreter in isolated mode, so no `PATH` or `PYTHONPATH` of a turn can swap the interpreter or shadow a module. |
+| `/usr/local/lib/jarvis-agent/src/` | The code itself (`agent_host/` and the one module of `bridge/` it imports). The seven paths above the settings are symbolic links into it. The Python entry points get the shebang `#!/usr/bin/python3 -I` at install: a fixed interpreter in isolated mode, so no `PATH` or `PYTHONPATH` of a turn can swap the interpreter or shadow a module. |
 | `/usr/local/lib/jarvis-agent/VERSION` | The commit that was installed. |
 | `/etc/jarvis-agent/config.toml` | The configuration. Written from the template only when it does not exist. |
 | `/etc/jarvis-agent/config.toml.example` | The template of the installed version, refreshed on every run. |
 | `/etc/jarvis-agent/environment` | The only environment a turn starts from. Written only when it does not exist. |
 | `/etc/jarvis-agent/rules.d/` | Host-local gate rules. Created empty. |
+| `/etc/systemd/system/jarvis-egress.service` | Only with `--egress`: the unit of the egress proxy, with the system user `jarvis-egress` and the group `jarvis-egress-log` (made when absent). Not enabled by the installer. |
 
 Everything is readable by all and writable by root only: the wrapper runs as the coding
 session's user and must read it, and the agent must not be able to change it. So **no
@@ -197,6 +200,9 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `clone_timeout_s` | no (default `45`, at most `90`) | How long one clone attempt may take before it is stopped and removed. |
 | `voice_model` | no (default none) | The voice profile's model: `--model=<value>` on every turn, an alias (`sonnet`, `opus`) or a full name. Unset: Claude Code's own choice from `user_settings_path`, as at the desk. A wrong name is only noticed when a turn runs (it fails as `agent_failed`); run host check 4 again before setting a model, since it is not proven that `--model` leaves the hook environment unchanged. See [The voice profile](#the-voice-profile). |
 | `voice_effort` | no (default none) | The voice profile's effort: `--effort=<value>`, one of `low`, `medium`, `high`, `xhigh`, `max`. Unset: the user's settings decide (on `agent-lxc`: `high` for Opus, `modelSettings`). |
+| `egress.mode` | no (default `"off"`) | Egress of turns (change `jarvis-credential-proxy`). `"observe"`: the turn's environment points at the egress proxy, which passes everything through and logs it. `"enforce"` is stage 1, not built, and refused. See [Egress](#egress-what-a-turn-reaches). |
+| `egress.proxy` | no (default `"127.0.0.1:3128"`) | Where the proxy listens: a loopback address and a port. |
+| `egress.log_dir` | no (default `/var/log/jarvis-egress`) | The proxy's request log, a file per day. |
 
 A project name must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, its real path must lie
 directly under the root, and it must be a git repository with a work tree. **This list is
@@ -682,6 +688,78 @@ jq -r '[.time[0:19], .project, .session.start, .session.idle_minutes, .session.e
 
 Values shaped like an Anthropic key are redacted before a record is written. sshd logs
 every connection of the bridge's key by itself (`journalctl -u ssh`).
+
+## Egress: what a turn reaches
+
+Change [`jarvis-credential-proxy`](../../openspec/changes/jarvis-credential-proxy/proposal.md),
+approved by Mark on 2026-11-18 (#83). **Built: stage 0, observe only.** A small proxy on
+loopback, under its own system user, passes every connection of a turn through by name and
+writes one line per connection. It denies nothing, decrypts nothing and holds no
+credential. Stage 1 (enforcing an allow-list with nftables on the turn's cgroup) and stage
+2 (credentials held by the proxy, with the turn user of #45) are not built;
+`egress.mode = "enforce"` is refused.
+
+**What stage 0 observes.** Every connection a turn's programs make *through the proxy*:
+Claude Code's own API traffic, `gh`, git over https, `curl`, `npm`, `pip`, `WebFetch`'s
+fetches, hooks and MCP servers the turn starts, as long as the program honours
+`HTTPS_PROXY`. For a `CONNECT` it logs the host and port, the address the proxy resolved,
+whether that address is private, and the TLS server name the client sent (and whether it
+equals the `CONNECT` host); for a plain `http://` request also the method, the path
+without its query, and the status. **What it does not see**: a program that ignores the
+proxy variables and connects directly, DNS lookups, ssh. Seeing those needs the turn's
+cgroup of stage 1 (design E1, E2).
+
+**How a turn uses it.** With `egress.mode = "observe"` the wrapper checks at the start of
+each turn that the proxy answers on its loopback port (0.3 s at most). If it does, the
+`claude` process gets `HTTPS_PROXY`, `HTTP_PROXY` (both spellings) and `NO_PROXY` for
+loopback; everything the turn starts inherits them. If it does not, nothing is added and
+the turn runs as with `"off"`: observing never costs a turn. The wrapper's own work (the
+notify command, a PR status, a clone) never goes through the proxy. A checkout cannot
+change the variables: its `env` makes the checkout unsafe (the checkout settings rule),
+and the gate compares its whole environment with the one `claude` started with.
+
+**Where the output goes.**
+
+- `/var/log/jarvis-egress/events-YYYY-MM-DD.jsonl` (UTC days; `egress.log_dir`): one JSON
+  line per connection, with `time`, `method`, `origin`, `path`, `status`, `decision`
+  (`observe`, or `error` when the upstream did not answer or the request was not HTTP),
+  `reason`, `duration_ms`, `credential_injected` (always false), `address`, `private`,
+  `sni`, `sni_matches`. Never a body, a header or a query. Owned by `jarvis-egress`, group
+  `jarvis-egress-log`, mode 0640; kept `retention_days`.
+- The turn record gets `egress`: `{"mode": "observe", "proxy": "up" | "down"}`, and with a
+  proxy that was up, what it logged between the turn's start and end: `requests`,
+  `failed`, `private`, `sni_mismatch`, and `origins` (`{origin: count}`, the 20 most
+  frequent). With `mode = "off"` the field is `null`.
+- `journalctl -u jarvis-egress`: the proxy's start line and errors.
+
+**Installing it** (on the agent host, as root, from a reviewed commit):
+
+```sh
+sudo agent_host/install.sh --egress            # the unit, the user jarvis-egress, the group jarvis-egress-log
+sudo usermod -aG jarvis-egress-log <the coding session's user>   # so the wrapper can read the log
+sudo systemctl enable --now jarvis-egress
+# then, in /etc/jarvis-agent/config.toml, before any [projects] table:
+#   egress.mode = "observe"
+```
+
+The proxy reads `/etc/jarvis-agent/config.toml` (`egress.proxy`, default
+`127.0.0.1:3128`, loopback only; `egress.log_dir`; `retention_days`) at start: restart it
+after a change. The unit runs it hardened (`ProtectSystem=strict`, `ProtectHome`, no
+capabilities, `NoNewPrivileges`). With egress on, the unit and the log directory are in the
+gate's class `self`: a voice turn cannot change them. Rolling back: `egress.mode = "off"`
+(or remove the line), then `systemctl disable --now jarvis-egress`.
+
+**Reading it.** The candidate list for stage 1 is the set of origins over a week of voice
+turns:
+
+```sh
+jq -r '.origin' /var/log/jarvis-egress/events-*.jsonl | sort | uniq -c | sort -rn
+jq -r 'select(.private or .sni_matches == false or .decision == "error") | [.time, .origin, .sni, .reason] | @tsv' /var/log/jarvis-egress/events-*.jsonl
+jq -r 'select(.egress) | [.time[0:19], .egress.proxy, .egress.requests, (.egress.origins | keys | join(" "))] | @tsv' ~/.local/state/jarvis-agent/records/*.json
+```
+
+Also compare `timing.startup_gap_ms` and `timing.claude_wall_ms` of turns with
+`"proxy": "up"` against turns before: design E15 asks that they stay within noise.
 
 ## Updating
 

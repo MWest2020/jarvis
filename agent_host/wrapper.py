@@ -65,8 +65,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent_host import (
-    checkout_settings, classify, clones, command, decision, gatehash, identity, lifetime,
-    naming, pending, projects, prstatus, trusted,
+    checkout_settings, classify, clones, command, decision, egress, gatehash, identity,
+    lifetime, naming, pending, projects, prstatus, trusted,
 )
 from agent_host import record as record_mod
 from agent_host import request as request_mod
@@ -504,7 +504,7 @@ def _write_record(
     prompt: str, reply_text: str, duration_s: float, outcome: str,
     settings_changed: str | None = None, gated_actions: list[dict] | None = None,
     timing: dict | None = None, claude_ended: float | None = None,
-    session: dict | None = None,
+    session: dict | None = None, egress_field: dict | None = None,
 ) -> None:
     if timing is not None and claude_ended is not None:
         timing = {**timing, "wrapper_post_ms": timing_mod.ms(time.monotonic() - claude_ended)}
@@ -521,6 +521,7 @@ def _write_record(
         gated_actions=gated_actions or [],
         timing=timing,
         session=session,
+        egress=egress_field,
     )
     record_mod.write_record(config.records_dir, rec)
 
@@ -657,11 +658,19 @@ def _run_turn(
     except OSError:
         pass  # the child's write fails then, and the turn does not start
 
+    # Egress (jarvis-credential-proxy, stage 0): with `mode = "observe"` and a
+    # proxy that answers, the `claude` process and everything it starts get
+    # the proxy variables. Only the turn's own environment: the wrapper's
+    # work (a notify command, a PR status, a clone) keeps `env` as it is.
+    egress_env, egress_field = egress.turn_environment(config.egress)
+    turn_env = {**env, **egress_env}
+    egress_started = time.time()
+
     def write_trusted_record() -> None:
         # In the child, between fork and exec: the record of the turn's
         # trusted values, keyed by the process that is about to become
         # `claude`, exists before any hook can run (agent_host.trusted).
-        trusted.write_for_self(gate_dir, env)
+        trusted.write_for_self(gate_dir, turn_env)
 
     # The prompt goes over stdin, never argv (as for the coding session's
     # own adapter, bridge/claude_adapter.py); start_new_session=True so a
@@ -669,7 +678,7 @@ def _run_turn(
     try:
         proc = subprocess.Popen(
             argv, cwd=working_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
+            stderr=subprocess.PIPE, text=True, env=turn_env, start_new_session=True,
             preexec_fn=write_trusted_record,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -681,7 +690,7 @@ def _run_turn(
         _write_record(
             config, turn_id=turn_id, project=project, session_id=stored_id, prompt=prompt,
             reply_text=f"the turn could not start: {exc}", duration_s=0.0,
-            outcome="agent_failed", session=session_field,
+            outcome="agent_failed", session=session_field, egress_field=egress_field,
         )
         return _reply(status="error", error="agent_failed", turn=turn_id)
     timed_out = False
@@ -700,6 +709,10 @@ def _run_turn(
         trusted.remove_for(gate_dir, proc.pid)
     claude_ended = time.monotonic()
     duration = claude_ended - started
+    if egress_field is not None and egress_field.get("proxy") == "up":
+        # The proxy logs a connection when it is made, so everything of
+        # this turn is in the log once `claude` has exited.
+        egress_field.update(egress.summarise(config.egress, egress_started, time.time()))
     # The checkout settings rule, after the turn (D36, check 3): the files
     # were safe when the turn started, so a problem now appeared during it.
     changed = _checkout_settings_problem(working_dir, config)
@@ -749,7 +762,7 @@ def _run_turn(
         config, turn_id=turn_id, project=project, session_id=new_session_id,
         prompt=prompt, reply_text=reply_text, duration_s=duration, outcome=outcome,
         settings_changed=changed, gated_actions=actions, timing=timing,
-        claude_ended=claude_ended, session=session_field,
+        claude_ended=claude_ended, session=session_field, egress_field=egress_field,
     )
     new_session = "new_session" if start.announced else None
 
