@@ -35,17 +35,18 @@ MIN_SECONDS = 5.0
 STEPS_PER_BAR = 16
 
 # The tag, at the start of the summary: "[beatbox]", "[beatbox: hip-hop]",
-# "[beat-box: boots and cats]", "[beatboxing]".
-TAG = re.compile(r"\[\s*beat-?box(?:ing)?\s*(?::\s*([A-Za-z _-]{0,40}?))?\s*\]\s*",
+# "[beat-box: boots and cats]", "[beat box]", "[beatboxing]".
+TAG = re.compile(r"\[\s*beat[- ]?box(?:ing)?\s*(?::\s*([A-Za-z _-]{0,40}?))?\s*\]\s*",
                  re.IGNORECASE)
 # A closed tag TAG does not take ("[beatbox: drum & bass!]"): taken out up to its
 # bracket, bounded so an unclosed tag never swallows the words after it.
-ODD_TAG = re.compile(r"\[\s*beat-?box\w*[^\]\[\n]{0,60}\]\s*", re.IGNORECASE)
+ODD_TAG = re.compile(r"\[\s*beat[- ]?box\w*[^\]\[\n]{0,60}\]\s*", re.IGNORECASE)
 # A broken tag ("[beatbox: hip-hop Here we go", no bracket): never spoken.
-OPEN_TAG = re.compile(r"\[\s*beat-?box\w*\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECASE)
+OPEN_TAG = re.compile(r"\[\s*beat[- ]?box\w*\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECASE)
 # What the driver must have said in this turn: a word that asks for a beat, in English
-# or Dutch ("beatbox", "doe eens een beat", "drop a beat", "boots and cats").
-ASKED = re.compile(r"\b(beat-?box\w*|beats?|boots and cats)\b", re.IGNORECASE)
+# or Dutch ("beatbox", "beat box", "doe eens een beat", "een beatje", "drop a beat",
+# "boots and cats").
+ASKED = re.compile(r"\b(beat[- ]?box\w*|beats?|beatjes?|boots and cats)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -203,7 +204,9 @@ def choose(spoken: str, *, transcript: str, enabled: bool, read_back: bool,
         return spoken, None
     if pattern is None or not enabled or not asked_for_a_beat(transcript):
         return _join(before, rest, after), None
-    beat = BeatRequest(pattern, rest, before, after)
+    # A sing tag after the beatbox tag ("[beatbox] [sing: twinkle] ...") is never said.
+    _, intro, _ = singing.split_tag(rest)
+    beat = BeatRequest(pattern, intro, before, after)
     return beat.text, beat
 
 
@@ -407,6 +410,14 @@ HUM_LEVEL = 0.35
 HOOK_LEVEL = 1.1
 # The last syllable of a hook word falls this many semitones, as a spoken "yeah" does.
 HOOK_FALL = 1.5
+# How loud the beat is: its RMS this many dB above the speech around it, so that it is
+# not louder than Jarvis's voice at the same volume in the car (review of #86: with a
+# peak of 0.9 it was 9 to 10 dB louder).
+BEAT_LIFT_DB = 2.0
+# Kokoro's speaking level (RMS of a sentence, about -25 dBFS for bm_george), for a beat
+# with no speech to measure.
+DEFAULT_SPEECH_RMS = 0.056
+MAX_PEAK = 0.9
 TAIL_S = 0.35
 
 
@@ -430,10 +441,11 @@ def _sing(audio, segments: list[tuple[float, float]], glide: float, sr: int):
 
 
 def render(pattern: Pattern, speak: Callable[[str], object], *, sr: int = SAMPLE_RATE,
-           drums: bool = True, voices: bool = True) -> Beat:
+           drums: bool = True, voices: bool = True, level: float | None = None) -> Beat:
     """The beat for `pattern`. `speak(word)` returns the word as float samples at `sr`
     (Kokoro on the bridge). `drums` and `voices` (the hum and the hook) can be left out,
-    for the tests."""
+    for the tests. `level`: the RMS of the speech said with the beat; the beat's RMS is
+    BEAT_LIFT_DB above it (without it, above the words the beat was made from)."""
     import numpy as np
 
     asked: dict[str, np.ndarray] = {}
@@ -508,8 +520,16 @@ def render(pattern: Pattern, speak: Callable[[str], object], *, sr: int = SAMPLE
     mix = drum_mix + voice_mix
     peak = float(np.abs(mix).max()) if length else 0.0
     if peak > 0:
-        # A little glue (soft saturation), then normalised to 0.9.
-        mix = np.tanh(1.4 * mix / peak) / np.tanh(1.4) * 0.9
+        # A little glue (soft saturation), then brought to the level of the speech.
+        mix = np.tanh(1.4 * mix / peak)
+        if level is None:
+            words = [w for w in asked.values() if len(w)]
+            level = _rms(np.concatenate(words)) if words else 0.0
+        target = (level or DEFAULT_SPEECH_RMS) * 10 ** (BEAT_LIFT_DB / 20)
+        mix = mix * (target / max(_rms(mix), 1e-9))
+        peak = float(np.abs(mix).max())
+        if peak > MAX_PEAK:
+            mix = mix * (MAX_PEAK / peak)
     fade = min(length, int(0.05 * sr))
     if fade:
         mix[-fade:] *= np.linspace(1.0, 0.0, fade)

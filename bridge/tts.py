@@ -113,15 +113,21 @@ def beatbox(beat, *, voice: str = DEFAULT_VOICE):
 
     from bridge import beatbox as beats
 
-    beaten = beats.render(beat.pattern, lambda word: word_audio(word, voice=voice)).samples
+    said = {line: word_audio(line, voice=voice)
+            for line in (beat.before, beat.intro, beat.after) if line}
+    # The beat as loud as the speech around it (beats.BEAT_LIFT_DB above it).
+    speech = [np.asarray(a, dtype=np.float32) for a in said.values() if len(a)]
+    level = float(np.sqrt(np.mean(np.square(np.concatenate(speech))))) if speech else None
+    beaten = beats.render(beat.pattern, lambda word: word_audio(word, voice=voice),
+                          level=level or None).samples
     pause = np.zeros(int(SONG_PAUSE_S * SAMPLE_RATE), dtype=np.float32)
     parts = []
     for line in (beat.before, beat.intro):
         if line:
-            parts += [word_audio(line, voice=voice), pause]
+            parts += [said[line], pause]
     parts.append(np.asarray(beaten, dtype=np.float32))
     if beat.after:
-        parts += [pause, word_audio(beat.after, voice=voice)]
+        parts += [pause, said[beat.after]]
     return np.concatenate(parts)
 
 

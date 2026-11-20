@@ -729,7 +729,9 @@ SPOKEN SUMMARY: [beatbox: hip-hop] Alright, here's a beat for the road.
 ```
 
 `[beatbox]` without a name, or with a name not in the table, plays one of the beats at
-random. A name is normalised like a tune name (`[beatbox: Boots and Cats]` works).
+random. A name is normalised like a tune name (`[beatbox: Boots and Cats]` works), and
+`[beat box]` and `[beat-box]` count as the tag. A sing tag written after it is removed,
+never said.
 
 | Tag | Beat | Tempo, length |
 |---|---|---|
@@ -757,7 +759,11 @@ samples, no recordings, no new dependency):
    speaking pitch and kept below 1.2 kHz (a hum), with a sine at the note's pitch for
    weight; "Jar-vis" and "yeah" are sung on their notes above it, the last syllable
    falling a semitone and a half. Both use the singing's TD-PSOLA (`bridge/singing.py`).
-4. The beat is mixed, glued with a soft saturation, normalised and faded. At most 15 s.
+4. The beat is mixed, glued with a soft saturation and faded, at the loudness of the
+   speech around it: its RMS 2 dB above that of the agent's line and the bridge's
+   sentences (or of Kokoro's speaking level when there are none), peaks at most 0.9. A
+   beat normalised to full scale was 9 to 10 dB louder than the voice, too loud in the
+   car at a volume set for speech (review of #86). At most 15 s.
 
 A beat goes out like a song: rendered whole before the status line, as a WAV or as the
 L16 stream, with the agent's line and any notice of the bridge said before it (0.3 s
@@ -772,7 +778,7 @@ beatbox tag is removed and the line is spoken:
 - the tag is the very first thing on the agent's own spoken line (only the bridge's fixed
   sentences, `FRAMING_SENTENCES`, are looked past);
 - the driver's own words in this turn ask for it: "beatbox" (also "beatboxen",
-  "beat-box"), "beat", "beats", "boots and cats";
+  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats";
 - the reply is not a read-back;
 - `JARVIS_BEATBOX` is not `0`.
 

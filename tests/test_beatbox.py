@@ -102,6 +102,7 @@ def test_a_tagged_reply_the_driver_asked_for_is_beatboxed():
     ("[beatbox: boom bap]", "hip-hop"),
     ("[beat-box: jarvis_hook]", "jarvis-hook"),
     ("[beatboxing: hook]", "jarvis-hook"),
+    ("[beat box: hip-hop]", "hip-hop"),
 ])
 def test_a_named_pattern_answers_to_its_aliases(tag, expected):
     _, beat = beatbox.choose(f"{tag} Here we go.", transcript="beatbox", enabled=True,
@@ -129,7 +130,8 @@ def test_the_choice_is_the_rngs():
 
 @pytest.mark.parametrize("transcript", [
     "beatbox", "Jarvis, can you beatbox?", "doe eens een beat", "drop a beat",
-    "give me some beats", "kun je beatboxen", "do boots and cats", "Beat-box for me"])
+    "give me some beats", "kun je beatboxen", "do boots and cats", "Beat-box for me",
+    "doe eens een beatje", "can you beat box"])
 def test_the_driver_asks_in_english_or_dutch(transcript):
     assert beatbox.asked_for_a_beat(transcript)
 
@@ -177,6 +179,16 @@ def test_a_malformed_or_misplaced_tag_is_never_spoken_aloud(text, beaten):
     said, beat = beatbox.choose(text, transcript="beatbox", enabled=True, read_back=False)
     assert "[" not in said and "beatbox" not in said.lower()
     assert (beat is not None) == beaten
+
+
+def test_a_sing_tag_after_the_beatbox_tag_is_never_said():
+    # Review of #86: "[beatbox] [sing: twinkle] Here we go." showed and said the sing tag.
+    for spoken in ("[beatbox] [sing: twinkle] Here we go.",
+                   "[beatbox: hip-hop] [sing: Iron Man!] Here we go.",
+                   "[beat box] [sing: twinkle Here we go."):
+        text, beat = beatbox.choose(spoken, transcript="drop a beat", enabled=True,
+                                    read_back=False)
+        assert beat is not None and beat.intro == "Here we go." and text == "Here we go."
 
 
 def test_an_unclosed_tag_never_swallows_the_line():
@@ -245,7 +257,7 @@ def test_a_beat_is_deterministic_bounded_and_not_clipped():
         b = beatbox.render(pattern, fake_voice)
         assert np.array_equal(a.samples, b.samples)
         assert a.samples.dtype == np.float32
-        assert 0.5 < np.abs(a.samples).max() <= 0.9 + 1e-6
+        assert 0.05 < np.abs(a.samples).max() <= beatbox.MAX_PEAK + 1e-6
         assert beatbox.MIN_SECONDS <= a.seconds <= beatbox.MAX_SECONDS
 
 
@@ -265,7 +277,36 @@ def test_every_hit_is_heard_where_the_grid_puts_it():
 
 def test_a_voice_that_says_nothing_still_gives_a_beat():
     beat = beatbox.render(PATTERNS["jarvis-hook"], lambda w: np.zeros(0, dtype=np.float32))
-    assert 0.5 < np.abs(beat.samples).max() <= 0.9 + 1e-6
+    assert 0.05 < np.abs(beat.samples).max() <= beatbox.MAX_PEAK + 1e-6
+    # At Kokoro's speaking level, BEAT_LIFT_DB above it.
+    lift = 20 * np.log10(rms(beat.samples) / beatbox.DEFAULT_SPEECH_RMS)
+    assert lift == pytest.approx(beatbox.BEAT_LIFT_DB, abs=0.1)
+
+
+def rms(x) -> float:
+    return float(np.sqrt(np.mean(np.square(x))))
+
+
+def kokoro_like(word: str) -> np.ndarray:
+    """The fake voice at about Kokoro's level (-25 dBFS RMS, peaks near 0.3), with the
+    silence Kokoro leaves around a word."""
+    voice = fake_voice(word) * 0.22
+    pad = np.zeros(int(0.2 * SR), dtype=np.float32)
+    return np.concatenate([pad, voice, pad])
+
+
+@pytest.mark.parametrize("pattern", sorted(PATTERNS))
+def test_the_beat_is_no_louder_than_the_speech_around_it(monkeypatch, pattern):
+    # Review of #86: the beat came out 9 to 10 dB above the intro; now at most 3 dB.
+    monkeypatch.setattr(tts, "word_audio", lambda text, *, voice: kokoro_like(text))
+    beat = beatbox.BeatRequest(PATTERNS[pattern], "Alright, here's a beat for the road.")
+    samples = tts.beatbox(beat, voice="bm_george")
+    intro = kokoro_like(beat.intro)
+    pause = int(tts.SONG_PAUSE_S * SR)
+    beaten = samples[len(intro) + pause:]
+    lift = 20 * np.log10(rms(beaten) / rms(intro))
+    assert 0 < lift <= 3.0, lift
+    assert np.abs(beaten).max() <= beatbox.MAX_PEAK + 1e-6
 
 
 def test_the_hum_and_the_hook_are_sung_at_their_pitch():
@@ -312,8 +353,8 @@ def test_the_line_is_said_before_the_beat_and_news_after_it(monkeypatch):
     beat = beatbox.BeatRequest(PATTERNS["boots-and-cats"], "Here we go.", before="Notice.",
                                after="News.")
     samples = tts.beatbox(beat, voice="bm_george")
-    # The beat's words first (it is rendered first), then the lines in their order.
-    assert said[-3:] == ["Notice.", "Here we go.", "News."]
+    # The lines first (the beat is levelled to them), then the beat's words.
+    assert said[:3] == ["Notice.", "Here we go.", "News."]
     pause = int(tts.SONG_PAUSE_S * SR)
     assert np.all(samples[:100] == np.float32(0.1))
     assert np.all(samples[100:100 + pause] == 0)
