@@ -1,6 +1,6 @@
 # Change: jarvis-credential-proxy
 
-**Status: proposed, waiting for Mark's approval. Nothing is built before he approves.**
+**Status: approved by Mark on 2026-11-18 by mail ("defaults en proposals ok", #83); each of the seven open questions takes its default. Built in stages, observe first.**
 
 ## Why
 

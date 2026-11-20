@@ -157,6 +157,81 @@ def test_a_tag_that_is_not_first_or_names_no_tune_is_removed_and_spoken():
     assert song is not None and song.tune.id == "twinkle"
 
 
+TROLLS = ("In the hall the trolls a-wake, they creep, they wait, they stomp, "
+          "a-round the moun-tain, down they go, fast-er, fast-er, run")   # 7, 6, 8, 5
+
+
+@pytest.mark.parametrize("name", [
+    "mountain-king", "mountain king", "Mountain_King", "hall-of-the-mountain-king",
+    "Hall of the Mountain King", "in the hall of the mountain king"])
+def test_the_mountain_king_answers_to_its_aliases(name):
+    text, song = singing.choose(f"[sing: {name}] {TROLLS}", transcript="sing something metal",
+                                enabled=True, read_back=False)
+    assert song is not None and song.tune.id == "mountain-king"
+    assert text.startswith("In the hall the trolls awake")
+
+
+def test_ode_to_joy_is_in_the_table():
+    _, song = singing.choose("[sing: ode-to-joy] Joy-ful build, the tests are green",
+                             transcript="sing", enabled=True, read_back=False)
+    assert song is not None and song.tune.id == "ode-to-joy"
+
+
+def test_a_copyrighted_song_is_not_in_the_table():
+    # The agent is told to decline these and offer mountain-king or iron-man
+    # (agent_host/prompt.md).
+    text, song = singing.choose("[sing: paranoid] Fin-ished with my build", transcript="sing",
+                                enabled=True, read_back=False)
+    assert song is None and text == "Finished with my build"
+
+
+BUTLER = "Hel-lo, I'm Jar-vis, the but-ler in your car, mind the speed bump"   # 5, 6, 4
+
+
+@pytest.mark.parametrize("name", ["iron-man", "iron man", "Iron_Man", "black sabbath",
+                                  "Black-Sabbath"])
+def test_the_iron_man_parody_answers_to_its_aliases(name):
+    _, song = singing.choose(f"[sing: {name}] {BUTLER}", transcript="sing iron man",
+                             enabled=True, read_back=False)
+    assert song is not None and song.tune.id == "iron-man" and song.tune.parody
+
+
+def test_the_parody_switch_takes_only_the_parody_tunes_out():
+    assert [t.id for t in TUNES.values() if t.parody] == ["iron-man"]
+    assert set(singing.tunes(parody=False)) == set(TUNES) - {"iron-man"}
+    text, song = singing.choose(f"[sing: iron man] {BUTLER}", transcript="sing iron man",
+                                enabled=True, read_back=False, parody=False)
+    assert song is None and text == singing.plain(BUTLER)
+    _, song = singing.choose(f"[sing: mountain-king] {TROLLS}", transcript="sing",
+                             enabled=True, read_back=False, parody=False)
+    assert song is not None and song.tune.id == "mountain-king"
+
+
+def test_the_iron_man_parody_is_only_the_riff_once_and_short():
+    tune = TUNES["iron-man"]
+    assert tune.syllables == (5, 6, 4)
+    # B, D-D, E-E, G-F#-G-F#-G-F#, D-D, E-E: one pass of the riff and nothing else.
+    assert [n.step for n in tune.notes] == [0, 3, 3, 5, 5, 8, 7, 8, 7, 8, 7, 3, 3, 5, 5]
+    assert all(len(n.chord) == 2 and n.chord[1] - n.chord[0] == 7
+               for n in tune.notes if n.chord)
+    seconds = tune.beats * 60 / singing.tempo(tune)
+    assert 8 <= seconds <= 12
+
+
+def test_the_mountain_king_builds_and_stays_short():
+    tune = TUNES["mountain-king"]
+    assert tune.syllables == (7, 6, 8, 5) and len(tune.notes) == 26
+    # The opening theme in B minor: B C# D E F# D F#, then E# C# E#, E C E.
+    assert [n.step for n in tune.lines[0]] == [0, 2, 3, 5, 7, 3, 7]
+    assert [n.step for n in tune.lines[1]] == [6, 2, 6, 5, 1, 5]
+    # The second phrase repeats the first bar's run, a quarter faster.
+    first, second = tune.lines[0], tune.lines[2]
+    assert [n.step for n in second[:7]] == [n.step for n in first]
+    assert all(b.beats == pytest.approx(0.8 * a.beats) for a, b in zip(first[:6], second))
+    seconds = tune.beats * 60 / singing.tempo(tune)
+    assert singing.tempo(tune) == tune.bpm and 8 < seconds <= singing.MAX_SECONDS
+
+
 def test_a_read_back_is_never_sung_or_changed():
     readback = "[sing: twinkle] Merge pull request 21 on jarvis. Say yes to go ahead."
     assert singing.choose(readback, transcript="sing it", enabled=True, read_back=True) == (
@@ -203,7 +278,8 @@ def test_psola_moves_a_tone_to_the_pitch_and_length_asked():
 def test_every_note_is_sung_at_its_pitch():
     for tune_id, lyrics in [("happy-birthday", BIRTHDAY),
                             ("twinkle", "Lit-tle build, you're green at last, all the "
-                                        "tests have fi-nal-ly passed")]:
+                                        "tests have fi-nal-ly passed"),
+                            ("mountain-king", TROLLS), ("iron-man", BUTLER)]:
         song = singing.render(TUNES[tune_id], lyrics, fake_voice, with_accompaniment=False)
         assert song.schedule and song.seconds <= singing.MAX_SECONDS
         assert max(abs(off) for off in sung_semitones_off(song)) < 0.4, tune_id
@@ -376,6 +452,35 @@ def test_the_switch_reads_0_1_or_unset(monkeypatch):
         config.load_config()
 
 
+def test_the_parody_switch_reads_0_1_or_unset(monkeypatch):
+    from bridge import config
+    from bridge.config import ConfigError
+    monkeypatch.setenv("JARVIS_BIND_HOST", "100.64.0.1")
+    monkeypatch.setenv("JARVIS_TOKEN", "secret")
+    monkeypatch.setenv("JARVIS_PROJECTS", "demo=/tmp")
+    monkeypatch.delenv("JARVIS_SING", raising=False)
+    monkeypatch.delenv("JARVIS_SING_PARODY", raising=False)
+    assert config.load_config().sing_parody is True
+    monkeypatch.setenv("JARVIS_SING_PARODY", "0")
+    loaded = config.load_config()
+    assert loaded.sing_parody is False and loaded.sing is True
+    monkeypatch.setenv("JARVIS_SING_PARODY", "1")
+    assert config.load_config().sing_parody is True
+    monkeypatch.setenv("JARVIS_SING_PARODY", "metal")
+    with pytest.raises(ConfigError):
+        config.load_config()
+
+
+def test_with_the_parody_switched_off_iron_man_is_spoken(full):
+    full.stop()
+    full.config = dataclasses.replace(full.config, sing_parody=False)
+    full.start()
+    full.host.scenario(mode="wrapper", spoken=f"SPOKEN SUMMARY: [sing: iron-man] {BUTLER}")
+    response, said = full.say("sing iron man")
+    assert said == f"WAV:{singing.plain(BUTLER)}"
+    assert full.singer.songs == []
+
+
 def test_tunes_are_plain_data():
     tune = Tune("x", "X", 60, ((Note(0, 1, (0, 4, 7)), Note(2, 2)),))
     assert tune.syllables == (2,) and tune.beats == 3 and len(tune.notes) == 2
@@ -476,3 +581,17 @@ def test_a_notice_is_spoken_before_the_song_and_news_after_it(monkeypatch):
     assert np.all(samples[-100:] == np.float32(0.1))
     sung = singing.render(TUNES["twinkle"], "la la la la la la la", lambda w: word_audio(w, voice=""))
     assert len(samples) == 200 + 2 * pause + len(sung.samples)
+
+
+def test_a_closed_tag_with_punctuation_or_a_long_name_is_never_spoken():
+    for spoken in ("[sing: Iron Man!] Hello, I'm Jarvis.",
+                   "[sing: In the Hall of the Mountain King (Grieg)] Hello, I'm Jarvis."):
+        tune, rest, tagged = singing.split_tag(spoken)
+        assert tagged and tune is None
+        assert rest == "Hello, I'm Jarvis."
+
+
+def test_an_unclosed_tag_never_swallows_the_lyrics():
+    tune, rest, tagged = singing.split_tag("[sing: twinkle Hello, I'm Jarvis, mind the bump")
+    assert tagged and tune is None
+    assert rest == "Hello, I'm Jarvis, mind the bump"

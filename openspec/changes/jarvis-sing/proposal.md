@@ -10,8 +10,10 @@ so it is built in the same PR as this proposal; the PR is the approval point.
 - **The agent picks a tune, the bridge sings it.** When the driver explicitly asks for a
   song, the agent starts its spoken line with a tag, `[sing: <tune>]`, and its own short
   lyrics, one syllable per note. The tunes are a small table on the bridge
-  (`bridge/singing.py`): `happy-birthday`, `twinkle`, `frere-jacques`, public-domain
-  melodies only. The words are always the agent's own.
+  (`bridge/singing.py`): `happy-birthday`, `twinkle`, `frere-jacques`, `mountain-king`,
+  `ode-to-joy`, public-domain melodies, plus one parody tune, `iron-man` (the riff only,
+  the agent's own parody words; Mark's request, `JARVIS_SING_PARODY=0` switches it off on
+  its own). The words are always the agent's own.
 - **Rendered with what is there.** Kokoro renders each word once; numpy moves every
   syllable onto its note (TD-PSOLA: the note's pitch held steady with a light vibrato, the
   vowel stretched to the note's length), in a key that follows the voice, with a soft

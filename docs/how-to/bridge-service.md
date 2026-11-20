@@ -46,7 +46,7 @@ your process manager.
 | `JARVIS_BIND_HOST` | yes | The Tailscale IP to listen on, e.g. `100.x.y.z` (IPv4 100.64.0.0/10 or IPv6 fd7a:115c:a1e0::/48). Loopback is allowed for local tests. Every other address is refused at start, wildcards and public addresses included (Network exposure, AGENTS.md). |
 | `JARVIS_BEHIND_TAILSCALE_PROXY` | no | Only for a pod behind the Tailscale operator: `1` allows a private (RFC 1918 or CGNAT) bind address. See [`run-in-cluster.md`](run-in-cluster.md). Leave it unset on a workstation. |
 | `JARVIS_TOKEN` | yes | The shared secret the phone sends as `Authorization: Bearer <token>`. Generate one with `openssl rand -hex 32`. Never commit it. |
-| `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/mark/code/demo`. The phone selects a project by name in the request. Or `*`: every git checkout directly under `JARVIS_PROJECTS_ROOT` is a project, named after its directory (see "Every checkout under a root" below). |
+| `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/you/code/demo`. The phone selects a project by name in the request. Or `*`: every git checkout directly under `JARVIS_PROJECTS_ROOT` is a project, named after its directory (see "Every checkout under a root" below). |
 | `JARVIS_PROJECTS_ROOT` | with `*` only | The absolute directory that holds the checkouts, e.g. `/work`. Must exist at start. Refused when `JARVIS_PROJECTS` is a list. |
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |
 | `JARVIS_STATE_DIR` | no (default `~/.jarvis`) | Where the per-project session id and the log file are stored. Outside the repo, never in git. |
@@ -56,6 +56,7 @@ your process manager.
 | `JARVIS_KOKORO_VOICE` | no (default `bm_george`) | A Kokoro voice name. The default is a British male voice; the image also carries `af_heart` (American female). Pick one by ear once the service runs (see below). |
 | `JARVIS_STREAM_REPLIES` | no (default on) | `0`: every client gets the whole WAV, also one that asks for a streamed reply. Unset or `1`: a client that asks gets the reply as it is rendered (see "Streamed replies"). Anything else is refused at start. |
 | `JARVIS_SING` | no (default on) | `0`: Jarvis never sings; a reply meant to be sung is spoken as words. Unset or `1`: the easter egg is on (see "Singing (easter egg)"). Anything else is refused at start. |
+| `JARVIS_SING_PARODY` | no (default on) | `0`: the parody tunes (`iron-man`) are taken out of the table on their own; a reply tagged with one is spoken as words, the public-domain tunes are still sung. Unset or `1`: they are in. Anything else is refused at start. `JARVIS_SING=0` stops all singing either way. The prompts still name `iron-man` when it is `0`, so Jarvis may offer it and then speak those lines. |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
@@ -618,6 +619,15 @@ SPOKEN SUMMARY: [sing: twinkle] Lit-tle build, you're green at last, all the tes
 | `[sing: happy-birthday]` | Good Morning to All (Hill sisters, 1893) | 25 (6, 6, 7, 6) | 110 bpm, about 14.5 s |
 | `[sing: twinkle]` | Ah! vous dirai-je, maman (18th century), the first two lines | 14 (7, 7) | 100 bpm, about 10 s |
 | `[sing: frere-jacques]` | Frère Jacques / Vader Jacob (18th century) | 32 (4, 4, 3, 3, 6, 6, 3, 3) | 120 bpm, about 16 s |
+| `[sing: mountain-king]` | In the Hall of the Mountain King (Grieg, Peer Gynt, 1875), the opening theme; also `mountain king`, `hall-of-the-mountain-king` | 26 (7, 6, 8, 5) | 100 bpm, the last two bars a quarter faster, about 8.6 s |
+| `[sing: ode-to-joy]` | Ode to Joy (Beethoven, Ninth Symphony, 1824), the first two phrases | 30 (8, 7, 8, 7) | 120 bpm, about 16 s |
+| `[sing: iron-man]` | **Parody**: riff after Black Sabbath, Iron Man (1970), the main riff once; also `iron man`, `black sabbath` | 15 (5, 6, 4) | 80 bpm, about 9 s |
+
+A tune name is normalised before it is looked up (lower case, spaces and underscores to
+`-`), so `[sing: Mountain King]` works too. The tempo is one per tune; a line that should
+go faster (the Mountain King builds, as the piece does) is written with shorter notes.
+The Mountain King is in B minor as in the score, with only the dominant (F sharp) held in
+the organ; the Iron Man riff has a power chord (root and fifth) under every note.
 
 The bridge then renders it, with the Kokoro it already has and numpy, nothing else:
 
@@ -661,16 +671,30 @@ the words are spoken:
 - the driver's own words in this turn ask for it: "sing", "song", "serenade", "zing",
   "zingen", "lied", "liedje" (a "yes" to a read-back never does);
 - the reply is not a read-back: a read-back is spoken exactly as built, tag or not;
-- `JARVIS_SING` is not `0`.
+- `JARVIS_SING` is not `0` (and for a parody tune, `JARVIS_SING_PARODY` is not `0`).
 
 In `full` mode the agent host needs the new `prompt.md` (`agent_host/install.sh`, see
 [`agent-host.md`](agent-host.md)); until then its agent never writes the tag and nothing
 changes. A sung line may be 240 characters instead of 160 (tag included). The agent is asked for
 English lyrics: Kokoro's English voices cannot pronounce Dutch words.
 
-**Rights.** The table holds melodies only, all in the public domain: Good Morning to All
-(1893; the Hills died in 1916 and 1946), Ah! vous dirai-je, maman and Frère Jacques
-(18th century). The words are the agent's own. ("Happy birthday to you" itself is in the
+**Rights.** The table holds melodies only, all but one in the public domain: Good
+Morning to All (1893; the Hills died in 1916 and 1946), Ah! vous dirai-je, maman and Frère
+Jacques (18th century), In the Hall of the Mountain King (Grieg, 1875; he died in 1907)
+and Ode to Joy (Beethoven, 1824), each transcribed for this table from the score, no
+modern arrangement. The words are always the agent's own.
+
+The one exception is `iron-man`, a **parody / pastiche**, added on Mark's explicit
+request (2026-11-17) with the risk accepted: riff after Black Sabbath, Iron Man (1970).
+Its limits: only the main riff motif (B, D-D, E-E, G-F#-G-F#-G-F#, D-D, E-E), transposed
+to the voice and played once, transcribed from memory, no other part of the song (no
+verse, no solo); never the song's words, not even its title line as a lyric: the agent
+writes its own humorous lines about being Jarvis (`agent_host/prompt.md` says so); it is
+non-commercial. It relies on the parody/pastiche exception (Dutch Auteurswet art. 18b;
+EU Directive 2001/29/EC art. 5(3)(k)), and it is removed on request of the rights holder.
+`JARVIS_SING_PARODY=0` switches it off on its own. Any other song still under copyright
+is not in the table: the agent says it cannot sing that one and offers `mountain-king` or
+`iron-man`, and a tag naming it is removed and its words spoken. ("Happy birthday to you" itself is in the
 public domain in the US since the 2016 settlement of *Marya v. Warner/Chappell* and in the
 EU since 2017, but nothing here depends on it.) "Lang zal ze leven" is not in the table:
 its melody could not be checked against a reliable score.
