@@ -37,7 +37,11 @@ class FakeAgentHost:
         assert shutil.which("ssh") == str(self.dir / "ssh")
 
     def scenario(self, **fields) -> None:
-        (self.dir / "scenario.json").write_text(json.dumps(fields))
+        # Written to a temporary file and moved into place, so a fake ssh call
+        # that reads it at the same moment never sees an empty or half file.
+        tmp = self.dir / "scenario.json.tmp"
+        tmp.write_text(json.dumps(fields))
+        os.replace(tmp, self.dir / "scenario.json")
 
     def pids(self) -> list[int]:
         return [c["pid"] for c in self.calls()]
