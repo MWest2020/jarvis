@@ -81,7 +81,7 @@ with `--egress` also one systemd unit, a system user and a group.
 | `/usr/local/lib/jarvis-agent/action-log` | The PostToolUse and PostToolUseFailure hook that writes one line per tool call that can change something, also for a call that failed (D38). |
 | `/usr/local/lib/jarvis-agent/gate_rules.toml` | The gate's rules from the repository. |
 | `/usr/local/lib/jarvis-agent/prompt.md` | The appended prompt (D35). |
-| `/usr/local/lib/jarvis-agent/turn-settings.json` | The static settings every turn gets with `--settings`: the hooks (the gate with a hook `timeout` of 30 seconds, the action log for calls that succeeded and for calls that failed, 10 seconds), `disableAllHooks: false`, `env` pins (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT` empty, `GIT_CONFIG_COUNT=0`, and `PATH` and `HOME` from the environment file), and `autoMemoryDirectory`. Written by the installer only. |
+| `/usr/local/lib/jarvis-agent/turn-settings.json` | The static settings every turn gets with `--settings`: the hooks (the gate with a hook `timeout` of 30 seconds, the action log for calls that succeeded and for calls that failed, 10 seconds), `disableAllHooks: false`, `env` pins (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT` empty, `GIT_CONFIG_COUNT=0`, and `PATH` and `HOME` from the environment file), and `autoMemoryDirectory`. Written by the installer only. With `egress.mode = "observe"` the wrapper passes the same content inline, with the egress proxy's variables added to `env` ([Egress](#egress-what-a-turn-reaches)). |
 | `/usr/local/lib/jarvis-agent/src/` | The code itself (`agent_host/` and the one module of `bridge/` it imports). The seven paths above the settings are symbolic links into it. The Python entry points get the shebang `#!/usr/bin/python3 -I` at install: a fixed interpreter in isolated mode, so no `PATH` or `PYTHONPATH` of a turn can swap the interpreter or shadow a module. |
 | `/usr/local/lib/jarvis-agent/VERSION` | The commit that was installed. |
 | `/etc/jarvis-agent/config.toml` | The configuration. Written from the template only when it does not exist. |
@@ -715,14 +715,25 @@ cgroup of stage 1 (design E1, E2).
 start of each turn: a real request on its loopback port, answered within 0.3 s, and the
 proxy says "200" only while it has at least 16 free connection slots. If so, the `claude`
 process gets `HTTPS_PROXY`, `HTTP_PROXY` (both spellings) and `NO_PROXY` for loopback;
-everything the turn starts inherits them. If the proxy does not answer or is full, nothing
-is added and the turn runs as with `"off"`. **That is decided once, at the start: if the
+everything the turn starts inherits them. If the proxy does not answer or is full, the six
+variables are set empty, which every client reads as "no proxy", and the turn runs as with
+`"off"`. **That is decided once, at the start: if the
 proxy dies or is stopped in the middle of a turn, that turn's connections fail** (Claude
 Code's own included) and the turn ends as `agent_failed` or `timeout`; the next turn's
 probe finds it down and runs without it. So restart the proxy only between turns. The wrapper's own work (the
-notify command, a PR status, a clone) never goes through the proxy. A checkout cannot
-change the variables: its `env` makes the checkout unsafe (the checkout settings rule),
-and the gate compares its whole environment with the one `claude` started with.
+notify command, a PR status, a clone) never goes through the proxy.
+
+**A checkout cannot change the variables** (task 0.13). With `"observe"` the wrapper does
+not pass `--settings` the path of the turn settings. It passes their content as one JSON
+string, with the six proxy variables added to `env` (the URL, or empty when the proxy is
+down or full). `env` in `--settings` outranks a checkout's `env`, so a checkout that sets
+`HTTPS_PROXY` or `NO_PROXY=*`, even one that appears in the middle of a turn, changes
+nothing. The checkout is still flagged, like any other: its `env` makes it unsafe, the
+gate refuses gated calls (`settings.json sets env`), the record says `settings_changed`,
+and the next turn there is refused. The string travels in argv, which a turn cannot
+change, and holds no secret. With `"off"` the path is passed, as before. Turn settings
+that cannot be read leave the turn without the proxy (`"proxy": "unpinned"`), never with
+variables that are not pinned.
 
 **Its bounds.** At most 256 connections at once (one more gets `503`, logged at most once
 a minute with the count of those not logged); the request head must arrive within 10 s in
@@ -822,6 +833,15 @@ installed with `install.sh --memory-dir … --egress`. `agent` is in `jarvis-egr
   takes nothing away. It does mean the stage 0 log is incomplete when a checkout is
   hostile. Stage 1's kernel filter does not depend on the variables. Pinning them in the
   turn settings, as `PATH` and `HOME` are pinned, closes the gap earlier: task 0.13.
+  **Closed by 0.13**, checked on the host on 2026-11-20 from the branch, with a throwaway
+  configuration (as for host check 13) and the installed proxy. In turn `1e27e13e…` the
+  agent's Bash had the six pinned values, and the inline settings were accepted by Claude
+  Code 2.1.322 with their hooks: the action log wrote its lines. In turn `bb2d3bda…`, after a mid-turn
+  `git checkout evil-proxy`, the agent's Bash still had `HTTPS_PROXY=http://127.0.0.1:3128`,
+  and an ungated `curl https://api.github.com/octocat` answered `200` *and* is in the
+  proxy's log. With the checkout's values it would have failed (port 9) or gone around the
+  proxy (`NO_PROXY=*`). The probe was refused (`settings_changed`, "settings.json sets
+  env"), and the record says `settings_changed`.
 - **Seen on the way.** Every turn opens `mcp-proxy.anthropic.com` (the connectors) and
   `http-intake.logs.us5.datadoghq.com` (Claude Code's own telemetry). Both are questions for
   the stage 1 list (0.11). The confirmed probe sent the notify ping to the phone, as in

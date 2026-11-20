@@ -360,7 +360,10 @@ def test_a_proxy_that_is_down_costs_nothing_and_is_recorded(tmp_path, monkeypatc
     reply = handle_request(_raw(), _config(tmp_path, egress={"mode": "observe",
                                                              "proxy": f"127.0.0.1:{port}"}))
     assert reply["status"] == "ok"
-    assert not any("proxy" in name.lower() for name in P.last.kwargs["env"])
+    # Empty, which every client reads as "no proxy", and pinned as empty.
+    env = P.last.kwargs["env"]
+    assert {name: env[name] for name in egress.PROXY_NAMES} == dict.fromkeys(egress.PROXY_NAMES, "")
+    assert _settings_arg(P.last.command)["env"]["HTTPS_PROXY"] == ""
     assert _records(tmp_path)[0]["egress"] == {"mode": "observe", "proxy": "down"}
 
 
@@ -382,7 +385,7 @@ def test_with_egress_on_its_unit_and_log_are_protected(tmp_path):
 def test_a_port_that_accepts_but_does_not_answer_is_down(tmp_path, listening):
     cfg = egress.EgressConfig(mode="observe", proxy_port=listening)
     assert egress.probe(cfg) == "down"
-    assert egress.turn_environment(cfg) == ({}, {"mode": "observe", "proxy": "down"})
+    assert egress.turn_environment(cfg) == (dict.fromkeys(egress.PROXY_NAMES, ""), {"mode": "observe", "proxy": "down"})
 
 
 # --- the review of #87: bounds, failures, what never reaches the log ----------------------
@@ -420,7 +423,7 @@ def test_at_the_cap_a_connection_gets_503_and_the_log_line_is_rate_limited(tmp_p
         # A full proxy is not "up": the turn runs without it.
         cfg = egress.EgressConfig(mode="observe", proxy_port=port, log_dir=log_dir)
         assert egress.probe(cfg) in ("full", "down")
-        assert egress.turn_environment(cfg)[0] == {}
+        assert set(egress.turn_environment(cfg)[0].values()) == {""}
         for sock in held:
             sock.close()
     finally:
@@ -438,7 +441,7 @@ def test_the_probe_says_full_before_the_cap_is_reached(tmp_path):
         held = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(3)]
         time.sleep(0.3)
         assert egress.probe(cfg) == "full"
-        assert egress.turn_environment(cfg) == ({}, {"mode": "observe", "proxy": "full"})
+        assert egress.turn_environment(cfg) == (dict.fromkeys(egress.PROXY_NAMES, ""), {"mode": "observe", "proxy": "full"})
         for sock in held:
             sock.close()
     finally:
@@ -524,3 +527,113 @@ def test_credentials_in_the_request_never_reach_the_log(proxy, echo_server):
     assert len(events(log_dir, wait_for=2)) == 2
     for secret in ("userinfo-secret", "alice", "proxy-secret", "tunnel-secret", "q=1"):
         assert secret not in text
+
+
+# --- task 0.13: the proxy variables pinned in the turn settings ---------------------------
+
+
+def _settings_arg(argv):
+    value = argv[argv.index("--settings") + 1]
+    return json.loads(value) if value.startswith("{") else value
+
+
+TURN_SETTINGS = {
+    "disableAllHooks": False,
+    "env": {"LD_PRELOAD": "", "PATH": "/usr/bin:/bin", "HOME": "/home/someone"},
+    "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": "/usr/local/lib/jarvis-agent/gate", "timeout": 30}]}]},
+}
+
+
+def test_pinned_settings_add_the_pins_and_keep_everything_else():
+    pins = {"HTTPS_PROXY": "http://127.0.0.1:3128", "NO_PROXY": "localhost"}
+    merged = json.loads(egress.pinned_settings(TURN_SETTINGS, pins))
+    assert merged["env"] == {**TURN_SETTINGS["env"], **pins}
+    assert merged["hooks"] == TURN_SETTINGS["hooks"]
+    assert merged["disableAllHooks"] is False
+    for bad in ([], {"env": []}):
+        with pytest.raises(ValueError):
+            egress.pinned_settings(bad, pins)
+
+
+def _observe_config(tmp_path, server, log_dir, settings=TURN_SETTINGS):
+    config = _config(tmp_path, egress={"mode": "observe",
+                                       "proxy": f"127.0.0.1:{server.server_address[1]}",
+                                       "log_dir": str(log_dir)})
+    config.turn_settings_path.write_text(json.dumps(settings))
+    return config
+
+
+def test_observe_pins_the_same_values_in_the_settings_and_the_environment(
+        tmp_path, monkeypatch, strict_proxy):
+    server, log_dir = strict_proxy
+    P = _popen(stdout=_ok_payload("SUMMARY: four"))
+    monkeypatch.setattr("agent_host.wrapper.subprocess.Popen", P)
+    handle_request(_raw(), _observe_config(tmp_path, server, log_dir))
+    settings = _settings_arg(P.last.command)
+    env = P.last.kwargs["env"]
+    for name in egress.PROXY_NAMES:
+        assert settings["env"][name] == env[name] != ""
+    # The installed settings travel unchanged next to the pins.
+    assert settings["hooks"] == TURN_SETTINGS["hooks"]
+    assert settings["env"]["LD_PRELOAD"] == "" and settings["env"]["PATH"] == "/usr/bin:/bin"
+
+
+def test_with_egress_off_the_settings_path_is_passed_as_before(tmp_path, monkeypatch):
+    P = _popen(stdout=_ok_payload("SUMMARY: four"))
+    monkeypatch.setattr("agent_host.wrapper.subprocess.Popen", P)
+    config = _config(tmp_path)
+    handle_request(_raw(), config)
+    assert _settings_arg(P.last.command) == str(config.turn_settings_path)
+
+
+def test_unreadable_turn_settings_mean_no_proxy_rather_than_unpinned_variables(
+        tmp_path, monkeypatch, strict_proxy):
+    server, log_dir = strict_proxy
+    P = _popen(stdout=_ok_payload("SUMMARY: four"))
+    monkeypatch.setattr("agent_host.wrapper.subprocess.Popen", P)
+    config = _observe_config(tmp_path, server, log_dir)
+    config.turn_settings_path.write_text("not json")
+    handle_request(_raw(), config)
+    assert _settings_arg(P.last.command) == str(config.turn_settings_path)
+    assert not any(name in P.last.kwargs["env"] for name in egress.PROXY_NAMES)
+    assert _records(tmp_path)[0]["egress"] == {"mode": "observe", "proxy": "unpinned"}
+
+
+EVIL_PROXY = json.dumps({"env": {"HTTPS_PROXY": "http://127.0.0.1:9",
+                                 "https_proxy": "http://127.0.0.1:9",
+                                 "NO_PROXY": "*", "no_proxy": "*"}})
+
+
+def test_the_evil_proxy_checkout_mid_turn_is_flagged_like_any_settings_change(
+        tmp_path, monkeypatch, strict_proxy):
+    """The `evil-proxy` case of the host check: a checkout whose settings set
+    the proxy variables appears in the middle of a turn. The pins keep the
+    values (Claude Code's precedence, host-checked); the wrapper flags the
+    turn and refuses the next one in that checkout."""
+    from tests.test_agent_host_wrapper import _popen_that_plants
+    server, log_dir = strict_proxy
+    monkeypatch.setattr("agent_host.wrapper.subprocess.Popen", _popen_that_plants(
+        tmp_path, EVIL_PROXY, stdout=_ok_payload("done.\nSPOKEN SUMMARY: done.")))
+    config = _observe_config(tmp_path, server, log_dir)
+    reply = handle_request(_raw(), config)
+    assert reply["notice"] == "settings_changed"
+    (rec,) = _records(tmp_path)
+    assert rec["settings_changed"] == "settings.json sets env"
+    assert rec["egress"]["proxy"] == "up"
+    assert handle_request(_raw(), config)["error"] == "unsafe_settings"
+
+
+def test_with_the_pins_the_gate_expects_what_the_hooks_get(tmp_path):
+    """The gate compares its own environment with the exec-time environment
+    of `claude` plus the file's pins. The proxy values are in both the
+    exec-time environment and the inline pins, so a hook that got the pinned
+    values (whatever the checkout said) shows no difference."""
+    from agent_host import trusted
+    pins = {"HTTPS_PROXY": "http://127.0.0.1:3128", "NO_PROXY": egress.NO_PROXY}
+    exec_env = {"PATH": "/usr/bin:/bin", "JARVIS_TURN": "1", **pins}
+    turn = trusted.Trusted(pid=1, env={"JARVIS_TURN": "1"}, exec_env=exec_env)
+    hook_env = dict(exec_env)          # the pins outrank the checkout's env
+    assert trusted.env_difference(hook_env, turn, {}) == []
+    unpinned = {**exec_env, "HTTPS_PROXY": "http://127.0.0.1:9"}
+    assert trusted.env_difference(unpinned, turn, {}) == ["HTTPS_PROXY"]

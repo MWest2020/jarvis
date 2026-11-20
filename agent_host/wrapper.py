@@ -71,6 +71,7 @@ from agent_host import (
 from agent_host import record as record_mod
 from agent_host import request as request_mod
 from agent_host import timing as timing_mod
+from agent_host.boundedio import MAX_SETTINGS_BYTES, read_regular
 from agent_host.config import PENDING_SECONDS, AgentHostConfig, hook_config_path, load_config
 from agent_host.sessions import KeyValueStore, SessionStore
 from agent_host.turnlock import Busy, acquire_turn_lock, available_memory_mb
@@ -636,9 +637,28 @@ def _run_turn(
     stored_id = start.session_id
     session_field = start.recorded()
 
+    # Egress (jarvis-credential-proxy, stage 0): with `mode = "observe"` the
+    # `claude` process and everything it starts get the proxy variables
+    # (empty when the proxy is down or full), and the same values are pinned
+    # in the turn settings, passed inline, so a checkout's `env` cannot
+    # change them mid-turn (task 0.13). Only the turn's own environment: the
+    # wrapper's work (a notify command, a PR status, a clone) keeps `env`.
+    egress_env, egress_field = egress.turn_environment(config.egress)
+    settings_inline = None
+    if egress_env:
+        try:
+            installed = json.loads(read_regular(config.turn_settings_path, MAX_SETTINGS_BYTES))
+            settings_inline = egress.pinned_settings(installed, egress_env)
+        except (OSError, ValueError):
+            # Not pinned, so not pointed at the proxy either: the turn runs
+            # as with "off", and `claude` reports the settings file itself.
+            egress_env, egress_field = {}, {"mode": "observe", "proxy": "unpinned"}
+    turn_env = {**env, **egress_env}
+
     inline = _uses_inline_prompt(config)
     argv = command.build_command(
         settings_path=config.turn_settings_path,
+        settings_inline=settings_inline,
         prompt_path=config.prompt_path,
         session_id=stored_id,
         append_prompt_inline=inline,
@@ -658,12 +678,6 @@ def _run_turn(
     except OSError:
         pass  # the child's write fails then, and the turn does not start
 
-    # Egress (jarvis-credential-proxy, stage 0): with `mode = "observe"` and a
-    # proxy that answers, the `claude` process and everything it starts get
-    # the proxy variables. Only the turn's own environment: the wrapper's
-    # work (a notify command, a PR status, a clone) keeps `env` as it is.
-    egress_env, egress_field = egress.turn_environment(config.egress)
-    turn_env = {**env, **egress_env}
     egress_started = time.time()
 
     def write_trusted_record() -> None:

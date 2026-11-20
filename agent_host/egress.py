@@ -59,6 +59,9 @@ DEFAULT_LOG_DIR = Path("/var/log/jarvis-egress")
 UNIT_PATH = Path("/etc/systemd/system/jarvis-egress.service")
 # Loopback names a turn reaches directly, never through the proxy.
 NO_PROXY = "localhost,127.0.0.1,::1"
+# The variables a turn gets with `"observe"`, always all six, and pinned in the
+# turn's settings so that a checkout's `env` cannot change them (task 0.13).
+PROXY_NAMES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy")
 # The wait for the proxy at the start of a turn: it is on loopback.
 PROBE_TIMEOUT_S = 0.3
 
@@ -194,24 +197,46 @@ def probe(config: EgressConfig, timeout: float = PROBE_TIMEOUT_S) -> str:
 def turn_environment(config: EgressConfig) -> tuple[dict[str, str], dict | None]:
     """(what to add to the turn's environment, the record's `egress` field).
 
-    `"off"`: nothing, and no field. `"observe"` with a proxy that answers
-    its probe with free slots: the proxy variables in both spellings (curl
-    reads `http_proxy` only in lower case, Node and Go read either). A proxy
-    that does not answer, or is full: nothing added, so the turn runs as with
-    `"off"`, and the record says `"proxy": "down"` or `"full"`. This is
-    decided once, at the start: a proxy that dies in the middle of a turn
-    fails that turn's connections."""
+    `"off"`: nothing, and no field. `"observe"`: always the six
+    `PROXY_NAMES`, which the wrapper also pins in the turn's settings
+    (`pinned_settings`). With a proxy that answers its probe with free slots
+    they name the proxy, in both spellings (curl reads `http_proxy` only in
+    lower case, Node and Go read either). With a proxy that does not answer,
+    or is full, they are empty, which every client reads as "no proxy": the
+    turn runs as with `"off"`, and the record says `"proxy": "down"` or
+    `"full"`. This is decided once, at the start: a proxy that dies in the
+    middle of a turn fails that turn's connections."""
     if config.mode != "observe":
         return {}, None
     state = probe(config)
     if state != "up":
-        return {}, {"mode": "observe", "proxy": state}
+        return dict.fromkeys(PROXY_NAMES, ""), {"mode": "observe", "proxy": state}
     url = config.proxy_url
     env = {}
     for name in ("HTTPS_PROXY", "HTTP_PROXY"):
         env[name] = env[name.lower()] = url
     env["NO_PROXY"] = env["no_proxy"] = NO_PROXY
     return env, {"mode": "observe", "proxy": "up"}
+
+
+def pinned_settings(turn_settings: dict, pins: dict[str, str]) -> str:
+    """The turn settings with `pins` added to their `env`, as the one JSON
+    string `--settings` takes in place of a path (task 0.13).
+
+    `env` in `--settings` outranks a checkout's `env` (host-checked for
+    `PATH` and `HOME`), so a checkout cannot point the turn's programs at
+    another proxy, or past it with `NO_PROXY=*`, in the middle of a turn.
+    The string travels in argv, which the turn cannot change; it holds no
+    secret. The pinned values are also in the `claude` process's own
+    environment, so the gate's comparison (exec-time environment plus the
+    file's pins) expects exactly what the hooks get."""
+    if not isinstance(turn_settings, dict):
+        raise ValueError("the turn settings are not a JSON object")
+    env = turn_settings.get("env", {})
+    if not isinstance(env, dict):
+        raise ValueError("the turn settings' env is not a table")
+    merged = {**turn_settings, "env": {**env, **pins}}
+    return json.dumps(merged, sort_keys=True, separators=(",", ":"))
 
 
 def log_path(log_dir: Path, day: datetime) -> Path:
