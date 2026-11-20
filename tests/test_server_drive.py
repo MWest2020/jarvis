@@ -221,3 +221,31 @@ def test_the_recap_after_a_yes_names_the_question(full):
     _, said = full.say("where was I")
     assert said == ("WAV:Last, on demo, you asked: merge the jarvis pull request. "
                     "I said: Merged.")
+
+
+def test_a_journal_that_cannot_be_opened_does_not_stop_the_bridge(tmp_path, monkeypatch):
+    import os
+    directory = tmp_path / "journal"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o300)                            # not listable
+    if os.access(directory, os.R_OK):
+        directory.chmod(0o700)
+        pytest.skip("running as root")
+    try:
+        b = ReadonlyBridge(tmp_path, monkeypatch)     # make_server must not fail
+        try:
+            assert server.Handler.journal is None
+            _, said = b.say("where was I")            # no journal: an ordinary question
+            assert said == "WAV:The answer is four." and b.prompts == ["where was I"]
+        finally:
+            b.stop()
+    finally:
+        directory.chmod(0o700)
+
+
+def test_the_token_and_keys_never_reach_the_journal(ro):
+    ro.say("note the token is test-token")            # the bridge's own token
+    ro.say("my key is sk-ant-api03-abcdef")
+    raw = "".join(p.read_text() for p in (ro.tmp_path / "journal").iterdir())
+    assert "test-token" not in raw and "sk-ant-" not in raw
+    assert raw.count("[REDACTED]") == 2

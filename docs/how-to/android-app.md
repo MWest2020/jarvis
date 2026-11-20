@@ -170,12 +170,13 @@ project once.
 - Two things you can say that the bridge answers itself, at once and without the agent
   (since 2026-11-20, change `add-drive-mode` phase 1; details in
   [`bridge-service.md`](bridge-service.md#the-drive-journal)):
-  - **"Where was I?"**: which project you were on, what you last asked and what Jarvis said,
+  - **"Where was I?"** (or "Waar was ik?"): which project you were on, what you last asked and what Jarvis said,
     and whether a turn is still running. After a stop of more than 30 minutes it recaps the
     previous drive.
-  - **"Note: ..."** (or "make a note ...", "take a note ..."): Jarvis says "Noted." and keeps
-    the note on the bridge; it is not sent to the agent. Say it as the start of the
-    utterance; "can you note ..." is an ordinary question.
+  - **"Note: ..."** (or "make a note ...", "take a note ...", "Noteer ...", "Notitie: ...",
+    "Maak een notitie ..."): Jarvis says "Noted." and keeps the note on the bridge; it is not
+    sent to the agent. Say it as the start of the utterance; "can you note ..." is an
+    ordinary question, and so is anything that ends as a question.
   Both work while the project is still busy with a question, and with the agent host down.
   Nothing else changes in the app.
 - A recording stops by itself after two minutes. Leaving the app while recording discards

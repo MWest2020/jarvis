@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -62,7 +63,9 @@ def match(transcript: str, *, recap_words: Iterable[str],
 
     "Where was I" counts only as the whole utterance (normalised for case and
     punctuation), so "where was I with the config" goes to the agent. A note word counts
-    as the first words of the utterance; the rest, as transcribed, is the note.
+    as the first words of the utterance; the rest, as transcribed, is the note. An
+    utterance that ends in a question mark is a question, not a note ("notitie over de
+    release, wat staat erin?" goes to the agent).
     """
     said = normalise_utterance(transcript)
     if not said:
@@ -78,12 +81,20 @@ def match(transcript: str, *, recap_words: Iterable[str],
         if head != phrase:
             continue
         rest = " ".join(raw for raw, _ in tokens[len(words):])
+        if transcript.rstrip().endswith("?"):
+            return None
         return Word(NOTE, rest.lstrip(":,;.-–— ").strip()[:MAX_NOTE_CHARS])
     return None
 
 
+_SENTENCE_END = re.compile(r"(?<=[.?!])\s+")
+
+
 def _cut(text: str, words: int) -> str:
-    parts = " ".join(text.split()).split(" ")
+    """The first sentence of `text`, at most `words` words: the recap stays at three
+    short sentences (D19) whatever the question or the reply held."""
+    text = _SENTENCE_END.split(" ".join(text.split()), maxsplit=1)[0]
+    parts = text.split(" ")
     if len(parts) <= words:
         return " ".join(parts)
     return " ".join(parts[:words]) + " ..."
@@ -97,12 +108,16 @@ def _sentence(text: str) -> str:
 class Journal:
     """The journal on the bridge's state volume, one JSON-lines file per drive.
 
-    `clock` gives wall-clock seconds (time.time); tests pass their own.
+    `clock` gives wall-clock seconds (time.time); tests pass their own. `redact` is
+    applied to every text before it is written: the same redaction as the bridge log
+    (the token, the OAuth token, sk-ant- keys).
     """
 
     def __init__(self, directory: Path, *, gap_s: float, retention_s: float,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 redact: Callable[[str], str] = lambda text: text) -> None:
         self._dir = directory
+        self._redact = redact
         self._gap_s = gap_s
         self._retention_s = retention_s
         self._clock = clock
@@ -120,12 +135,13 @@ class Journal:
                     answer: bool = False) -> None:
         """One agent turn. `answer`: the utterance was the yes or no to a read-back."""
         self._append({"kind": "turn", "project": project,
-                      "transcript": transcript[:MAX_FIELD_CHARS],
-                      "spoken": spoken[:MAX_FIELD_CHARS], "turn_id": turn_id,
+                      "transcript": self._redact(transcript)[:MAX_FIELD_CHARS],
+                      "spoken": self._redact(spoken)[:MAX_FIELD_CHARS], "turn_id": turn_id,
                       "session_id": session_id, "read_back": read_back, "answer": answer})
 
     def add_note(self, *, project: str, text: str) -> None:
-        self._append({"kind": "note", "project": project, "text": text[:MAX_NOTE_CHARS]})
+        self._append({"kind": "note", "project": project,
+                      "text": self._redact(text)[:MAX_NOTE_CHARS]})
 
     def record_recap(self, *, project: str) -> None:
         self._append({"kind": "recap", "project": project})
@@ -136,12 +152,20 @@ class Journal:
             if self._drive is None or now - self._last_t >= self._gap_s:
                 self._drive = self._new_drive_id(now)
                 self._prune()
-            line = json.dumps({"t": round(now, 3), **event}, ensure_ascii=False) + "\n"
+            data = (json.dumps({"t": round(now, 3), **event}, ensure_ascii=False)
+                    + "\n").encode("utf-8")
             self._dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(self._dir / (self._drive + _SUFFIX),
-                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                         os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
             try:
-                os.write(fd, line.encode("utf-8"))
+                size = os.fstat(fd).st_size
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    # A line cut off by a crash: end it, so this event is a line of
+                    # its own and not glued onto the broken one.
+                    data = b"\n" + data
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
                 os.fsync(fd)
             finally:
                 os.close(fd)
@@ -167,15 +191,16 @@ class Journal:
         return sorted(n[:-len(_SUFFIX)] for n in names)
 
     def events(self, drive: str) -> list[dict]:
-        """A drive's events; a line that was cut off by a crash is skipped."""
+        """A drive's events; a line that was cut off by a crash is skipped, also one
+        cut in the middle of a multi-byte character."""
         try:
-            raw = (self._dir / (drive + _SUFFIX)).read_text(encoding="utf-8")
+            raw = (self._dir / (drive + _SUFFIX)).read_bytes()
         except FileNotFoundError:
             return []
         events = []
-        for line in raw.splitlines():
+        for line in raw.split(b"\n"):
             try:
-                event = json.loads(line)
+                event = json.loads(line.decode("utf-8", errors="replace"))
             except json.JSONDecodeError:
                 continue
             if isinstance(event, dict):
@@ -195,10 +220,13 @@ class Journal:
         it has no turn yet, the last drive that has one; then the turns still running.
         No agent turn: this works when the agent host is down and invents nothing."""
         current = self.current_drive()
+        cutoff = self._clock() - self._retention_s
         sentences: list[str] = []
         for drive in reversed(self.drives()):
-            turns = [e for e in self.events(drive) if e.get("kind") == "turn"]
-            if not turns:
+            events = self.events(drive)
+            turns = [e for e in events if e.get("kind") == "turn"]
+            if not turns or _last_time(events) < cutoff:
+                # Nothing to say, or past the retention and not pruned yet.
                 continue
             last = turns[-1]
             asked = next((t for t in reversed(turns) if not t.get("answer")), last)
@@ -224,10 +252,9 @@ class Journal:
         drives = self.drives()
         if not drives:
             return
-        events = self.events(drives[-1])
-        times = [e["t"] for e in events if isinstance(e.get("t"), (int, float))]
-        if times:
-            self._drive, self._last_t = drives[-1], float(max(times))
+        last = _last_time(self.events(drives[-1]))
+        if last > 0:
+            self._drive, self._last_t = drives[-1], last
 
     def _prune(self) -> None:
         """Drives whose last event is older than the retention are deleted."""
@@ -236,15 +263,23 @@ class Journal:
             paths = list(self._dir.iterdir())
         except FileNotFoundError:
             return
+        except OSError as exc:
+            logger.warning("journal: could not list %s for pruning: %s", self._dir, exc)
+            return
         for path in paths:
             drive = path.name[:-len(_SUFFIX)]
             if not path.name.endswith(_SUFFIX) or drive == self._drive:
                 continue
             try:
-                times = [e["t"] for e in self.events(drive)
-                         if isinstance(e.get("t"), (int, float))]
-                last = max(times) if times else path.stat().st_mtime
+                last = _last_time(self.events(drive)) or path.stat().st_mtime
                 if last < cutoff:
                     path.unlink()
             except OSError as exc:
                 logger.warning("journal: could not prune %s: %s", path.name, exc)
+
+
+def _last_time(events: list[dict]) -> float:
+    """The time of a drive's last event; 0 when none has one."""
+    times = [e["t"] for e in events
+             if isinstance(e.get("t"), (int, float)) and not isinstance(e.get("t"), bool)]
+    return float(max(times)) if times else 0.0

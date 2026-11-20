@@ -30,7 +30,7 @@ from bridge.config import (
 from bridge.full_mode import FRAMING_SENTENCES, FullMode
 from bridge.full_mode import NOT_HEARD as FULL_NOT_HEARD
 from bridge.journal import Journal
-from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
+from bridge.logging_setup import FILE_ONLY, STREAM_ONLY, RedactingFilter
 from bridge.logging_setup import configure as configure_logging
 from bridge.readonly_adapter import ReadonlyAdapter
 from bridge.sessions import SessionStore
@@ -846,6 +846,20 @@ class BoundedHTTPServer(ThreadingHTTPServer):
             self.shutdown_request(request)
 
 
+def _make_journal(config: BridgeConfig) -> Journal | None:
+    """The drive journal (add-drive-mode D10), with the log's redaction. A journal that
+    cannot be opened never stops the bridge: the drive's words are then not matched and
+    every utterance goes to the agent as before."""
+    redact = RedactingFilter((config.token, os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))).redact
+    try:
+        return Journal(config.journal_path, gap_s=config.drive_gap_minutes * 60,
+                       retention_s=config.journal_days * 86400, redact=redact)
+    except (OSError, ValueError) as exc:
+        logger.error("the drive journal in %s cannot be used (%s): \"where was I\" and "
+                     "notes are off until it can", config.journal_path, exc)
+        return None
+
+
 def make_server(config: BridgeConfig) -> BoundedHTTPServer:
     Handler.config = config
     Handler.sessions = SessionStore(config.session_store_path)
@@ -854,8 +868,7 @@ def make_server(config: BridgeConfig) -> BoundedHTTPServer:
         allowed_tools=config.allowed_tools,
         timeout_s=config.claude_timeout_s,
     )
-    Handler.journal = Journal(config.journal_path, gap_s=config.drive_gap_minutes * 60,
-                              retention_s=config.journal_days * 86400)
+    Handler.journal = _make_journal(config)
     Handler.full = None
     if config.agent_mode == MODE_FULL:
         if config.agent_host is None:

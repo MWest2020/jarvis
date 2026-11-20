@@ -210,9 +210,12 @@ DEFAULT_CONFIRM_MIN_SPEECH_S = 0.3
 DEFAULT_DRIVE_GAP_MINUTES = 30
 DEFAULT_JOURNAL_DAYS = 30
 # Whole utterances, in the form they are compared in (normalise_utterance).
-DEFAULT_RECAP_WORDS: tuple[str, ...] = ("where was i", "what was i doing")
+# English and Dutch, like the yes and no ("ja", "nee").
+DEFAULT_RECAP_WORDS: tuple[str, ...] = ("where was i", "what was i doing",
+                                        "waar was ik", "wat was ik aan het doen")
 # The first words of an utterance; what follows them is the note.
-DEFAULT_NOTE_WORDS: tuple[str, ...] = ("note", "make a note", "take a note")
+DEFAULT_NOTE_WORDS: tuple[str, ...] = ("note", "make a note", "take a note",
+                                       "noteer", "notitie", "maak een notitie")
 
 # How long the bridge waits for the agent host before it answers the phone that
 # the turn is still running. The phone gives up after 180 s (the Android app's read

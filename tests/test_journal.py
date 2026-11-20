@@ -191,3 +191,98 @@ def test_a_recent_drive_survives_the_pruning(tmp_path):
     clock.t += 7 * 86400
     j.add_note(project="p", text="today")
     assert len(j.drives()) == 2
+
+
+# --- review of #85 ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("said", ["Waar was ik?", "waar was ik", "Wat was ik aan het doen?"])
+def test_the_dutch_recap_words_alone(said):
+    assert match(said) == Word(RECAP)
+
+
+@pytest.mark.parametrize("said", ["Waar was ik gebleven met de config?",
+                                  "Weet je waar was ik gisteren", "waar waren we"])
+def test_the_dutch_recap_words_inside_a_question_are_not_one(said):
+    assert match(said) is None
+
+
+@pytest.mark.parametrize("said, text", [
+    ("Noteer: token rotatie checken vanavond.", "token rotatie checken vanavond."),
+    ("Notitie: garage bellen", "garage bellen"),
+    ("Maak een notitie, Billbird facturen.", "Billbird facturen."),
+])
+def test_a_dutch_note(said, text):
+    assert match(said) == Word(NOTE, text)
+
+
+@pytest.mark.parametrize("said", ["Notitie over de release, wat staat erin?",
+                                  "Kun je noteren wat er faalt?",
+                                  "Note the config, is it broken?",
+                                  "Nee, de andere"])
+def test_a_question_is_never_a_note(said):
+    assert match(said) is None
+
+
+def test_a_line_cut_in_a_multibyte_character_does_not_stop_the_journal(tmp_path):
+    clock = Clock()
+    j = make(tmp_path, clock)
+    j.record_turn(project="p", transcript="wat is open", spoken="Twee pull requests.")
+    [path] = (tmp_path / "journal").iterdir()
+    with path.open("ab") as fh:
+        fh.write('{"t": 1, "kind": "note", "text": "café'.encode()[:-1])   # half an é
+    again = make(tmp_path, clock)                      # the bridge restarted
+    assert again.recap().startswith("Last, on p, you asked: wat is open.")
+    again.add_note(project="p", text="na de crash")    # not glued onto the cut line
+    texts = [e.get("text") for e in again.events(again.drives()[0]) if e["kind"] == "note"]
+    assert texts == ["na de crash"]
+    assert path.read_bytes().endswith(b"}\n")
+
+
+def test_an_unreadable_journal_directory_is_an_os_error_and_pruning_survives_it(tmp_path):
+    import os
+    j = make(tmp_path, Clock())
+    directory = tmp_path / "journal"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o300)                             # writable, not listable
+    try:
+        if os.access(directory, os.R_OK):              # root reads everything
+            pytest.skip("running as root")
+        j._prune()                                     # logged, not raised
+        with pytest.raises(OSError):                   # the server falls back (test_server_drive)
+            make(tmp_path, Clock())
+    finally:
+        directory.chmod(0o700)
+
+
+def test_the_recap_is_three_sentences_whatever_the_question_and_reply_held(tmp_path):
+    import re
+    j = make(tmp_path, Clock())
+    j.record_turn(project="jarvis", transcript="Is the build done? And did it pass? Tell me.",
+                  spoken="The build is done. It passed. Two warnings. Want the details?")
+    recap = j.recap(running=["wordsworth"])
+    assert recap == ("Last, on jarvis, you asked: Is the build done? "
+                     "I said: The build is done. A turn on wordsworth is still running.")
+    assert len(re.split(r"(?<=[.?!])\s+", recap)) == 3
+
+
+def test_a_drive_past_the_retention_is_not_recapped(tmp_path):
+    clock = Clock()
+    j = make(tmp_path, clock, days=30)
+    j.record_turn(project="old", transcript="q", spoken="a")
+    clock.t += 40 * 86400                              # no event since, so nothing pruned
+    assert len(j.drives()) == 1
+    assert j.recap() == journal.NOTHING_TO_RECAP
+
+
+def test_secrets_are_redacted_before_they_are_written(tmp_path):
+    from bridge.logging_setup import RedactingFilter
+    redact = RedactingFilter(("tok-1234567890",)).redact
+    j = Journal(tmp_path / "journal", gap_s=1800, retention_s=86400, clock=Clock(),
+                redact=redact)
+    j.record_turn(project="p", transcript="my token is tok-1234567890",
+                  spoken="Key sk-ant-abc_DEF-123 seen.")
+    j.add_note(project="p", text="rotate tok-1234567890 and sk-ant-xyz")
+    raw = next((tmp_path / "journal").iterdir()).read_text()
+    assert "tok-1234567890" not in raw and "sk-ant-" not in raw
+    assert raw.count("[REDACTED]") == 4

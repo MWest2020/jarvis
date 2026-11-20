@@ -466,8 +466,10 @@ def test_the_drive_defaults(monkeypatch, tmp_path):
     config = load_config()
     assert config.journal_path == tmp_path / "state" / "journal"
     assert (config.drive_gap_minutes, config.journal_days) == (30, 30)
-    assert config.recap_words == ("where was i", "what was i doing")
-    assert config.note_words == ("note", "make a note", "take a note")
+    assert config.recap_words == ("where was i", "what was i doing",
+                                  "waar was ik", "wat was ik aan het doen")
+    assert config.note_words == ("note", "make a note", "take a note",
+                                 "noteer", "notitie", "maak een notitie")
 
 
 def test_the_drive_settings_from_the_environment(monkeypatch, tmp_path):
