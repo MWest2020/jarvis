@@ -74,13 +74,28 @@ def test_the_template_names_it_as_dotted_keys_and_leaves_it_off():
 # --- the proxy -------------------------------------------------------------------------
 
 
+def start_proxy(log_dir, **kwargs):
+    log_dir.mkdir(exist_ok=True)
+    server = egress.ObserveProxy(("127.0.0.1", 0), egress.EventLog(log_dir), **kwargs)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 @pytest.fixture
 def proxy(tmp_path):
+    """A proxy whose upstreams may be on loopback: every upstream here is."""
     log_dir = tmp_path / "log"
-    log_dir.mkdir()
-    server = egress.ObserveProxy(("127.0.0.1", 0), egress.EventLog(log_dir))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server = start_proxy(log_dir, refuse_loopback=False)
+    yield server, log_dir
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def strict_proxy(tmp_path):
+    """A proxy as installed: loopback and unspecified addresses refused."""
+    log_dir = tmp_path / "strict-log"
+    server = start_proxy(log_dir)
     yield server, log_dir
     server.shutdown()
     server.server_close()
@@ -316,11 +331,12 @@ def test_with_egress_off_a_turn_is_unchanged(tmp_path, monkeypatch):
     assert _records(tmp_path)[0]["egress"] is None
 
 
-def test_observe_points_the_turn_at_the_proxy_and_records_it(tmp_path, monkeypatch, listening):
+def test_observe_points_the_turn_at_the_proxy_and_records_it(tmp_path, monkeypatch,
+                                                              strict_proxy):
+    server, log_dir = strict_proxy
+    listening = server.server_address[1]
     P = _popen(stdout=_ok_payload("SUMMARY: four"))
     monkeypatch.setattr("agent_host.wrapper.subprocess.Popen", P)
-    log_dir = tmp_path / "egress-log"
-    log_dir.mkdir()
     config = _config(tmp_path, egress={"mode": "observe", "proxy": f"127.0.0.1:{listening}",
                                        "log_dir": str(log_dir)})
     handle_request(_raw(), config)
@@ -331,7 +347,7 @@ def test_observe_points_the_turn_at_the_proxy_and_records_it(tmp_path, monkeypat
     assert env["JARVIS_TURN"] == "1"
     (rec,) = _records(tmp_path)
     assert rec["egress"]["mode"] == "observe" and rec["egress"]["proxy"] == "up"
-    assert rec["egress"]["requests"] == 0
+    assert rec["egress"]["requests"] == 0     # the probe is never logged
 
 
 def test_a_proxy_that_is_down_costs_nothing_and_is_recorded(tmp_path, monkeypatch):
@@ -361,3 +377,150 @@ def test_with_egress_on_its_unit_and_log_are_protected(tmp_path):
     assert not off.covers(egress.UNIT_PATH)
     assert on.covers(egress.UNIT_PATH)
     assert on.covers(tmp_path / "elog" / "events-2026-11-20.jsonl")
+
+
+def test_a_port_that_accepts_but_does_not_answer_is_down(tmp_path, listening):
+    cfg = egress.EgressConfig(mode="observe", proxy_port=listening)
+    assert egress.probe(cfg) == "down"
+    assert egress.turn_environment(cfg) == ({}, {"mode": "observe", "proxy": "down"})
+
+
+# --- the review of #87: bounds, failures, what never reaches the log ----------------------
+
+
+def test_loopback_and_unspecified_targets_are_refused(strict_proxy, echo_server):
+    server, log_dir = strict_proxy
+    port, received = echo_server
+    for target in (f"127.0.0.1:{port}", f"0.0.0.0:{port}", f"localhost:{port}",
+                   f"[::ffff:127.0.0.1]:{port}", f"127.0.0.1:{server.server_address[1]}"):
+        sock, head = connect_through(server.server_address[1], target)
+        sock.close()
+        assert head.startswith("HTTP/1.1 403"), target
+    assert received == []
+    logged = events(log_dir, wait_for=5)
+    assert len(logged) == 5
+    assert all(e["status"] == 403 and e["decision"] == "error" for e in logged)
+
+
+def test_at_the_cap_a_connection_gets_503_and_the_log_line_is_rate_limited(tmp_path):
+    log_dir = tmp_path / "log"
+    server = start_proxy(log_dir, max_connections=2)
+    port = server.server_address[1]
+    try:
+        held = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(2)]
+        time.sleep(0.2)
+        answers = []
+        for _ in range(3):
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as extra:
+                answers.append(extra.recv(100))
+        assert all(a.startswith(b"HTTP/1.1 503") for a in answers)
+        time.sleep(0.2)
+        logged = events(log_dir, wait_for=1)
+        assert len(logged) == 1 and logged[0]["reason"] == "too many connections"
+        # A full proxy is not "up": the turn runs without it.
+        cfg = egress.EgressConfig(mode="observe", proxy_port=port, log_dir=log_dir)
+        assert egress.probe(cfg) in ("full", "down")
+        assert egress.turn_environment(cfg)[0] == {}
+        for sock in held:
+            sock.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_probe_says_full_before_the_cap_is_reached(tmp_path):
+    log_dir = tmp_path / "log"
+    server = start_proxy(log_dir, max_connections=egress.PROBE_FREE_SLOTS + 2)
+    port = server.server_address[1]
+    cfg = egress.EgressConfig(mode="observe", proxy_port=port, log_dir=log_dir)
+    try:
+        assert egress.probe(cfg) == "up"
+        held = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(3)]
+        time.sleep(0.3)
+        assert egress.probe(cfg) == "full"
+        assert egress.turn_environment(cfg) == ({}, {"mode": "observe", "proxy": "full"})
+        for sock in held:
+            sock.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_slow_head_is_cut_off_at_one_total_deadline(proxy, monkeypatch):
+    monkeypatch.setattr(egress, "HEAD_TIMEOUT_S", 0.6)
+    server, log_dir = proxy
+    started = time.monotonic()
+    with socket.create_connection(server.server_address, timeout=5) as sock:
+        closed = False
+        for byte in b"CONNECT example.org:443 HTTP/1.1\r\nX-Slow: " + b"a" * 200:
+            try:
+                sock.sendall(bytes([byte]))
+                sock.settimeout(0.1)
+                if sock.recv(1) == b"":
+                    closed = True
+                    break
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                closed = True
+                break
+        assert closed
+    assert time.monotonic() - started < 3
+
+
+def test_a_log_that_cannot_be_written_never_stops_a_connection(proxy, echo_server, monkeypatch):
+    server, log_dir = proxy
+    port, _ = echo_server
+
+    def full_disk(path, line):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(egress.EventLog, "_append", staticmethod(full_disk))
+    sock, head = connect_through(server.server_address[1], f"127.0.0.1:{port}")
+    with sock:
+        assert head.startswith("HTTP/1.1 200")
+        sock.sendall(b"still here")
+        assert sock.recv(100) == b"echo:still here"
+    assert server.log.dropped == 1
+    monkeypatch.undo()
+    server.log.write({"method": "CONNECT"})
+    (event,) = events(log_dir)
+    assert event["dropped_before"] == 1 and server.log.dropped == 0
+
+
+def test_credentials_in_the_request_never_reach_the_log(proxy, echo_server):
+    server, log_dir = proxy
+    port, _ = echo_server
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib name
+            seen.append(dict(self.headers))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    upstream = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as sock:
+            sock.sendall(
+                f"GET http://alice:userinfo-secret@127.0.0.1:{upstream.server_address[1]}/p?q=1 "
+                f"HTTP/1.1\r\nHost: 127.0.0.1\r\nProxy-Authorization: Basic proxy-secret\r\n"
+                f"\r\n".encode())
+            assert sock.recv(100).startswith(b"HTTP/1.0 204")
+        tunnel = socket.create_connection(server.server_address, timeout=5)
+        tunnel.sendall(f"CONNECT 127.0.0.1:{port} HTTP/1.1\r\n"
+                       f"Proxy-Authorization: Bearer tunnel-secret\r\n\r\n".encode())
+        assert tunnel.recv(100).startswith(b"HTTP/1.1 200")
+        tunnel.close()
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+    assert not any("Proxy-Authorization" in headers for headers in seen)
+    text = "".join(p.read_text() for p in log_dir.glob("events-*.jsonl"))
+    assert len(events(log_dir, wait_for=2)) == 2
+    for secret in ("userinfo-secret", "alice", "proxy-secret", "tunnel-secret", "q=1"):
+        assert secret not in text

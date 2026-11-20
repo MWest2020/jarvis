@@ -76,7 +76,7 @@ class TurnRecord:
     # None for a turn with no agent run.
     session: dict | None = None
     # Egress of the turn (jarvis-credential-proxy): None with `mode = "off"`.
-    # Stage 0: {"mode": "observe", "proxy": "up" | "down", and with a proxy
+    # Stage 0: {"mode": "observe", "proxy": "up" | "down" | "full", and with a proxy
     # that was up, what it logged in the turn's window: "requests", "failed",
     # "private", "sni_mismatch", "origins" {origin: count}}.
     egress: dict | None = None

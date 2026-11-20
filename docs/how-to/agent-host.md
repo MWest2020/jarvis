@@ -709,14 +709,26 @@ without its query, and the status. **What it does not see**: a program that igno
 proxy variables and connects directly, DNS lookups, ssh. Seeing those needs the turn's
 cgroup of stage 1 (design E1, E2).
 
-**How a turn uses it.** With `egress.mode = "observe"` the wrapper checks at the start of
-each turn that the proxy answers on its loopback port (0.3 s at most). If it does, the
-`claude` process gets `HTTPS_PROXY`, `HTTP_PROXY` (both spellings) and `NO_PROXY` for
-loopback; everything the turn starts inherits them. If it does not, nothing is added and
-the turn runs as with `"off"`: observing never costs a turn. The wrapper's own work (the
+**How a turn uses it.** With `egress.mode = "observe"` the wrapper probes the proxy at the
+start of each turn: a real request on its loopback port, answered within 0.3 s, and the
+proxy says "200" only while it has at least 16 free connection slots. If so, the `claude`
+process gets `HTTPS_PROXY`, `HTTP_PROXY` (both spellings) and `NO_PROXY` for loopback;
+everything the turn starts inherits them. If the proxy does not answer or is full, nothing
+is added and the turn runs as with `"off"`. **That is decided once, at the start: if the
+proxy dies or is stopped in the middle of a turn, that turn's connections fail** (Claude
+Code's own included) and the turn ends as `agent_failed` or `timeout`; the next turn's
+probe finds it down and runs without it. So restart the proxy only between turns. The wrapper's own work (the
 notify command, a PR status, a clone) never goes through the proxy. A checkout cannot
 change the variables: its `env` makes the checkout unsafe (the checkout settings rule),
 and the gate compares its whole environment with the one `claude` started with.
+
+**Its bounds.** At most 256 connections at once (one more gets `503`, logged at most once
+a minute with the count of those not logged); the request head must arrive within 10 s in
+all; a line with no traffic either way for 600 s (the turn's `timeout_s`) is closed. It
+never connects to a loopback or unspecified address (`403`): it runs as its own user, and a
+turn reaches loopback directly (`NO_PROXY`). A log line that cannot be written (a full
+disk) never stops a connection: it is counted, and the next line that can be written says
+how many were lost (`dropped_before`).
 
 **Where the output goes.**
 
@@ -726,7 +738,7 @@ and the gate compares its whole environment with the one `claude` started with.
   `reason`, `duration_ms`, `credential_injected` (always false), `address`, `private`,
   `sni`, `sni_matches`. Never a body, a header or a query. Owned by `jarvis-egress`, group
   `jarvis-egress-log`, mode 0640; kept `retention_days`.
-- The turn record gets `egress`: `{"mode": "observe", "proxy": "up" | "down"}`, and with a
+- The turn record gets `egress`: `{"mode": "observe", "proxy": "up" | "down" | "full"}`, and with a
   proxy that was up, what it logged between the turn's start and end: `requests`,
   `failed`, `private`, `sni_mismatch`, and `origins` (`{origin: count}`, the 20 most
   frequent). With `mode = "off"` the field is `null`.

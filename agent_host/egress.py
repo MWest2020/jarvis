@@ -64,14 +64,26 @@ PROBE_TIMEOUT_S = 0.3
 
 # The proxy's own bounds.
 MAX_HEAD_BYTES = 64 * 1024
-HEAD_TIMEOUT_S = 30.0
+# One deadline for the whole request head, not per read: a client that sends
+# a byte now and then cannot hold a slot.
+HEAD_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 10.0
 # How long the proxy waits for a client's first bytes after `CONNECT`, to
 # read the TLS server name. A TLS client sends at once; a protocol where the
 # server speaks first waits this long once.
 SNI_WAIT_S = 2.0
-IDLE_TIMEOUT_S = 3600.0
+# A line with no byte either way for this long is closed: the turn's own
+# timeout (timeout_s, 600 by default).
+IDLE_TIMEOUT_S = 600.0
 MAX_CONNECTIONS = 256
+# The wrapper's probe gets "200" only while at least this many slots are free
+# besides its own; otherwise the proxy counts as full and the turn runs
+# without it.
+PROBE_FREE_SLOTS = 16
+PROBE_PATH = "/.jarvis-egress/health"
+# At most one log line per this many seconds for connections refused at the
+# cap; the next one says how many were not logged.
+OVER_CAP_LOG_INTERVAL_S = 60.0
 # The summary in a turn record reads at most this much of a day's log, and
 # names at most this many origins.
 MAX_SUMMARY_READ_BYTES = 4 * 1024 * 1024
@@ -152,26 +164,48 @@ def parse_config(data: object) -> EgressConfig:
 # --- the wrapper's side ---------------------------------------------------------------
 
 
-def proxy_answers(config: EgressConfig, timeout: float = PROBE_TIMEOUT_S) -> bool:
+def probe(config: EgressConfig, timeout: float = PROBE_TIMEOUT_S) -> str:
+    """"up", "full" or "down": a real request to the proxy and its answer,
+    within one deadline. "up" only when the proxy says it has free slots."""
+    deadline = time.monotonic() + timeout
     try:
-        with socket.create_connection((config.proxy_host, config.proxy_port), timeout=timeout):
-            return True
+        with socket.create_connection((config.proxy_host, config.proxy_port),
+                                      timeout=timeout) as sock:
+            sock.sendall(f"GET {PROBE_PATH} HTTP/1.1\r\nHost: jarvis-egress\r\n\r\n".encode())
+            answer = b""
+            while b"\r\n" not in answer and len(answer) < 1024:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return "down"
+                sock.settimeout(left)
+                chunk = sock.recv(1024)
+                if not chunk:
+                    break
+                answer += chunk
     except OSError:
-        return False
+        return "down"
+    if answer.startswith(b"HTTP/1.1 200"):
+        return "up"
+    if answer.startswith(b"HTTP/1.1 503"):
+        return "full"
+    return "down"
 
 
 def turn_environment(config: EgressConfig) -> tuple[dict[str, str], dict | None]:
     """(what to add to the turn's environment, the record's `egress` field).
 
-    `"off"`: nothing, and no field. `"observe"` with a proxy that answers:
-    the proxy variables in both spellings (curl reads `http_proxy` only in
-    lower case, Node and Go read either). A proxy that does not answer:
-    nothing added, so the turn runs as with `"off"`, and the record says
-    `"proxy": "down"`."""
+    `"off"`: nothing, and no field. `"observe"` with a proxy that answers
+    its probe with free slots: the proxy variables in both spellings (curl
+    reads `http_proxy` only in lower case, Node and Go read either). A proxy
+    that does not answer, or is full: nothing added, so the turn runs as with
+    `"off"`, and the record says `"proxy": "down"` or `"full"`. This is
+    decided once, at the start: a proxy that dies in the middle of a turn
+    fails that turn's connections."""
     if config.mode != "observe":
         return {}, None
-    if not proxy_answers(config):
-        return {}, {"mode": "observe", "proxy": "down"}
+    state = probe(config)
+    if state != "up":
+        return {}, {"mode": "observe", "proxy": state}
     url = config.proxy_url
     env = {}
     for name in ("HTTPS_PROXY", "HTTP_PROXY"):
@@ -326,24 +360,40 @@ class EventLog:
         self.retention_days = retention_days
         self._lock = threading.Lock()
         self._pruned_day: str | None = None
+        # Lines that could not be written (a full disk, a directory gone).
+        # Never an error for the connection: observing must not cost one.
+        self.dropped = 0
 
     def write(self, event: dict) -> None:
+        """Never raises: a line that cannot be written is counted in
+        `dropped`, said in the next line that can, and the connection goes
+        on."""
         now = datetime.now(timezone.utc)
-        event = {"time": now.isoformat(timespec="milliseconds"), **event}
-        line = (json.dumps(event, sort_keys=True) + "\n").encode()
         with self._lock:
-            path = log_path(self.log_dir, now)
-            flags = (os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
-                     | getattr(os, "O_CLOEXEC", 0))
-            fd = os.open(path, flags, 0o640)
+            event = {"time": now.isoformat(timespec="milliseconds"), **event}
+            if self.dropped:
+                event["dropped_before"] = self.dropped
+            line = (json.dumps(event, sort_keys=True) + "\n").encode()
             try:
-                os.write(fd, line)
-            finally:
-                os.close(fd)
+                self._append(log_path(self.log_dir, now), line)
+            except OSError:
+                self.dropped += 1
+                return
+            self.dropped = 0
             day = now.strftime("%Y-%m-%d")
             if day != self._pruned_day:
                 self._pruned_day = day
                 self._prune(now)
+
+    @staticmethod
+    def _append(path: Path, line: bytes) -> None:
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+                 | getattr(os, "O_CLOEXEC", 0))
+        fd = os.open(path, flags, 0o640)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
 
     def _prune(self, now: datetime) -> None:
         cutoff = (now - timedelta(days=self.retention_days)).strftime("%Y-%m-%d")
@@ -361,13 +411,21 @@ class EventLog:
 
 
 def _read_head(sock: socket.socket) -> tuple[bytes, bytes] | None:
-    """(the request head without its blank line, bytes read past it)."""
-    sock.settimeout(HEAD_TIMEOUT_S)
+    """(the request head without its blank line, bytes read past it), or
+    None when it is not complete within one deadline of HEAD_TIMEOUT_S."""
+    deadline = time.monotonic() + HEAD_TIMEOUT_S
     data = b""
     while b"\r\n\r\n" not in data:
         if len(data) > MAX_HEAD_BYTES:
             return None
-        chunk = sock.recv(65536)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        sock.settimeout(left)
+        try:
+            chunk = sock.recv(65536)
+        except (socket.timeout, TimeoutError):
+            return None
         if not chunk:
             return None
         data += chunk
@@ -375,10 +433,32 @@ def _read_head(sock: socket.socket) -> tuple[bytes, bytes] | None:
     return head, rest
 
 
-def _connect(host: str, port: int) -> tuple[socket.socket, str]:
+class RefusedAddress(OSError):
+    """Every address of the host is loopback or unspecified."""
+
+
+def refused_address(address: str) -> bool:
+    """Loopback and unspecified addresses are never connected to, as the
+    proxy's own user: not the proxy itself, not another local service
+    (`CONNECT 0.0.0.0:<port>` reaches a 127.0.0.1 listener). Turns reach
+    loopback directly (`NO_PROXY`)."""
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return True
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return ip.is_loopback or ip.is_unspecified
+
+
+def _connect(host: str, port: int, refuse_loopback: bool = True) -> tuple[socket.socket, str]:
     """A connection to `host`, resolved here, and the address it went to."""
     last: OSError = OSError("no address")
     for family, kind, proto, _, address in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        if refuse_loopback and refused_address(address[0]):
+            last = RefusedAddress("loopback or unspecified address")
+            continue
         sock = socket.socket(family, kind, proto)
         sock.settimeout(CONNECT_TIMEOUT_S)
         try:
@@ -444,24 +524,28 @@ class _Handler(socketserver.BaseRequestHandler):
     server: "ObserveProxy"
 
     def handle(self) -> None:
-        if not self.server.slots.acquire(blocking=False):
+        if not self.server.take_slot():
             try:
                 self.request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
             except OSError:
                 pass
-            self.server.log.write({"method": None, "origin": None, "path": None, "status": 503,
-                                   "decision": "error", "reason": "too many connections",
-                                   "duration_ms": 0, "credential_injected": False})
+            suppressed = self.server.over_cap_due()
+            if suppressed is not None:
+                self.server.log.write({
+                    "method": None, "origin": None, "path": None, "status": 503,
+                    "decision": "error", "reason": "too many connections",
+                    "duration_ms": 0, "credential_injected": False,
+                    "not_logged_before": suppressed})
             return
         try:
             self._handle()
         except OSError:
             pass
         finally:
-            self.server.slots.release()
+            self.server.give_slot()
 
     def _refuse(self, status: int, reason: str, **fields) -> None:
-        text = {400: "Bad Request", 502: "Bad Gateway"}.get(status, "Error")
+        text = {400: "Bad Request", 403: "Forbidden", 502: "Bad Gateway"}.get(status, "Error")
         try:
             self.request.sendall(
                 f"HTTP/1.1 {status} {text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".encode())
@@ -486,6 +570,16 @@ class _Handler(socketserver.BaseRequestHandler):
                          duration_ms=0)
             return
         method, target, _ = parts
+        if method == "GET" and target == PROBE_PATH:
+            # The wrapper's probe: answered, never logged, never forwarded.
+            ok = self.server.free_slots() >= PROBE_FREE_SLOTS
+            status = b"200 OK" if ok else b"503 Service Unavailable"
+            try:
+                self.request.sendall(b"HTTP/1.1 " + status +
+                                     b"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+            return
         if method == "CONNECT":
             self._tunnel(target, rest, started)
         else:
@@ -503,7 +597,11 @@ class _Handler(socketserver.BaseRequestHandler):
         port = int(port_text)
         origin = canonical_origin("https", host, port)
         try:
-            upstream, address = _connect(host, port)
+            upstream, address = _connect(host, port, self.server.refuse_loopback)
+        except RefusedAddress as exc:
+            self._refuse(403, str(exc), method="CONNECT", origin=origin, path=None,
+                         duration_ms=round((time.monotonic() - started) * 1000))
+            return
         except OSError as exc:
             self._refuse(502, f"connect failed: {type(exc).__name__}", method="CONNECT",
                          origin=origin, path=None,
@@ -550,7 +648,11 @@ class _Handler(socketserver.BaseRequestHandler):
         origin = canonical_origin("http", host, port)
         path = parts.path or "/"
         try:
-            upstream, address = _connect(host, port)
+            upstream, address = _connect(host, port, self.server.refuse_loopback)
+        except RefusedAddress as exc:
+            self._refuse(403, str(exc), method=method, origin=origin, path=path,
+                         duration_ms=round((time.monotonic() - started) * 1000))
+            return
         except OSError as exc:
             self._refuse(502, f"connect failed: {type(exc).__name__}", method=method,
                          origin=origin, path=path,
@@ -589,12 +691,47 @@ class ObserveProxy(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], log: EventLog) -> None:
+    def __init__(self, address: tuple[str, int], log: EventLog, *,
+                 max_connections: int = MAX_CONNECTIONS, refuse_loopback: bool = True) -> None:
         self.log = log
-        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self.max_connections = max_connections
+        # Only the tests switch this off, to have an upstream on loopback.
+        self.refuse_loopback = refuse_loopback
+        self._active = 0
+        self._slot_lock = threading.Lock()
+        self._over_cap_logged = float("-inf")
+        self._over_cap_suppressed = 0
         family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         self.address_family = family
         super().__init__(address, _Handler)
+
+    def take_slot(self) -> bool:
+        with self._slot_lock:
+            if self._active >= self.max_connections:
+                return False
+            self._active += 1
+            return True
+
+    def give_slot(self) -> None:
+        with self._slot_lock:
+            self._active -= 1
+
+    def free_slots(self) -> int:
+        """Free slots besides the caller's own."""
+        with self._slot_lock:
+            return self.max_connections - self._active
+
+    def over_cap_due(self) -> int | None:
+        """How many over-cap refusals went unlogged, when a line is due now;
+        None while the last line is recent (at most one a minute)."""
+        with self._slot_lock:
+            now = time.monotonic()
+            if now - self._over_cap_logged < OVER_CAP_LOG_INTERVAL_S:
+                self._over_cap_suppressed += 1
+                return None
+            self._over_cap_logged = now
+            suppressed, self._over_cap_suppressed = self._over_cap_suppressed, 0
+            return suppressed
 
 
 def serve(config: EgressConfig, retention_days: int) -> None:

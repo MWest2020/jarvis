@@ -536,3 +536,14 @@ def test_the_installed_proxy_runs_under_the_fixed_interpreter(source, destdir):
     assert install(source, destdir).returncode == 0
     first = (destdir / LIB / "egress-proxy").resolve().read_text().splitlines()[0]
     assert first == "#!/usr/bin/python3 -I"
+
+
+def test_a_second_run_with_egress_changes_nothing(source, destdir):
+    # The first run writes the environment file, which the turn settings then
+    # follow (see the test above): from the second run on, nothing changes.
+    assert install(source, destdir, "--egress").returncode == 0
+    assert install(source, destdir, "--egress").returncode == 0
+    before = snapshot(destdir)
+    proc = install(source, destdir, "--egress")
+    assert proc.returncode == 0, proc.stderr
+    assert snapshot(destdir) == before

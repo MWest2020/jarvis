@@ -33,19 +33,22 @@ is logged. Nothing is enforced, nothing is denied, nothing is decrypted, no cred
   standard library only: `CONNECT host:port` resolved by the proxy and relayed (no TLS
   interception, E5); the TLS server name read from the client's first bytes and logged,
   never acted on; a plain `http://` request in absolute form forwarded with
-  `Connection: close`; at most 256 connections, a 64 KB head, an idle line closed after an
-  hour; a connection that sends nothing (the wrapper's probe) is not logged
+  `Connection: close`; at most 256 connections (`503` beyond, logged at most once a
+  minute), a 64 KB head within one 10 s deadline, an idle line closed after 600 s;
+  loopback and unspecified addresses refused (`403`); a log line that cannot be written
+  never stops a connection (counted, `dropped_before`). After the review of #87
 - [x] 0.3 The request log (E11): one JSON line per connection, a file per UTC day in
   `log_dir`, mode 0640, pruned after `retention_days`. The `Event` fields of the protocol
   (time, method, origin, path without query, status, decision, reason, duration,
   credential injected) plus `address`, `private`, `sni`, `sni_matches`. Never a body, a
   header or a query
 - [x] 0.4 The wrapper (`agent_host/wrapper.py`): with `"observe"` and a proxy that answers
-  within 0.3 s, the `claude` process gets `HTTPS_PROXY`, `HTTP_PROXY` (both spellings) and
+  its probe (a real request) within 0.3 s with at least 16 free slots, the `claude` process gets `HTTPS_PROXY`, `HTTP_PROXY` (both spellings) and
   `NO_PROXY` for loopback, also in the record of its trusted values; a proxy that does not
-  answer adds nothing (the turn runs as with `"off"`). The wrapper's own work (notify,
+  answer or is full adds nothing (the turn runs as with `"off"`). Decided at the start: a
+  proxy that dies mid-turn fails that turn (said in the how-to). The wrapper's own work (notify,
   PR status, clone) keeps the environment without the proxy (E2)
-- [x] 0.5 The turn record's `egress` field: mode, `proxy: up | down`, and the turn window's
+- [x] 0.5 The turn record's `egress` field: mode, `proxy: up | down | full`, and the turn window's
   requests, failures, private addresses, server-name mismatches and origins (at most 20)
 - [x] 0.6 The installer, behind `--egress` (E3): `/etc/systemd/system/jarvis-egress.service`
   (own user `jarvis-egress`, group `jarvis-egress-log`, hardened, `LogsDirectory`), the
@@ -58,7 +61,10 @@ is logged. Nothing is enforced, nothing is denied, nothing is decrypted, no cred
   against loopback servers (pass-through, server name, plain HTTP without the query in the
   log, an upstream that does not answer, a bad target, a probe), pruning, the summary
   window, the wrapper with egress off, on and with the proxy down, the class `self`; the
-  installer with and without `--egress`
+  installer with and without `--egress`. After the review of #87: the slot cap and its
+  rate-limited line, the probe's "full", the head deadline, a log that cannot be written,
+  loopback and unspecified targets, `Proxy-Authorization` and userinfo never in the log,
+  the installer run twice with `--egress`
 - [x] 0.9 Docs: the agent-host how-to ("Egress: what a turn reaches", the installed files,
   the configuration keys), the index, the roadmap
 - [ ] 0.10 **(host)** Install on the agent host from the merged commit: `install.sh --egress`,
