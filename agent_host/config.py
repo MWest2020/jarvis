@@ -13,6 +13,8 @@ from pathlib import Path
 
 from agent_host.boundedio import read_regular
 from agent_host.command import EFFORT_LEVELS, MODEL_NAME
+from agent_host.egress import EgressConfig, EgressConfigError
+from agent_host.egress import parse_config as parse_egress
 
 
 class ConfigError(RuntimeError):
@@ -106,6 +108,9 @@ class AgentHostConfig:
     # A project's next turn starts a new session when its last turn ended
     # more than this many minutes ago (agent_host.lifetime). 0: always resume.
     session_idle_minutes: int = DEFAULT_SESSION_IDLE_MINUTES
+    # Egress of turns (jarvis-credential-proxy): `mode = "off"` by default;
+    # "observe" points a turn's environment at the observing proxy.
+    egress: EgressConfig = field(default_factory=EgressConfig)
 
     @property
     def voice_profile(self) -> dict:
@@ -266,6 +271,10 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
             or session_idle_minutes < 0:
         raise ConfigError("session_idle_minutes must be a whole number of minutes, 0 or more "
                           "(0: never start a new session for being idle)")
+    try:
+        egress = parse_egress(data.get("egress"))
+    except EgressConfigError as exc:
+        raise ConfigError(str(exc)) from exc
 
     return AgentHostConfig(
         enabled=bool(data.get("enabled", True)),
@@ -303,4 +312,5 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
         voice_model=voice_model,
         voice_effort=voice_effort,
         session_idle_minutes=session_idle_minutes,
+        egress=egress,
     )

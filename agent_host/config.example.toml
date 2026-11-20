@@ -91,3 +91,14 @@ clone_timeout_s = 45
 # high, xhigh or max. Measurements and a proposal: docs/how-to/agent-host.md.
 # voice_model = "sonnet"
 # voice_effort = "low"
+
+# Egress of turns (change jarvis-credential-proxy). "off" (the default): nothing changes.
+# "observe" (stage 0): the turn's environment points at the egress proxy on loopback, which
+# passes every connection through and logs it in egress.log_dir; the turn record gets a
+# summary. Nothing is denied. "enforce" is stage 1 and not built: it is refused.
+# Needs `install.sh --egress` and a running jarvis-egress.service; see
+# docs/how-to/agent-host.md, "Egress: what a turn reaches". Dotted keys, so no [egress]
+# table is opened; like every key above, they must stand before a [projects] table.
+# egress.mode = "observe"
+# egress.proxy = "127.0.0.1:3128"
+# egress.log_dir = "/var/log/jarvis-egress"

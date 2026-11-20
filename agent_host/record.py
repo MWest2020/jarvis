@@ -75,6 +75,11 @@ class TurnRecord:
     #  "end": "closed" | "close_ignored" when the agent closed the conversation}.
     # None for a turn with no agent run.
     session: dict | None = None
+    # Egress of the turn (jarvis-credential-proxy): None with `mode = "off"`.
+    # Stage 0: {"mode": "observe", "proxy": "up" | "down" | "full", and with a proxy
+    # that was up, what it logged in the turn's window: "requests", "failed",
+    # "private", "sni_mismatch", "origins" {origin: count}}.
+    egress: dict | None = None
 
     def redacted(self) -> "TurnRecord":
         return TurnRecord(
@@ -90,6 +95,7 @@ class TurnRecord:
             settings_changed=self.settings_changed,
             timing=self.timing,
             session=self.session,
+            egress=self.egress,
         )
 
 

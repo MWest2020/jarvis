@@ -1,0 +1,45 @@
+# The egress proxy of Jarvis `full` turns (change jarvis-credential-proxy, design E3).
+# Stage 0: observe only. It passes every connection through and logs it; it denies
+# nothing, decrypts nothing and holds no credential. Installed by
+# `install.sh --egress` at /etc/systemd/system/jarvis-egress.service; not enabled by it.
+[Unit]
+Description=Jarvis egress proxy for full turns (observe only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jarvis-egress
+Group=jarvis-egress-log
+ExecStart=/usr/local/lib/jarvis-agent/egress-proxy
+Restart=on-failure
+RestartSec=5
+# The request log: /var/log/jarvis-egress, the proxy's own, readable by the
+# group jarvis-egress-log (the coding session's user is added to it by hand).
+LogsDirectory=jarvis-egress
+LogsDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

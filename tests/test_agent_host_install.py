@@ -20,7 +20,7 @@ from tests.test_agent_host_turn_entrypoint import _write_setup
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = "usr/local/lib/jarvis-agent"
 ETC = "etc/jarvis-agent"
-ENTRY_POINTS = ("turn", "gate", "confirm", "action-log")
+ENTRY_POINTS = ("turn", "gate", "confirm", "action-log", "egress-proxy")
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJarvisBridgeTestKeyNotARealOne0000000000000"
 
 
@@ -449,7 +449,8 @@ def test_every_module_of_the_package_is_installed_and_nothing_of_the_tests(sourc
     assert install(source, destdir).returncode == 0
     installed = {p.name for p in (destdir / LIB / "src/agent_host").iterdir()}
     in_repo = {p.name for p in (REPO_ROOT / "agent_host").iterdir() if p.is_file()}
-    assert installed == in_repo - {"install.sh", "config.example.toml", "turn-settings.json"}
+    assert installed == in_repo - {"install.sh", "config.example.toml", "turn-settings.json",
+                                   "jarvis-egress.service"}
     # The hooks take their configuration path from the environment only next to the
     # test kit (agent_host.config.hook_config_path): it must never be installed.
     assert not (destdir / LIB / "src/tests").exists()
@@ -505,3 +506,44 @@ def test_the_installer_checks_that_the_gate_can_read_agent_files(source, destdir
     proc = install(source, destdir, "--dry-run")
     has_yaml = subprocess.run(["/usr/bin/python3", "-I", "-c", "import yaml"]).returncode == 0
     assert ("no PyYAML" in proc.stderr) is not has_yaml
+
+
+UNIT = "etc/systemd/system/jarvis-egress.service"
+
+
+def test_the_egress_unit_is_installed_only_with_the_option(source, destdir):
+    """Stage 0 of jarvis-credential-proxy: the proxy's code is always installed,
+    its unit only with --egress, and nothing is enabled or started."""
+    proc = install(source, destdir)
+    assert proc.returncode == 0, proc.stderr
+    assert os.readlink(destdir / LIB / "egress-proxy") == "src/agent_host/egress-proxy"
+    assert not (destdir / UNIT).exists()
+
+    proc = install(source, destdir, "--egress")
+    assert proc.returncode == 0, proc.stderr
+    unit = destdir / UNIT
+    assert unit.read_text() == (source / "agent_host/jarvis-egress.service").read_text()
+    assert unit.stat().st_mode & 0o777 == 0o644
+    text = unit.read_text()
+    assert "ExecStart=/usr/local/lib/jarvis-agent/egress-proxy\n" in text
+    assert "User=jarvis-egress\n" in text and "Group=jarvis-egress-log\n" in text
+    assert "no system user or group is made" in proc.stdout
+    assert "systemctl enable --now jarvis-egress" in proc.stdout
+    assert not (destdir / "etc/systemd/system/multi-user.target.wants").exists()
+
+
+def test_the_installed_proxy_runs_under_the_fixed_interpreter(source, destdir):
+    assert install(source, destdir).returncode == 0
+    first = (destdir / LIB / "egress-proxy").resolve().read_text().splitlines()[0]
+    assert first == "#!/usr/bin/python3 -I"
+
+
+def test_a_second_run_with_egress_changes_nothing(source, destdir):
+    # The first run writes the environment file, which the turn settings then
+    # follow (see the test above): from the second run on, nothing changes.
+    assert install(source, destdir, "--egress").returncode == 0
+    assert install(source, destdir, "--egress").returncode == 0
+    before = snapshot(destdir)
+    proc = install(source, destdir, "--egress")
+    assert proc.returncode == 0, proc.stderr
+    assert snapshot(destdir) == before

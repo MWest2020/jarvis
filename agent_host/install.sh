@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the Jarvis agent host side (jarvis-full-agent, task 1.15, design D32-D36).
 #
-#   sudo agent_host/install.sh [--dry-run] [--memory-dir DIR] [--pubkey FILE --from ADDRESS]
+#   sudo agent_host/install.sh [--dry-run] [--memory-dir DIR] [--pubkey FILE --from ADDRESS] [--egress]
 #   agent_host/install.sh --print-authorized-keys --pubkey FILE --from ADDRESS
 #
 # What it writes, all root-owned:
@@ -9,6 +9,9 @@
 #                                  action log hook, the rules, the prompt, the turn settings
 #   /etc/jarvis-agent/             config.toml (only when absent), config.toml.example,
 #                                  environment (only when absent), an empty rules.d/
+#   with --egress (jarvis-credential-proxy, stage 0): the system user jarvis-egress and
+#   the group jarvis-egress-log (when absent), and /etc/systemd/system/jarvis-egress.service.
+#   The unit is not enabled or started, and nobody is added to the group.
 #
 # What it never does: edit any authorized_keys file (it prints the line), touch Claude
 # Code's managed or user settings, or write below a home directory.
@@ -30,14 +33,19 @@ FORCED_COMMAND="$LIB_DIR/turn"
 # `turn` is phase 1a; `gate`, `confirm` and `action-log` are phase 1b. The installer
 # refuses to install without any of them: turn settings that name a gate that is not
 # there would let every call through.
-ENTRY_POINTS=(turn gate confirm action-log)
+ENTRY_POINTS=(turn gate confirm action-log egress-proxy)
 # Data files that get a fixed path directly under LIB_DIR as well.
 DATA_FILES=(gate_rules.toml prompt.md)
 # The modules of bridge/ the wrapper imports: the marker line of the spoken summary, and
 # what both sides share of the wire contract.
 BRIDGE_FILES=(__init__.py contract.py summary.py)
 # Files in agent_host/ that are not part of what runs on the host.
-NOT_INSTALLED=(install.sh config.example.toml turn-settings.json)
+NOT_INSTALLED=(install.sh config.example.toml turn-settings.json jarvis-egress.service)
+# The egress proxy (jarvis-credential-proxy, design E3): its unit, its user and the group
+# that may read its request log.
+EGRESS_UNIT=/etc/systemd/system/jarvis-egress.service
+EGRESS_USER=jarvis-egress
+EGRESS_LOG_GROUP=jarvis-egress-log
 
 usage() {
     sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
@@ -51,6 +59,8 @@ usage() {
   --pubkey FILE           the bridge's public key (one line, as ssh-keygen writes it)
   --from ADDRESS          the one address the bridge's connections come from
   --print-authorized-keys print the authorized_keys line and do nothing else (no root needed)
+  --egress                also install the egress proxy's unit, its system user and its log
+                          group (stage 0, observe only); the unit is not enabled
 EOF
 }
 
@@ -68,11 +78,13 @@ destdir=${DESTDIR:-}
 memory_dir=
 pubkey_file=
 from_addr=
+with_egress=0
 
 while [ $# -gt 0 ]; do
     case $1 in
         --dry-run) dry_run=1 ;;
         --print-authorized-keys) print_only=1 ;;
+        --egress) with_egress=1 ;;
         --destdir) [ $# -ge 2 ] || die "--destdir needs a directory"; destdir=$2; shift ;;
         --memory-dir) [ $# -ge 2 ] || die "--memory-dir needs a directory"; memory_dir=$2; shift ;;
         --pubkey) [ $# -ge 2 ] || die "--pubkey needs a file"; pubkey_file=$2; shift ;;
@@ -181,7 +193,7 @@ while IFS= read -r -d '' rel; do
 done < <(repo_git ls-files -z -- agent_host "${bridge_paths[@]}")
 
 missing=()
-for f in "${ENTRY_POINTS[@]}" "${DATA_FILES[@]}" turn-settings.json config.example.toml __init__.py; do
+for f in "${ENTRY_POINTS[@]}" "${DATA_FILES[@]}" turn-settings.json config.example.toml __init__.py jarvis-egress.service; do
     is_in "agent_host/$f" "${tracked[@]}" || missing+=("agent_host/$f")
 done
 for f in "${bridge_paths[@]}"; do
@@ -350,6 +362,26 @@ EOF
     say "wrote $etc/environment (fill in HOME and PATH)"
 fi
 
+# --- the egress proxy (--egress) ------------------------------------------------------
+
+if [ "$with_egress" = 1 ]; then
+    unit=$destdir$EGRESS_UNIT
+    run install -d -m 0755 "${own[@]}" "$(dirname "$unit")"
+    run install -m 0644 "${own[@]}" "$src_dir/jarvis-egress.service" "$unit"
+    if [ -n "$destdir" ]; then
+        say "with a prefix: no system user or group is made, systemd is not told"
+    elif [ "$dry_run" = 1 ]; then
+        say "would make the group $EGRESS_LOG_GROUP and the system user $EGRESS_USER when absent"
+        say "would run: systemctl daemon-reload"
+    else
+        getent group "$EGRESS_LOG_GROUP" >/dev/null || groupadd --system "$EGRESS_LOG_GROUP"
+        getent passwd "$EGRESS_USER" >/dev/null \
+            || useradd --system --gid "$EGRESS_LOG_GROUP" --no-create-home \
+                --home-dir /nonexistent --shell /usr/sbin/nologin "$EGRESS_USER"
+        if command -v systemctl >/dev/null; then systemctl daemon-reload; fi
+    fi
+fi
+
 # --- what is left for a person ------------------------------------------------------
 
 echo
@@ -371,3 +403,10 @@ fi
 echo "  - Claude Code's managed and user settings are not touched."
 echo "  - full mode stays off: enabled = false in $ETC_DIR/config.toml until the host"
 echo "    checks have passed (docs/how-to/agent-host.md)."
+if [ "$with_egress" = 1 ]; then
+    echo "  - the egress proxy is installed, not running. To observe what turns reach"
+    echo "    (docs/how-to/agent-host.md, section on egress):"
+    echo "      usermod -aG $EGRESS_LOG_GROUP <the coding session's user>"
+    echo "      systemctl enable --now jarvis-egress"
+    echo "      and set egress.mode = \"observe\" in $ETC_DIR/config.toml"
+fi

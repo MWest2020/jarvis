@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""The egress proxy of `full` turns, stage 0: observe only (jarvis-credential-proxy).
+
+Installed root-owned at /usr/local/lib/jarvis-agent/egress-proxy and started by
+systemd (jarvis-egress.service) as its own system user. Reads the `[egress]`
+table and `retention_days` of the agent host configuration, listens on the
+loopback address it names, passes every connection through and logs it
+(agent_host.egress). It never denies, never decrypts and holds no credential.
+
+    egress-proxy [--config PATH]
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent_host import egress  # noqa: E402 - after the sys.path fix-up above
+from agent_host.config import DEFAULT_CONFIG_PATH, ConfigError, load_config  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="egress-proxy")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(f"egress-proxy: {exc}", file=sys.stderr)
+        return 2
+    print(f"egress-proxy: mode {config.egress.mode}, listening on "
+          f"{config.egress.proxy_url}, log in {config.egress.log_dir}", file=sys.stderr)
+    try:
+        egress.serve(config.egress, config.retention_days)
+    except OSError as exc:
+        print(f"egress-proxy: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
