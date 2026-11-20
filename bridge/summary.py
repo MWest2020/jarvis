@@ -36,12 +36,25 @@ SING_INSTRUCTION = (
     "A sung line may be up to 220 characters. Never use the tag in any other reply."
 )
 
+# jarvis-beatbox, the second easter egg: the beats the bridge can make (bridge/beatbox.py
+# owns them; a test keeps the two in step). The same words are in agent_host/prompt.md.
+BEATBOX_PATTERNS = ("boots-and-cats", "hip-hop", "jarvis-hook")
+BEATBOX_INSTRUCTION = (
+    " Only when the user explicitly asks you to beatbox or for a beat, start the text "
+    "after the marker with [beatbox] (the bridge picks a beat) or a tag naming one: "
+    + ", ".join(f"[beatbox: {name}]" for name in BEATBOX_PATTERNS)
+    + "; then one short line of your own in English, at most 60 characters, said before "
+    "the beat. The bridge makes the sounds: never write them yourself. "
+    "Never use the tag in any other reply."
+)
+
 SYSTEM_PROMPT_ADDITION = (
     "After your normal reply, add one final line starting with exactly "
     f'"{SUMMARY_MARKER}" followed by a short, plain-language summary suitable '
     "for being read aloud over the phone: one sentence, two at most, about "
     "100 to 150 characters, no code, no file paths, no markdown. "
     + SING_INSTRUCTION
+    + BEATBOX_INSTRUCTION
 )
 
 FALLBACK_SUMMARY = "Done. Check the log for details."

@@ -107,6 +107,17 @@ def _sing_parody() -> bool:
     raise ConfigError(f"JARVIS_SING_PARODY must be 0, 1 or unset, not {raw!r}")
 
 
+def _beatbox() -> bool:
+    """jarvis-beatbox: a reply the driver asked to be beatboxed is, unless
+    JARVIS_BEATBOX=0 says every reply is spoken (the agent's line then as words)."""
+    raw = os.environ.get("JARVIS_BEATBOX", "").strip()
+    if raw in ("", "1"):
+        return True
+    if raw == "0":
+        return False
+    raise ConfigError(f"JARVIS_BEATBOX must be 0, 1 or unset, not {raw!r}")
+
+
 def _check_private_host(host: str, *, behind_proxy: bool = False) -> str:
     # AGENTS.md: reachable only over a private network, never public.
     try:
@@ -466,6 +477,8 @@ class BridgeConfig:
     sing: bool = True
     # JARVIS_SING_PARODY=0 takes the parody tunes out of the table on their own.
     sing_parody: bool = True
+    # jarvis-beatbox: the second easter egg; JARVIS_BEATBOX=0 switches it off.
+    beatbox: bool = True
 
     @property
     def whisper_options(self) -> dict:
@@ -581,6 +594,7 @@ def load_config() -> BridgeConfig:
         stream_replies=_stream_replies(),
         sing=_sing(),
         sing_parody=_sing_parody(),
+        beatbox=_beatbox(),
         claude_timeout_s=int(os.environ.get("JARVIS_CLAUDE_TIMEOUT_S", "120")),
         behind_tailscale_proxy=behind_proxy,
         project_scanner=scanner,
