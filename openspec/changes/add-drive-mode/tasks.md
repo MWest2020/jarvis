@@ -3,7 +3,7 @@
 ## Current phase: 2 (Nothing lost)
 
 Approved by Mark 2026-11-17 (#10); the five choices inside it took their defaults (Mark,
-18 Nov, #70: "defaults en proposals ok"). Phase 1 built in PR_URL. One build does one phase: the phase named in this
+18 Nov, #70: "defaults en proposals ok"). Phase 1 built in [#85](https://github.com/MWest2020/jarvis/pull/85). One build does one phase: the phase named in this
 heading, and nothing from a later one. The last task of every phase moves this heading to the
 next phase and updates `docs/reference/roadmap.yml` (an item is done only with evidence).
 Every phase updates `docs/` in the same pull request (AGENTS.md) and keeps `POST /turn`
