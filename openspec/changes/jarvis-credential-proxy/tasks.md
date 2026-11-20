@@ -1,6 +1,6 @@
 # Tasks: jarvis-credential-proxy
 
-## Current phase: 0 (observe only), built; waiting for review, then the host
+## Current phase: 0 (observe only), live on the agent host since 2026-11-20; a week of observing (0.11)
 
 Approved by Mark on 2026-11-18 by mail ("defaults en proposals ok", #83): every open
 question of the proposal takes its default. So: stage 1 on the turn's cgroup before #45,
@@ -67,19 +67,26 @@ is logged. Nothing is enforced, nothing is denied, nothing is decrypted, no cred
   the installer run twice with `--egress`
 - [x] 0.9 Docs: the agent-host how-to ("Egress: what a turn reaches", the installed files,
   the configuration keys), the index, the roadmap
-- [ ] 0.10 **(host)** Install on the agent host from the merged commit: `install.sh --egress`,
+- [x] 0.10 **(host)** Install on the agent host from the merged commit: `install.sh --egress`,
   the coding session's user in `jarvis-egress-log`, `systemctl enable --now jarvis-egress`,
   `egress.mode = "observe"`. Host checks, recorded in the how-to: a voice turn through the
   proxy works (model traffic, `gh`, git over https, `WebFetch`, `WebSearch`); the turn
   record has `egress` with the origins; `startup_gap_ms` and `claude_wall_ms` within noise
   of the turns before (E15); the desk session unchanged; the gate's checks 4 to 6 and 12
-  of task 1.17 again, since the turn's environment grew
+  of task 1.17 again, since the turn's environment grew.
+  Done on 2026-11-20 on `4bcbeb9`, with every check passing (the how-to, "Host checks of
+  stage 0"). One finding became 0.13
 - [ ] 0.11 **(host)** A week of voice turns in `"observe"`; then the candidate list for
   stage 1 from the log (origins, private addresses, server-name mismatches), in a PR as
   the first `egress.toml`, for Mark's yes at the desk
 - [ ] 0.12 Not seen by stage 0, said in the how-to: programs that ignore the proxy
   variables, DNS lookups and ssh. Seeing them needs the turn's cgroup (E1, E2): the first
   task of stage 1 logs them (an nftables rule that logs and accepts) before anything drops
+- [ ] 0.13 Pin the proxy variables (`HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`,
+  `NO_PROXY`, `no_proxy`) in the turn settings while egress is on, as `PATH` and `HOME` are
+  pinned. Found in the host check of 0.10: a checkout's `env` can redirect them in the
+  middle of a turn. Gated calls are still refused, but ungated reads after that moment are
+  missing from the log. Stage 1's kernel filter does not depend on them
 
 ## 1. Enforce egress (no new user)
 
