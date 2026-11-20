@@ -105,6 +105,26 @@ def sing(song, *, voice: str = DEFAULT_VOICE):
     return np.concatenate(parts)
 
 
+def beatbox(beat, *, voice: str = DEFAULT_VOICE):
+    """The beat (bridge.beatbox.BeatRequest) with the bridge's own voice: the agent's
+    line said first, then the beat (at most beatbox.MAX_SECONDS), with the bridge's
+    sentences around them as in a sung reply. Float samples at SAMPLE_RATE."""
+    import numpy as np
+
+    from bridge import beatbox as beats
+
+    beaten = beats.render(beat.pattern, lambda word: word_audio(word, voice=voice)).samples
+    pause = np.zeros(int(SONG_PAUSE_S * SAMPLE_RATE), dtype=np.float32)
+    parts = []
+    for line in (beat.before, beat.intro):
+        if line:
+            parts += [word_audio(line, voice=voice), pause]
+    parts.append(np.asarray(beaten, dtype=np.float32))
+    if beat.after:
+        parts += [pause, word_audio(beat.after, voice=voice)]
+    return np.concatenate(parts)
+
+
 def wav_bytes(samples) -> bytes:
     """Float samples as the WAV synthesize() returns."""
     import soundfile as sf

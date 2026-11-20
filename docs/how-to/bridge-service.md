@@ -57,6 +57,7 @@ your process manager.
 | `JARVIS_STREAM_REPLIES` | no (default on) | `0`: every client gets the whole WAV, also one that asks for a streamed reply. Unset or `1`: a client that asks gets the reply as it is rendered (see "Streamed replies"). Anything else is refused at start. |
 | `JARVIS_SING` | no (default on) | `0`: Jarvis never sings; a reply meant to be sung is spoken as words. Unset or `1`: the easter egg is on (see "Singing (easter egg)"). Anything else is refused at start. |
 | `JARVIS_SING_PARODY` | no (default on) | `0`: the parody tunes (`iron-man`) are taken out of the table on their own; a reply tagged with one is spoken as words, the public-domain tunes are still sung. Unset or `1`: they are in. Anything else is refused at start. `JARVIS_SING=0` stops all singing either way. The prompts still name `iron-man` when it is `0`, so Jarvis may offer it and then speak those lines. |
+| `JARVIS_BEATBOX` | no (default on) | `0`: Jarvis never beatboxes; a reply meant to be a beat is spoken as words. Unset or `1`: the second easter egg is on (see "Beatboxing (easter egg)"). Independent of `JARVIS_SING`. Anything else is refused at start. |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
@@ -708,6 +709,90 @@ from bridge import singing, tts
 _, song = singing.choose('[sing: twinkle] Lit-tle build, you are green at last, all the tests have fi-nal-ly passed',
                          transcript='sing', enabled=True, read_back=False)
 sf.write('/tmp/sing-test.wav', tts.sing(song, voice='bm_george'), 24000)
+"
+```
+
+## Beatboxing (easter egg)
+
+Change [`jarvis-beatbox`](../../openspec/changes/jarvis-beatbox/proposal.md) (Mark,
+2026-11-18, after hearing the songs: "Can it beatbox?"). Ask "Jarvis, beatbox", "drop a
+beat" or "doe eens een beat" and Jarvis says one short line and then beatboxes for 10 to
+11 seconds.
+
+**How a reply becomes a beat.** The bridge owns the beats, in a small table in
+`bridge/beatbox.py`. The agent writes only a tag and one short line of its own, which is
+said before the beat (`agent_host/prompt.md` in `full` mode, the appended prompt in
+`bridge/summary.py` in `readonly` mode):
+
+```
+SPOKEN SUMMARY: [beatbox: hip-hop] Alright, here's a beat for the road.
+```
+
+`[beatbox]` without a name, or with a name not in the table, plays one of the beats at
+random. A name is normalised like a tune name (`[beatbox: Boots and Cats]` works).
+
+| Tag | Beat | Tempo, length |
+|---|---|---|
+| `[beatbox: boots-and-cats]` | The first beat every beatboxer learns: kick, hat, snare, hat ("boots and cats and..."), a fill in the last bar; also `basic` | 100 bpm, 4 bars, about 10 s |
+| `[beatbox: hip-hop]` | A basic boom-bap beat: a skipping kick, the "Pf" snare, a little swing, an open hat; also `hiphop`, `boom bap` | 90 bpm, 4 bars, about 11 s |
+| `[beatbox: jarvis-hook]` | A beat with a hummed bass line under it and a sung hook, "Jar-vis... Jar-vis, yeah"; also `hook`, `jarvis` | 96 bpm, 4 bars, about 10 s |
+
+A bar is written as 16 sixteenths of mouth sounds (`B` kick, `b` soft kick, `K` "k" snare,
+`k` ghost snare, `P` "Pf" snare, `t` closed hat, `T` open hat, `.` rest), so another beat
+is one more entry in the table (the prompts and `bridge/summary.py` name the beats; a test
+keeps them in step).
+
+Every sound is made from what the bridge already has, Kokoro and numpy, nothing else (no
+samples, no recordings, no new dependency):
+
+1. The attack of a word in Jarvis's own voice, rendered once per beat and cut short: the
+   "b" of "boots" for the kick, the "k" of "cats" for the "k" snare, the "p" of "puh"
+   for the "Pf" snare, the "t" of "tss" for the hats. Each is kept to the band its
+   consonant lives in and dies away in a few tens of milliseconds.
+2. Under it, a synthesised body, the way a beatboxer's lips and breath add one: a sine
+   falling from about 140 to 50 Hz for the kick, a noise burst from 1.2 to 7 kHz with a
+   short 190 Hz tone for the "k" snare, a lip pop and a breath of noise for "Pf", a hiss
+   above 5 kHz for the hats (short when closed, "tsss" when open).
+3. In `jarvis-hook`, the word "mmm" is moved onto a bass line an octave below the voice's
+   speaking pitch and kept below 1.2 kHz (a hum), with a sine at the note's pitch for
+   weight; "Jar-vis" and "yeah" are sung on their notes above it, the last syllable
+   falling a semitone and a half. Both use the singing's TD-PSOLA (`bridge/singing.py`).
+4. The beat is mixed, glued with a soft saturation, normalised and faded. At most 15 s.
+
+A beat goes out like a song: rendered whole before the status line, as a WAV or as the
+L16 stream, with the agent's line and any notice of the bridge said before it (0.3 s
+between) and news of a new project after it. `X-Jarvis-Summary` carries the line (or,
+when the agent wrote none, the beat's own words, such as "Boots and cats and boots and
+cats."). Rendering takes a few seconds (four to six words from Kokoro, warm), so it starts
+later than a spoken reply. When it fails, those words are spoken instead.
+
+**When it beatboxes, and when not.** As for singing, all four must hold; otherwise every
+beatbox tag is removed and the line is spoken:
+
+- the tag is the very first thing on the agent's own spoken line (only the bridge's fixed
+  sentences, `FRAMING_SENTENCES`, are looked past);
+- the driver's own words in this turn ask for it: "beatbox" (also "beatboxen",
+  "beat-box"), "beat", "beats", "boots and cats";
+- the reply is not a read-back;
+- `JARVIS_BEATBOX` is not `0`.
+
+In `full` mode the agent host needs the new `prompt.md` (`agent_host/install.sh`, see
+[`agent-host.md`](agent-host.md)); until then its agent never writes the tag.
+
+**Rights.** Nothing in it is anyone else's: no samples or recordings, every sound is
+synthesised or cut from Jarvis's own Kokoro voice. The grooves are the common grammar of
+beatboxing and hip-hop (kick, snare, hat on a 16-step grid), written for this table; the
+bass line, the hook and its words ("Jar-vis", "yeah") are Jarvis's own.
+
+Hear one without the phone (loads Kokoro):
+
+```sh
+uv run python -c "
+import soundfile as sf
+from bridge import beatbox, tts
+_, beat = beatbox.choose('[beatbox: jarvis-hook] Here is a beat for the road.',
+                         transcript='beatbox', enabled=True, read_back=False)
+sf.write('/tmp/beatbox-test.wav', tts.beatbox(beat, voice='bm_george'), 24000)
 "
 ```
 

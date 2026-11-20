@@ -18,7 +18,7 @@ import urllib.parse
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from bridge import claude_adapter, remote_adapter, singing, stt, tts
+from bridge import beatbox, claude_adapter, remote_adapter, singing, stt, tts
 from bridge.config import (
     BEHIND_PROXY_WARNING,
     MODE_FULL,
@@ -36,6 +36,9 @@ from bridge.timing import HEADER as TIMING_HEADER
 from bridge.timing import TurnTimer, wav_seconds
 
 logger = logging.getLogger("bridge.server")
+
+# What an easter egg reply performs instead of speaking (jarvis-sing, jarvis-beatbox).
+Performance = singing.SongRequest | beatbox.BeatRequest
 
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024   # about ten minutes of 16 kHz WAV; a voice turn is seconds
@@ -471,10 +474,17 @@ class Handler(BaseHTTPRequestHandler):
         self._speak(summary, turn.ref, song=song, timer=timer, project=project_name)
 
     def _song(self, spoken: str, transcript: str, *, read_back: bool,
-              framing: tuple[str, ...] = ()) -> tuple[str, singing.SongRequest | None]:
-        """jarvis-sing: the agent's reply, and the song when it is to be sung. Only
-        for an agent's reply the driver asked to be sung, never for a read-back."""
-        text, song = singing.choose(spoken, transcript=transcript,
+              framing: tuple[str, ...] = ()) -> tuple[str, Performance | None]:
+        """jarvis-sing, jarvis-beatbox: the agent's reply, and the song or the beat when
+        it is to be performed. Only for an agent's reply the driver asked for it, never
+        for a read-back."""
+        text, beat = beatbox.choose(spoken, transcript=transcript,
+                                    enabled=self.config.beatbox, read_back=read_back,
+                                    framing=framing)
+        if beat is not None:
+            logger.info("beatboxed: %s", beat.pattern.id)
+            return text, beat
+        text, song = singing.choose(text, transcript=transcript,
                                     enabled=self.config.sing, read_back=read_back,
                                     framing=framing, parody=self.config.sing_parody)
         if song is not None:
@@ -483,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _speak(self, text: str, session_id: str, *, needs_confirmation: bool = False,
                projects_changed: bool = False, confirmation_id: str = "",
-               song: singing.SongRequest | None = None,
+               song: Performance | None = None,
                timer: TurnTimer, project: str) -> bool:
         """Render `text` and send it: as a WAV, or as a stream to a client that asked
         for one (jarvis-streaming-speech).
@@ -492,16 +502,20 @@ class Handler(BaseHTTPRequestHandler):
         500, as before). Returns False when a streamed reply broke off after its
         headers (S6), True when the whole reply was written.
 
-        `song`: sing it instead (jarvis-sing), rendered whole before the status line.
-        When that fails, `text` is spoken as usual.
+        `song`: sing it (jarvis-sing) or beatbox it (jarvis-beatbox) instead, rendered
+        whole before the status line. When that fails, `text` is spoken as usual.
         """
         voice = self.config.kokoro_voice
         if song is not None and not needs_confirmation:
             try:
                 with timer.stage("tts"):
-                    samples = tts.sing(song, voice=voice)
+                    if isinstance(song, beatbox.BeatRequest):
+                        samples = tts.beatbox(song, voice=voice)
+                    else:
+                        samples = tts.sing(song, voice=voice)
             except Exception:  # noqa: BLE001 - an easter egg never costs the reply
-                logger.exception("project=%s: the song could not be rendered; spoken instead",
+                logger.exception("project=%s: the song or beat could not be rendered; "
+                                 "spoken instead",
                                  project)
             else:
                 if not getattr(self, "_stream_reply", False):
