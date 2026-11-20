@@ -79,7 +79,10 @@ def _load(name, default):
 
 
 def _save(name, data):
-    (HERE / name).write_text(json.dumps(data))
+    # Atomic, like the scenario writer: a concurrent _load never reads a half file.
+    tmp = HERE / f"{name}.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, HERE / name)
 
 
 def _log(entry):
