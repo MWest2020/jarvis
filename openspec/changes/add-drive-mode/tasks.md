@@ -1,8 +1,9 @@
 # Tasks: add-drive-mode
 
-## Current phase: 1 (Journal, recap and notes)
+## Current phase: 2 (Nothing lost)
 
-Approved by Mark 2026-11-17 (#10). One build does one phase: the phase named in this
+Approved by Mark 2026-11-17 (#10); the five choices inside it took their defaults (Mark,
+18 Nov, #70: "defaults en proposals ok"). Phase 1 built in [#85](https://github.com/MWest2020/jarvis/pull/85). One build does one phase: the phase named in this
 heading, and nothing from a later one. The last task of every phase moves this heading to the
 next phase and updates `docs/reference/roadmap.yml` (an item is done only with evidence).
 Every phase updates `docs/` in the same pull request (AGENTS.md) and keeps `POST /turn`
@@ -13,20 +14,20 @@ agent host and are done by the coding session. A build leaves them open and says
 
 ## 1. Journal, recap and notes (bridge)
 
-- [ ] 1.1 The journal on the state volume: drives (a new one after 30 minutes without an
+- [x] 1.1 The journal on the state volume: drives (a new one after 30 minutes without an
   event, configurable), turns with time, project, transcript, spoken reply, turn id and
   session id; owner-only files; retention 30 days, configurable (D10)
-- [ ] 1.2 Control words matched as whole, normalised utterances against closed lists from
+- [x] 1.2 Control words matched as whole, normalised utterances against closed lists from
   configuration, after transcription and before the agent; the agent's text never matched
   (D12, D18)
-- [ ] 1.3 "Where was I": the recap from the journal in at most three sentences, without an
+- [x] 1.3 "Where was I": the recap from the journal in at most three sentences, without an
   agent turn; in a new drive it recaps the last one (D19)
-- [ ] 1.4 "Note …": the text into the journal, answered with "Noted"; never sent to the agent
-- [ ] 1.5 Tests: each word alone and inside a question; the recap with the agent adapter
+- [x] 1.4 "Note …": the text into the journal, answered with "Noted"; never sent to the agent
+- [x] 1.5 Tests: each word alone and inside a question; the recap with the agent adapter
   failing; a drive boundary; a restart of the bridge keeps the journal
-- [ ] 1.6 Docs: `bridge-service.md` (the journal, the words, the settings); the app's how-to
+- [x] 1.6 Docs: `bridge-service.md` (the journal, the words, the settings); the app's how-to
   says which words exist
-- [ ] 1.7 Roadmap and phase heading
+- [x] 1.7 Roadmap and phase heading
 
 ## 2. Nothing lost (bridge)
 

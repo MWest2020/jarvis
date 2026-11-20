@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-11-17
+last_reviewed: 2026-11-20
 ---
 # Running the bridge service (weekend slice)
 
@@ -49,7 +49,11 @@ your process manager.
 | `JARVIS_PROJECTS` | yes | Comma-separated `name=/absolute/path` pairs, e.g. `demo=/home/you/code/demo`. The phone selects a project by name in the request. Or `*`: every git checkout directly under `JARVIS_PROJECTS_ROOT` is a project, named after its directory (see "Every checkout under a root" below). |
 | `JARVIS_PROJECTS_ROOT` | with `*` only | The absolute directory that holds the checkouts, e.g. `/work`. Must exist at start. Refused when `JARVIS_PROJECTS` is a list. |
 | `JARVIS_PORT` | no (default `8787`) | TCP port on the Tailscale interface. |
-| `JARVIS_STATE_DIR` | no (default `~/.jarvis`) | Where the per-project session id and the log file are stored. Outside the repo, never in git. |
+| `JARVIS_STATE_DIR` | no (default `~/.jarvis`) | Where the per-project session id, the log file and the drive journal (`journal/`) are stored. Outside the repo, never in git. |
+| `JARVIS_DRIVE_GAP_MINUTES` | no (default `30`) | Minutes without an event after which the next one starts a new drive (see "The drive journal"). 1 to 1440. |
+| `JARVIS_JOURNAL_DAYS` | no (default `30`) | Days a drive is kept in the journal after its last event. 1 to 366. |
+| `JARVIS_RECAP_WORDS` | no (default `where was i,what was i doing,waar was ik,wat was ik aan het doen`) | The whole utterances that ask for the recap, comma-separated, written as they are compared: lower case, no punctuation, single spaces. |
+| `JARVIS_NOTE_WORDS` | no (default `note,make a note,take a note,noteer,notitie,maak een notitie`) | The first words that make an utterance a note, in the same form. None of these, nor a recap word, may also be a yes or a no of `full` mode (refused at start). |
 | `JARVIS_WHISPER_MODEL` | no (default `base`) | faster-whisper model size; CPU-friendly sizes are `tiny`, `base`, `small`. |
 | `JARVIS_WHISPER_LANGUAGE` | no (default: detected per recording) | A language code (`en`, `nl`) to skip Whisper's language detection, which costs a second pass over the recording: on `agent-lxc` (base, int8) 0.8 s of the 1.7-1.9 s a short question takes. Set it only when you speak one language to Jarvis: Dutch speech with `en` comes out as a rough English translation. See "Where a turn's time goes". |
 | `JARVIS_WHISPER_BEAM_SIZE` | no (default `5`) | Whisper's beam width, 1 to 10. `1` (greedy) took another 0.05-0.2 s off with the same transcripts on the test recordings. |
@@ -343,10 +347,10 @@ recorded audio as the body. Replies:
 
 | Status | When |
 |---|---|
-| 200 | `audio/wav` with the spoken summary, or a streamed reply for a client that asks for one (see "Streamed replies" below). Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken), `X-Jarvis-Session-Id` and `X-Jarvis-Timing` (milliseconds per stage, see "Where a turn's time goes"). Silence gets a spoken "didn't catch that" and no agent turn. In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
+| 200 | `audio/wav` with the spoken summary, or a streamed reply for a client that asks for one (see "Streamed replies" below). Headers: `X-Jarvis-Summary` (URL-encoded text of what is spoken), `X-Jarvis-Session-Id` and `X-Jarvis-Timing` (milliseconds per stage, see "Where a turn's time goes"). Silence gets a spoken "didn't catch that" and no agent turn. "Where was I" and "note ..." are answered by the bridge with no agent turn and an empty `X-Jarvis-Session-Id` (see "The drive journal"). In `full` mode also a read-back (then with `X-Jarvis-Needs-Confirmation: 1`) or a spoken error of the agent host, and `X-Jarvis-Projects-Changed: 1` when a new project became ready; see "Agent modes". |
 | 400 | No project, an unknown project (in `full` mode: a name the agent host would not accept by its shape), an empty body, or a `Content-Length` that is not a number (digits only: `+5`, `5_0` or padded values are refused) |
 | 401 | Missing or wrong token |
-| 409 | That project is still busy with another turn (one turn per session at a time). The lock lives only while that turn runs, so names asked for in `full` mode leave nothing behind. |
+| 409 | That project is still busy with another turn (one turn per session at a time). The lock lives only while that turn runs, so names asked for in `full` mode leave nothing behind. The recording is transcribed first: "where was I" and "note ..." are still answered for a busy project. |
 | 413 | Audio larger than 10 MB |
 | 502 | The Claude Code turn failed or timed out (details in the log) |
 | 408 | The request line and headers did not arrive within 10 seconds in total (any route, before the token is looked at). The connection is closed. |
@@ -578,6 +582,53 @@ reply could start to go out; "first piece" is when the streamed reply's first ch
 - On the phone the time to the first word is `first_audio_ms` in the log line plus the
   tailnet and the 300 ms pre-roll; it is measured on the first turns with the new APK (task 3.3
   of the change).
+
+## The drive journal
+
+Change [`add-drive-mode`](../../openspec/changes/add-drive-mode/design.md), phase 1 (D10,
+D12, D18, D19). Every use by voice is part of a *drive*. A drive starts with the first event
+after 30 minutes without one (`JARVIS_DRIVE_GAP_MINUTES`) and ends when the next one starts;
+nothing is switched on.
+
+**What is kept.** `$JARVIS_STATE_DIR/journal/<drive id>.jsonl`, one file per drive (the id is
+the start time in UTC, `20261120T071500Z`), one JSON line per event:
+
+| `kind` | Fields |
+|---|---|
+| `turn` | `t` (Unix time), `project`, `transcript`, `spoken` (what was said back), `turn_id` (the agent host's, `full` mode), `session_id` (Claude Code's, `readonly` mode), `read_back`, `answer` (the utterance was the yes or no to a read-back) |
+| `note` | `t`, `project`, `text` (as transcribed, at most 1000 characters) |
+| `recap` | `t`, `project` |
+
+The directory is `0700`, the files `0600`. Each line is synced to disk before the reply goes
+out, so a restart keeps everything up to the last completed event and the open drive goes on.
+A line cut off by a crash (also in the middle of a character) is skipped, and the next event
+starts on a line of its own. Transcripts, replies and notes go through the same redaction as
+the bridge log before they are written (the bridge token, `CLAUDE_CODE_OAUTH_TOKEN`, `sk-ant-`
+keys). A journal directory that cannot be read at start does not stop the bridge: it logs an
+error, and "where was I" and notes are off (those utterances go to the agent) until it can. A drive is deleted 30 days after its last event
+(`JARVIS_JOURNAL_DAYS`), checked at start and whenever a new drive starts; the recap never
+uses a drive past that age, pruned or not. A turn is written
+before it is spoken; a journal that cannot be written is logged and never costs the turn.
+Full written replies are not copied: in `full` mode they are in the agent host's turn record
+of that `turn_id`.
+
+**The drive's own words.** Matched by the bridge on the driver's own transcript, after
+transcription and before the agent; the agent's text is never matched. They cost no agent
+turn, work when the agent host is down, and work for a project that is busy with a turn
+(that request is transcribed instead of refused with 409).
+
+| Said | Matched as | Jarvis |
+|---|---|---|
+| "Where was I?", "What was I doing?", "Waar was ik?", "Wat was ik aan het doen?" (`JARVIS_RECAP_WORDS`) | the whole utterance, ignoring case and punctuation: "where was I with the config" goes to the agent | The recap, at most three sentences, from the journal only (of the question and of the reply only the first sentence, at most 25 and 40 words): "Last, on wordsworth, you asked: why does the index test fail? I said: The fixture is stale." then, if any, "A turn on jarvis is still running." In a drive with no turn yet it recaps the last drive ("Last drive, on ..."). After a read-back and a yes it names the question, not the yes. With an empty journal: "There is nothing to recap yet." |
+| "Note: check the token rotation tonight", "make a note ...", "take a note ...", "Noteer ...", "Notitie: ...", "Maak een notitie ..." (`JARVIS_NOTE_WORDS`) | the first words of the utterance; the rest is the note. An utterance that ends in a question mark is a question and goes to the agent ("notitie over de release, wat staat erin?") | "Noted." The note goes into the journal only, never to the agent. "Note." alone: "What should I note? Say note, then the note." |
+
+A control word is the next utterance of its project, so in `full` mode it uses up a pending
+read-back like anything that is not a yes: the agent host gets a `no`, and Jarvis adds "What
+I read back was not done." A yes after it releases nothing.
+
+Not yet (later phases of the change): "what's new", "cancel", "switch to ...", "go on";
+arrivals; the drive log handed to the agent host at the end of a drive (phase 4). Until then
+the notes wait in the journal on the bridge's volume.
 
 ## Picking a Kokoro voice
 

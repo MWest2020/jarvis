@@ -18,7 +18,7 @@ import urllib.parse
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from bridge import beatbox, claude_adapter, remote_adapter, singing, stt, tts
+from bridge import beatbox, claude_adapter, journal, remote_adapter, singing, stt, tts
 from bridge.config import (
     BEHIND_PROXY_WARNING,
     MODE_FULL,
@@ -28,7 +28,9 @@ from bridge.config import (
     load_config,
 )
 from bridge.full_mode import FRAMING_SENTENCES, FullMode
-from bridge.logging_setup import FILE_ONLY, STREAM_ONLY
+from bridge.full_mode import NOT_HEARD as FULL_NOT_HEARD
+from bridge.journal import Journal
+from bridge.logging_setup import FILE_ONLY, STREAM_ONLY, RedactingFilter
 from bridge.logging_setup import configure as configure_logging
 from bridge.readonly_adapter import ReadonlyAdapter
 from bridge.sessions import SessionStore
@@ -78,6 +80,12 @@ def _release_project_lock(name: str) -> None:
     with _project_locks_guard:
         lock = _project_locks.pop(name)
         lock.release()
+
+
+def _running_projects() -> list[str]:
+    """The projects whose turn is running now (a lock lives only while it is held)."""
+    with _project_locks_guard:
+        return sorted(_project_locks)
 
 
 def _parse_content_length(value: str | None) -> int | None:
@@ -188,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
     readonly: ReadonlyAdapter
     # Set in `full` mode only (jarvis-full-agent D30); None means `readonly`.
     full: FullMode | None = None
+    # add-drive-mode phase 1: the drive journal (D10).
+    journal: Journal | None = None
 
     server_version = "jarvis-bridge/0.1"
     # A client that stalls mid-request does not hold a thread forever.
@@ -344,12 +354,12 @@ class Handler(BaseHTTPRequestHandler):
         with timer.stage("read"):
             audio_bytes = self.rfile.read(length)
 
-        if not _try_project_lock(project_name):
-            # Two turns on one session would race on its id (session continuity).
-            self._respond_error(409, "this project is busy with another turn")
-            return
+        # Two turns on one session would race on its id (session continuity). A busy
+        # project still hears its control words (add-drive-mode D18): the recording is
+        # transcribed, and anything else gets the 409 in _handle_turn.
+        locked = _try_project_lock(project_name)
         try:
-            self._handle_turn(project, audio_bytes, timer)
+            self._handle_turn(project, audio_bytes, timer, busy=not locked)
         except claude_adapter.ClaudeTurnError as exc:
             # The error can quote Claude Code's stderr or its whole JSON reply:
             # details to the file only, a short line to stdout.
@@ -361,7 +371,8 @@ class Handler(BaseHTTPRequestHandler):
             logger.exception("unexpected error handling turn for %s", project_name)
             self._respond_error(500, "internal error")
         finally:
-            _release_project_lock(project_name)
+            if locked:
+                _release_project_lock(project_name)
 
     def _cancel_read_back(self, query: dict) -> None:
         """`POST /turn/cancel?project=<name>&id=<confirmation id>` (S6): the phone did not
@@ -415,7 +426,9 @@ class Handler(BaseHTTPRequestHandler):
             logger.info("could not send the cancel answer to %s: %s", self.address_string(), exc)
 
     def _handle_turn(self, project: ProjectConfig, audio_bytes: bytes,
-                     timer: TurnTimer | None = None) -> None:
+                     timer: TurnTimer | None = None, *, busy: bool = False) -> None:
+        """`busy`: another turn of this project is running. Only a control word is
+        answered then; anything else gets the 409 the busy project always got."""
         timer = timer if timer is not None else TurnTimer()
         project_name = project.name
         audio = audio_bytes
@@ -428,6 +441,11 @@ class Handler(BaseHTTPRequestHandler):
             transcript = stt.transcribe(audio, model_size=self.config.whisper_model,
                                         **self.config.whisper_options)
         logger.info("project=%s transcript=%r", project_name, transcript, extra=FILE_ONLY)
+        if transcript.strip() and self._drive_word(project, transcript, timer, busy=busy):
+            return
+        if busy:
+            self._respond_error(409, "this project is busy with another turn")
+            return
         if not transcript.strip():
             # Silence: no agent turn, just say so.
             self._speak(NOT_HEARD, "", timer=timer, project=project_name)
@@ -449,6 +467,11 @@ class Handler(BaseHTTPRequestHandler):
                                       read_back=outcome.needs_confirmation,
                                       framing=FRAMING_SENTENCES)
             logger.info("project=%s summary=%r", project_name, spoken)
+            if outcome.ref or outcome.spoken != FULL_NOT_HEARD:
+                # A noise that was not taken as an utterance is not a turn.
+                self._journal_turn(project_name, transcript, spoken, turn_id=outcome.ref,
+                                   read_back=outcome.needs_confirmation,
+                                   answer=self.full.is_answer(transcript))
             try:
                 complete = self._speak(spoken, outcome.ref, song=song,
                                        needs_confirmation=outcome.needs_confirmation,
@@ -471,7 +494,66 @@ class Handler(BaseHTTPRequestHandler):
             turn = self.readonly.run_turn(project=project, prompt=transcript)
         summary, song = self._song(turn.spoken, transcript, read_back=False)
         logger.info("project=%s summary=%r", project_name, summary)
+        self._journal_turn(project_name, transcript, summary, session_id=turn.ref)
         self._speak(summary, turn.ref, song=song, timer=timer, project=project_name)
+
+    def _journal_turn(self, project: str, transcript: str, spoken: str, **fields) -> None:
+        """The turn into the drive journal (D10), before it is spoken: a reply that
+        does not reach the phone still ran. The journal never costs the turn."""
+        if self.journal is None:
+            return
+        try:
+            self.journal.record_turn(project=project, transcript=transcript,
+                                     spoken=spoken, **fields)
+        except Exception:  # noqa: BLE001 - a full disk is not the driver's problem now
+            logger.exception("project=%s: the turn could not be written to the journal",
+                             project)
+
+    def _drive_word(self, project: ProjectConfig, transcript: str, timer: TurnTimer, *,
+                    busy: bool) -> bool:
+        """add-drive-mode D18, D19: "where was I" and "note ..." from the driver's own
+        transcript, answered by the bridge without an agent turn, also while the agent is
+        busy or down. True when the utterance was one of them and has been answered.
+
+        Like every utterance that is not a yes, a control word uses up a pending
+        read-back (D36), and the driver is told it was not done.
+        """
+        if self.journal is None:
+            return False
+        word = journal.match(transcript, recap_words=self.config.recap_words,
+                             note_words=self.config.note_words)
+        if word is None:
+            return False
+        name = project.name
+        dropped = False
+        if self.full is not None:
+            try:
+                dropped = self.full.drop_pending(project)
+            except Exception:  # noqa: BLE001 - the bridge's side has dropped it already
+                logger.exception("project=%s: cancelling the read-back failed", name)
+                dropped = True
+        if word.kind == journal.RECAP:
+            running = [p for p in _running_projects() if busy or p != name]
+            try:
+                spoken = self.journal.recap(running=running)
+                self.journal.record_recap(project=name)
+            except Exception:  # noqa: BLE001 - never a traceback to the phone
+                logger.exception("project=%s: the recap could not be built", name)
+                spoken = journal.RECAP_FAILED
+        elif not word.text:
+            spoken = journal.NOTE_EMPTY
+        else:
+            try:
+                self.journal.add_note(project=name, text=word.text)
+                spoken = journal.NOTED
+            except Exception:  # noqa: BLE001 - the note is lost, and the driver hears so
+                logger.exception("project=%s: the note could not be written", name)
+                spoken = journal.NOTE_FAILED
+        if dropped:
+            spoken = f"{spoken} {journal.READ_BACK_DROPPED}"
+        logger.info("project=%s control word=%s", name, word.kind)
+        self._speak(spoken, "", timer=timer, project=name)
+        return True
 
     def _song(self, spoken: str, transcript: str, *, read_back: bool,
               framing: tuple[str, ...] = ()) -> tuple[str, Performance | None]:
@@ -778,6 +860,20 @@ class BoundedHTTPServer(ThreadingHTTPServer):
             self.shutdown_request(request)
 
 
+def _make_journal(config: BridgeConfig) -> Journal | None:
+    """The drive journal (add-drive-mode D10), with the log's redaction. A journal that
+    cannot be opened never stops the bridge: the drive's words are then not matched and
+    every utterance goes to the agent as before."""
+    redact = RedactingFilter((config.token, os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))).redact
+    try:
+        return Journal(config.journal_path, gap_s=config.drive_gap_minutes * 60,
+                       retention_s=config.journal_days * 86400, redact=redact)
+    except (OSError, ValueError) as exc:
+        logger.error("the drive journal in %s cannot be used (%s): \"where was I\" and "
+                     "notes are off until it can", config.journal_path, exc)
+        return None
+
+
 def make_server(config: BridgeConfig) -> BoundedHTTPServer:
     Handler.config = config
     Handler.sessions = SessionStore(config.session_store_path)
@@ -786,6 +882,7 @@ def make_server(config: BridgeConfig) -> BoundedHTTPServer:
         allowed_tools=config.allowed_tools,
         timeout_s=config.claude_timeout_s,
     )
+    Handler.journal = _make_journal(config)
     Handler.full = None
     if config.agent_mode == MODE_FULL:
         if config.agent_host is None:

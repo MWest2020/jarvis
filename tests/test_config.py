@@ -14,7 +14,8 @@ def _set_minimal_env(monkeypatch, tmp_path, **overrides):
     # of a test.
     import os
     for key in list(os.environ):
-        if key.startswith(("JARVIS_AGENT_", "JARVIS_CONFIRM_")):
+        if key.startswith(("JARVIS_AGENT_", "JARVIS_CONFIRM_", "JARVIS_RECAP_", "JARVIS_NOTE_",
+                           "JARVIS_DRIVE_", "JARVIS_JOURNAL_", "JARVIS_STATE_")):
             monkeypatch.delenv(key)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -455,4 +456,49 @@ def test_whisper_beam_and_language_can_be_set(monkeypatch, tmp_path):
 def test_bad_whisper_settings_are_refused_at_start(monkeypatch, tmp_path, name, value):
     _set_minimal_env(monkeypatch, tmp_path, **{name: value})
     with pytest.raises(ConfigError):
+        load_config()
+
+
+# add-drive-mode phase 1: the journal and the drive's own words.
+
+def test_the_drive_defaults(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_STATE_DIR=str(tmp_path / "state"))
+    config = load_config()
+    assert config.journal_path == tmp_path / "state" / "journal"
+    assert (config.drive_gap_minutes, config.journal_days) == (30, 30)
+    assert config.recap_words == ("where was i", "what was i doing",
+                                  "waar was ik", "wat was ik aan het doen")
+    assert config.note_words == ("note", "make a note", "take a note",
+                                 "noteer", "notitie", "maak een notitie")
+
+
+def test_the_drive_settings_from_the_environment(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_DRIVE_GAP_MINUTES="45",
+                     JARVIS_JOURNAL_DAYS="7", JARVIS_RECAP_WORDS="where was i, recap",
+                     JARVIS_NOTE_WORDS="note,memo")
+    config = load_config()
+    assert (config.drive_gap_minutes, config.journal_days) == (45, 7)
+    assert config.recap_words == ("where was i", "recap")
+    assert config.note_words == ("note", "memo")
+
+
+@pytest.mark.parametrize("name, value", [
+    ("JARVIS_DRIVE_GAP_MINUTES", "0"),
+    ("JARVIS_DRIVE_GAP_MINUTES", "1441"),
+    ("JARVIS_DRIVE_GAP_MINUTES", "half an hour"),
+    ("JARVIS_JOURNAL_DAYS", "0"),
+    ("JARVIS_JOURNAL_DAYS", "-1"),
+    ("JARVIS_RECAP_WORDS", "Where was I?"),
+    ("JARVIS_NOTE_WORDS", " , "),
+    ("JARVIS_NOTE_WORDS", "where was i"),          # also a recap word
+])
+def test_bad_drive_settings_are_refused(monkeypatch, tmp_path, name, value):
+    _set_minimal_env(monkeypatch, tmp_path, **{name: value})
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_a_control_word_cannot_be_a_confirmation_word(monkeypatch, tmp_path):
+    _full_env(monkeypatch, tmp_path, JARVIS_NOTE_WORDS="note,yes")
+    with pytest.raises(ConfigError, match="control word and a confirmation word"):
         load_config()

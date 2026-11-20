@@ -37,7 +37,7 @@ class RedactingFilter(logging.Filter):
         super().__init__()
         self._secrets = tuple(s for s in secrets if s and len(s) >= _MIN_SECRET_LEN)
 
-    def _redact(self, text: str) -> str:
+    def redact(self, text: str) -> str:
         for secret in self._secrets:
             text = text.replace(secret, REDACTED)
         return _ANTHROPIC_KEY.sub(REDACTED, text)
@@ -53,11 +53,11 @@ class RedactingFilter(logging.Filter):
                 record.exc_text = logging.Formatter().formatException(record.exc_info)
                 record.exc_info = None
             if record.exc_text:
-                record.exc_text = self._redact(record.exc_text)
+                record.exc_text = self.redact(record.exc_text)
             if record.stack_info:
-                record.stack_info = self._redact(record.stack_info)
+                record.stack_info = self.redact(record.stack_info)
             message = record.getMessage()
-            redacted = self._redact(message)
+            redacted = self.redact(message)
             if redacted != message:
                 record.msg, record.args = redacted, None
         except Exception:  # noqa: BLE001 - a log filter must never raise
