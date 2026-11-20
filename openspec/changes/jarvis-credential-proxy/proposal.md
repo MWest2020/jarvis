@@ -1,6 +1,6 @@
 # Change: jarvis-credential-proxy
 
-**Status: approved by Mark on 2026-11-18 by mail ("defaults en proposals ok", #83); each of the seven open questions takes its default. Built in stages, observe first.**
+**Status: approved by Mark on 2026-11-18 by mail ("defaults en proposals ok", #83); each of the seven open questions takes its default. Built in stages, observe first; stage 0 is built ([`tasks.md`](tasks.md)).**
 
 ## Why
 

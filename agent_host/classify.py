@@ -60,6 +60,7 @@ from agent_host import shell
 from agent_host.boundedio import MAX_SETTINGS_BYTES, Budget, BudgetExhausted, read_text
 from agent_host.checkout_settings import git_top_level
 from agent_host.config import CONFIRM_CLASSES, AgentHostConfig
+from agent_host.egress import UNIT_PATH as EGRESS_UNIT_PATH
 from agent_host.rules import Program, Rules
 
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
@@ -310,6 +311,12 @@ def protected_paths(
         # reach of the agent's tools (D40 says what that is worth).
         config.state_dir,
     }
+    if config.egress.mode != "off":
+        # The egress proxy's unit and its request log (jarvis-credential-
+        # proxy, E12): what a turn reached is evidence, and the unit says
+        # how the proxy runs. Root-owned or the proxy's own; with egress
+        # off they are not protected here (sudo is gated as `root` anyway).
+        paths |= {config.egress.log_dir, EGRESS_UNIT_PATH}
     if config.second_prompt_path is not None:
         paths.add(config.second_prompt_path)
     paths |= {home / rel for rel in rules.self_home_paths}
