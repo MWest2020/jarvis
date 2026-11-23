@@ -784,6 +784,19 @@ random. A name is normalised like a tune name (`[beatbox: Boots and Cats]` works
 `[beat box]` and `[beat-box]` count as the tag. A sing tag written after it is removed,
 never said.
 
+**Why the driver's own words must ask for it.** The agent reads repositories, web pages
+and mail, and it can be wrong; a 15-second beat in the car on an ordinary answer is
+the kind of thing a check the model does not control should stop. So the bridge plays
+a beat only when the tag is first on the agent's line *and* the transcript of this turn
+asks for one. Whisper mishears "beatbox" (23 Nov 2026: "Jarvis, drop a beatbox" came out
+as "Jawers, troop en peedbox!"), so the ask also takes the misheard forms in
+`bridge/beatbox.py` (`MISHEARD`).
+
+When the agent tagged its line and the bridge said it without the beat, the log says why:
+`beatbox tag dropped: switched_on=True asked=False tag_first=True` (whether the feature is
+on, whether the driver asked, whether the tag stood where it can be played). A beat that
+plays logs `beatboxed: <pattern>`. Neither line holds the transcript.
+
 | Tag | Beat | Tempo, length |
 |---|---|---|
 | `[beatbox: boots-and-cats]` | The first beat every beatboxer learns: kick, hat, snare, hat ("boots and cats and..."), a fill in the last bar; also `basic` | 100 bpm, 4 bars, about 10 s |
@@ -829,7 +842,12 @@ beatbox tag is removed and the line is spoken:
 - the tag is the very first thing on the agent's own spoken line (only the bridge's fixed
   sentences, `FRAMING_SENTENCES`, are looked past);
 - the driver's own words in this turn ask for it: "beatbox" (also "beatboxen",
-  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats";
+  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats", or "beatbox" as
+  Whisper mishears it: a b or p, a vowel, a d or t, then "box" ("peedbox", "beadbox",
+  "bietbox", "Pete box"). On 23 Nov 2026 "Jarvis, drop a beatbox" came out as "Jawers,
+  troop en peedbox!"; the agent tagged its line and the bridge, finding no word that
+  asked, said only "Here's a beat for the road, Mark." A box alone ("inbox", "pizza box")
+  never asks;
 - the reply is not a read-back;
 - `JARVIS_BEATBOX` is not `0`.
 

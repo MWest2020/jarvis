@@ -566,6 +566,12 @@ class Handler(BaseHTTPRequestHandler):
         if beat is not None:
             logger.info("beatboxed: %s", beat.pattern.id)
             return text, beat
+        if text != spoken:
+            # The agent tagged its line, and the bridge said it without the beat: say
+            # why, so "it said the line and then nothing" can be read from the log.
+            logger.info("beatbox tag dropped: switched_on=%s asked=%s tag_first=%s",
+                        self.config.beatbox, beatbox.asked_for_a_beat(transcript),
+                        beatbox.tag_playable(spoken, framing))
         text, song = singing.choose(text, transcript=transcript,
                                     enabled=self.config.sing, read_back=read_back,
                                     framing=framing, parody=self.config.sing_parody)

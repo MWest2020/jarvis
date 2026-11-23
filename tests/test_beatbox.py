@@ -492,3 +492,82 @@ def test_the_switch_reads_0_1_or_unset(monkeypatch):
     monkeypatch.setenv("JARVIS_BEATBOX", "loud")
     with pytest.raises(ConfigError):
         config.load_config()
+
+
+# --- Mark, 23 Nov 2026: "Jarvis says it will beatbox, says the line, and then nothing" ---
+# Turn c55ad21e: Whisper heard "Jarvis, drop a beatbox" as "Jawers, troop en peedbox!".
+# The agent understood and tagged its line; the bridge did not find a word asking for a
+# beat in the transcript, dropped the tag and said only the line. The exact reply:
+
+MARKS_REPLY = ("Here's a beat for you.\n\n"
+               "SPOKEN SUMMARY: [beatbox] Here's a beat for the road, Mark.")
+MARKS_WORDS = "Jawers, troop en peedbox!"
+MARKS_LINE = "Here's a beat for the road, Mark."
+
+
+@pytest.mark.parametrize("transcript", [
+    MARKS_WORDS, "peedbox", "peetbox", "beadbox", "beat-box", "beet box", "bietbox",
+    "biedbox", "Pete box", "peat box please", "kun je peedboxen", "beatbax",
+    "beatboks", "bietboks", "peat bocks", "bait box", "baitbox", "bijtbox"])
+def test_the_driver_asks_even_when_whisper_mishears_beatbox(transcript):
+    assert beatbox.asked_for_a_beat(transcript)
+
+
+@pytest.mark.parametrize("transcript", [
+    "a pizza box", "check the postbox", "my inbox", "the toolbox", "an Xbox",
+    "a bento box", "the beta box", "put it in the box", "a beaten box",
+    "Dropbox", "een boks", "het bad box", "de lunchbox", "speed box"])
+def test_other_boxes_do_not_ask(transcript):
+    assert not beatbox.asked_for_a_beat(transcript)
+
+
+def test_marks_reply_is_beatboxed_after_the_new_session_notice():
+    spoken = summary.extract_summary(MARKS_REPLY)
+    text, beat = beatbox.choose(f"{NOTICE_SENTENCES['new_session']} {spoken}",
+                                transcript=MARKS_WORDS, enabled=True, read_back=False,
+                                framing=FRAMING_SENTENCES, rng=random.Random(1))
+    assert beat is not None and beat.pattern.id in PATTERNS
+    assert beat.intro == MARKS_LINE
+    assert beat.before == NOTICE_SENTENCES["new_session"]
+    assert text == f"{NOTICE_SENTENCES['new_session']} {MARKS_LINE}"
+
+
+def test_marks_turn_is_beatboxed_as_a_wav(full):
+    full.host.scenario(mode="wrapper", notice="new_session", spoken=MARKS_REPLY)
+    response, said = full.say(MARKS_WORDS)
+    assert response.status == 200
+    assert said == "BEAT:%d" % (SR // 5)
+    assert [(b.intro, b.before) for b in full.beatboxer.beats] == [
+        (MARKS_LINE, NOTICE_SENTENCES["new_session"])]
+
+
+def test_marks_turn_is_beatboxed_in_the_stream(full):
+    full.host.scenario(mode="wrapper", notice="new_session", spoken=MARKS_REPLY)
+    response, data = _say(full, MARKS_WORDS)
+    assert response.getheader("Content-Type") == STREAM_ACCEPT
+    assert data == tts.to_l16(np.full(SR // 5, 0.25, dtype=np.float32))
+    assert [b.intro for b in full.beatboxer.beats] == [MARKS_LINE]
+
+
+def test_marks_reply_is_beatboxed_in_readonly_mode_too(tmp_path, monkeypatch):
+    b = Bridge(tmp_path, monkeypatch, mode="readonly")
+    try:
+        beatboxer = Beatboxer()
+        monkeypatch.setattr(tts, "beatbox", beatboxer)
+        monkeypatch.setattr(tts, "wav_bytes", lambda samples: b"BEAT")
+        monkeypatch.setattr(claude_adapter, "run_turn",
+                            lambda **kwargs: (MARKS_REPLY, "session-ro"))
+        response, said = b.say(MARKS_WORDS)
+        assert said == "BEAT"
+        assert [beat.intro for beat in beatboxer.beats] == [MARKS_LINE]
+    finally:
+        b.stop()
+
+
+def test_a_tag_dropped_because_nobody_asked_is_logged(full, caplog):
+    full.host.scenario(mode="wrapper", spoken=TAGGED)
+    with caplog.at_level("INFO", logger="bridge.server"):
+        full.say("what is open?")
+    dropped = [r.getMessage() for r in caplog.records if "beatbox tag dropped" in r.getMessage()]
+    assert dropped and "tag_first=True" in dropped[0]
+    assert "what is open" not in dropped[0]  # never the transcript
