@@ -7,7 +7,7 @@ last_reviewed: 2026-11-20
 A small native client for the bridge's `POST /turn`: one large button, a project picker,
 the summary of the last reply as text. It replaces the hand-built shortcut of
 [`android-http-shortcuts.md`](android-http-shortcuts.md). Why and the decisions: the change
-[`add-android-client`](../../openspec/changes/add-android-client/design.md). The code is in
+[`add-android-client`](../../openspec/changes/archive/2026-11-23-add-android-client/design.md). The code is in
 [`android/`](../../android/).
 
 **For a parked car, not for driving.** The app has a screen to look at and a button to hit.
@@ -87,7 +87,7 @@ run number than the installed one is refused (`INSTALL_FAILED_VERSION_DOWNGRADE`
 ### General: just talk
 
 The first entry on the main screen is **General** (change
-[`jarvis-general-conversation`](../../openspec/changes/jarvis-general-conversation/design.md),
+[`jarvis-general-conversation`](../../openspec/changes/archive/2026-11-23-jarvis-general-conversation/design.md),
 D50). It is not a mode: it sends your turns to the home project, `jarvis-home` by default,
 whose own `CLAUDE.md` makes Jarvis a sparring partner there. It is shown only when the
 project list has the home project (from the bridge, or typed); an app that was set up
@@ -132,7 +132,7 @@ project once.
 
 - **Hold** the button, talk, let go. Or **tap** it, talk, tap again. Both send.
 - **Tap and just talk** (since 2026-11-17, change
-  [`jarvis-silence-send`](../../openspec/changes/jarvis-silence-send/design.md), jarvis#67):
+  [`jarvis-silence-send`](../../openspec/changes/archive/2026-11-23-jarvis-silence-send/design.md), jarvis#67):
   after a tap the app sends the question by itself once you have stopped talking for three
   seconds. When you pause, the button says "sending in 3 s, tap to send now" and a white bar
   runs down; talk again and it waits. A tap still sends at once. While you **hold** the
@@ -155,7 +155,7 @@ project once.
   bridge is working. A turn takes about 20 seconds.
 - The reply plays by itself and its summary appears as text. A tap while it plays stops it.
 - Since 2026-11-17 the reply starts while it is still arriving (change
-  [`jarvis-streaming-speech`](../../openspec/changes/jarvis-streaming-speech/design.md)): the
+  [`jarvis-streaming-speech`](../../openspec/changes/archive/2026-11-23-jarvis-streaming-speech/design.md)): the
   app asks the bridge for a streamed reply, the tick stops and the summary appears as soon as
   the agent has answered, and the first sentence plays about two seconds later while the
   bridge renders the next one. Before, the whole reply was rendered and downloaded first,
@@ -333,7 +333,7 @@ cd android
 
 ### How the end of a question is found
 
-Change [`jarvis-silence-send`](../../openspec/changes/jarvis-silence-send/design.md) (jarvis#67).
+Change [`jarvis-silence-send`](../../openspec/changes/archive/2026-11-23-jarvis-silence-send/design.md) (jarvis#67).
 `Endpointer` in `:core` (`Endpointer.kt`) gets the recorded PCM as the recorder reads it and
 decides from loudness alone; it is plain Kotlin, no library, nothing leaves the phone.
 
