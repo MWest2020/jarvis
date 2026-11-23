@@ -469,6 +469,19 @@ git = [
     "checkout-index", "bisect", "sparse-checkout", "filter-branch",
 ]
 gh = [["pr", "checkout"], ["repo", "sync"]]
+# Re-review of #98: a copy or an unpack over the turn checkout plants the
+# file as well (`git clone <x> /tmp/c` and `cp -r /tmp/c/. .`). These are the
+# rule `self:checkout-tree` when their destination is the top of the turn
+# checkout or its `.claude` (a plain subdirectory runs). The destination is
+# the target (`-t`, or any operand after the first) of a copy, the `-C`,
+# `-d`, `-D` or `-o` directory of an unpack, or else the working directory.
+# A glob or a destination the gate cannot read counts as the checkout. A
+# copy to the top only counts when it is recursive and a source spills its
+# contents there (`dir/.`, `dir/`, `.`, a glob, `ditto`) or is a `.claude`
+# (`mv` and `ln` need no -r); a directory by its own name lands as a
+# subdirectory. Anything that lands in `.claude` counts.
+copy = ["cp", "rsync", "scp", "install", "ditto", "mv", "ln"]
+unpack = ["tar", "bsdtar", "unzip", "patch", "cpio", "7z", "7za", "7zz"]
 
 # --- rules that name an action (D36's table) ---------------------------------
 #

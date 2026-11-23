@@ -1158,6 +1158,9 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
         # `find -exec claude`, `chronic claude`, `make claude`: something
         # that may run it. Never `cat claude` or `git log --grep claude`.
         return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
+    if (program in rules.tree_copy or program in rules.tree_unpack) \
+            and _lands_on_turn_checkout(program, args, ctx):
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
     if program in rules.root_programs:
         return Verdict(gated=True, classes=("root",), rule=f"root:{program}")
     if program in rules.shells:
@@ -1370,6 +1373,10 @@ def _judge_gh(
     gh = ctx.rules.gh
     rule = f"default:gh:{' '.join(subpath)}"
 
+    if subpath == ("pr", "merge") and _deletes_branch(rest) and _in_turn_checkout(ctx.cwd, ctx):
+        # After the merge gh switches the local checkout to the default
+        # branch and pulls it: the turn checkout's files, from the remote.
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
     if subpath in ctx.rules.tree_gh and _in_turn_checkout(ctx.cwd, ctx):
         # `gh pr checkout` and `gh repo sync` act on the local checkout of
         # the directory they run in, whatever `--repo` says.
@@ -1899,6 +1906,130 @@ def _in_turn_checkout(where: Path, ctx: Context) -> bool:
     return os.path.isdir(os.path.join(top, ".git"))
 
 
+def _deletes_branch(args: list[str]) -> bool:
+    """`gh pr merge` with -d / --delete-branch, also in a group (`-sd`)."""
+    for arg in args:
+        if arg == "--":
+            break
+        if arg == "--delete-branch" or (arg.startswith("--delete-branch=")
+                                        and arg.split("=", 1)[1].lower() != "false"):
+            return True
+        if re.fullmatch(r"-[A-Za-z]+", arg) and "d" in arg[1:]:
+            return True
+    return False
+
+
+_REMOTE_WORD_RE = re.compile(r"[^/]*:")
+
+
+def _option_values(args: list[str], shorts: tuple[str, ...], longs: tuple[str, ...]) -> list[str]:
+    """Every value of the given options: `-C dir`, `-Cdir`, `--directory dir`,
+    `--directory=dir`."""
+    found: list[str] = []
+    for index, arg in enumerate(args):
+        for short in shorts:
+            if arg == short:
+                found.append(args[index + 1] if index + 1 < len(args) else "")
+            elif arg.startswith(short) and not arg.startswith("--") and len(arg) > len(short):
+                found.append(arg[len(short):])
+        for long in longs:
+            if arg == long:
+                found.append(args[index + 1] if index + 1 < len(args) else "")
+            elif arg.startswith(long + "="):
+                found.append(arg[len(long) + 1:])
+    return found
+
+
+def _short_group_has(args: list[str], letters: str, *, first_bare: bool = False) -> bool:
+    """A single-dash group of letters holds one of `letters` (`-xzf`), or,
+    with `first_bare`, the first word without a dash does (`tar xzf`)."""
+    for index, arg in enumerate(args):
+        word = arg
+        if first_bare and index == 0 and re.fullmatch(r"[A-Za-z]+", arg):
+            word = "-" + arg
+        if re.fullmatch(r"-[A-Za-z0-9]+", word) and any(ch in word[1:] for ch in letters):
+            return True
+    return False
+
+
+def _hits_checkout_top(dest: str, ctx: Context, *, files_only: bool = False) -> bool:
+    """`dest` is the top of the turn checkout (unless only plain files land
+    there) or lies in its `.claude`. A glob or an unreadable one counts."""
+    if not dest or dest.startswith("-") or _GLOB_CHARS_RE.search(dest):
+        return True
+    real = os.path.realpath(_resolve(dest, ctx))
+    probe = real if os.path.isdir(real) else os.path.dirname(real)
+    if not _in_turn_checkout(Path(probe), ctx):
+        return False
+    top = git_top_level(Path(probe))
+    if top is None:
+        return True
+    rel = os.path.relpath(real, os.path.realpath(top))
+    first = rel.split(os.sep)[0]
+    if first.lower() == ".claude" or first == "..":
+        return True
+    return rel == "." and not files_only
+
+
+def _lands_on_turn_checkout(program: str, args: list[str], ctx: Context) -> bool:
+    """A copy or an unpack whose destination is the top of the turn checkout
+    or its `.claude` ([checkout_tree] in the rules)."""
+    rules = ctx.rules
+    if program in rules.tree_unpack:
+        if program in ("tar", "bsdtar"):
+            if not ("--extract" in args or "--get" in args
+                    or _short_group_has(args, "x", first_bare=True)):
+                return False
+            dests = _option_values(args, ("-C",), ("--directory",))
+        elif program == "unzip":
+            if _short_group_has(args, "lvtZz"):
+                return False  # lists, tests or shows a comment
+            dests = _option_values(args, ("-d",), ("--exdir",))
+        elif program == "patch":
+            if "--dry-run" in args:
+                return False
+            dests = _option_values(args, ("-d",), ("--directory",))
+        elif program == "cpio":
+            if _short_group_has(args, "p") or "--pass-through" in args:
+                operands = [a for a in args if not a.startswith("-")]
+                return _hits_checkout_top(operands[-1] if operands else "", ctx)
+            if not (_short_group_has(args, "i") or "--extract" in args):
+                return False
+            dests = _option_values(args, ("-D",), ("--directory",))
+        else:  # 7z, 7za, 7zz
+            operands = [a for a in args if not a.startswith("-")]
+            if not operands or operands[0] not in ("x", "e"):
+                return False
+            dests = [a[2:] for a in args if a.startswith("-o")]
+        return any(_hits_checkout_top(dest, ctx) for dest in (dests or ["."]))
+
+    # A copy: the target directory, or any operand after the first.
+    targets = _option_values(args, ("-t",), ("--target-directory",))
+    operands = [a for a in args if not a.startswith("-") and a not in targets]
+    if not targets:
+        targets = [a for a in operands[1:] if not _REMOTE_WORD_RE.match(a)]
+    if not targets:
+        return False
+    # What lands at the top: a source's contents (`dir/.`, `dir/`, `.`), a
+    # glob, or a source that is itself a `.claude`. A directory by its own
+    # name lands as a subdirectory (`cp -r /tmp/c .` makes `./c`).
+    sources = [a for a in operands if a not in targets]
+    risky = program == "ditto" or any(_spills_into_destination(a) for a in sources)
+    if program not in ("mv", "ln"):
+        recursive = (_short_group_has(args, "rRad" if program == "rsync" else "rRa")
+                     or any(a in ("--recursive", "--archive", "--parents", "--dirs")
+                            for a in args) or program == "ditto")
+        risky = risky and recursive
+    return any(_hits_checkout_top(t, ctx, files_only=not risky) for t in targets)
+
+
+def _spills_into_destination(source: str) -> bool:
+    path = source.split(":", 1)[1] if _REMOTE_WORD_RE.match(source) else source
+    if not path or path in (".", "./") or path.endswith(("/", "/.")) or _GLOB_CHARS_RE.search(path):
+        return True
+    return os.path.basename(os.path.normpath(path)).lower() == ".claude"
+
+
 def _rewrites_turn_tree(call: GitCall, args: list[str], ctx: Context,
                         env: tuple[str, ...]) -> bool:
     """A git command that writes files of the working tree from a commit, a
@@ -1911,6 +2042,10 @@ def _rewrites_turn_tree(call: GitCall, args: list[str], ctx: Context,
     sub, rest = call.subcommand, list(call.args)
     if sub not in tree:
         return False
+    if len(rest) == 2 and not rest[1].startswith("-") and (
+            (sub == "checkout" and rest[0] in ("-b", "-B"))
+            or (sub == "switch" and rest[0] in ("-c", "-C", "--create", "--force-create"))):
+        return False  # a new branch at HEAD, no start point: no file changes
     if sub == "reset" and not any(
             _long_is(arg, "--hard") or _long_is(arg, "--merge") or _long_is(arg, "--keep")
             for arg in rest):
