@@ -49,6 +49,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import unicodedata
@@ -94,6 +95,12 @@ _PUSH_VALUE_OPTIONS = ("--repo", "--receive-pack", "--exec", "--push-option")
 
 
 RULE_CONFIRM_SWITCH = "self:confirm-switch"
+# Desk-only, whatever the switch (security review of #96): a Claude Code
+# session started from a call, which this gate does not reach, and a git or
+# gh command that rewrites the turn checkout's working tree, which can bring
+# in a `.claude/settings.json` that Claude Code loads mid-turn.
+RULE_SESSION = "self:session"
+RULE_CHECKOUT_TREE = "self:checkout-tree"
 
 
 @dataclass(frozen=True)
@@ -359,6 +366,9 @@ class Context:
     # The call's directory as the call names it, before symlinks are
     # resolved (the gate sets it; `cwd` is the real path).
     logical_cwd: Path | None = None
+    # The directory the turn was started in (the gate sets it from the
+    # trusted record). Unknown: every main worktree counts as it.
+    turn_checkout: Path | None = None
 
 
 def context_for(
@@ -700,6 +710,10 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
                        command=shell.Command(switch, (("root", "sudo"),)))
     if _shell_writes_protected(command, ctx):
         return Verdict(gated=True, classes=("self",), rule="self:shell")
+    if any(package in command for package in rules.session_packages):
+        # `npx @anthropic-ai/claude-code`, `pnpm dlx ...`, behind whatever
+        # wrapper: the package name anywhere in the call is enough.
+        return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
 
     everyday = _everyday_form(command, ctx)
     if everyday is not None:
@@ -707,6 +721,14 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
 
     analysis = _analyse(command, ctx)
 
+    if analysis.compound:
+        # A desk-only piece anywhere decides, before any other refusal: a
+        # session behind `xargs`, after a `;`, sent to the background.
+        for candidate in analysis.commands:
+            verdict = _judge(candidate, ctx)
+            if verdict.desk_only:
+                return Verdict(gated=True, classes=verdict.classes, run_alone=True,
+                               rule=verdict.rule, command=candidate)
     if analysis.refuse:
         return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     if not analysis.compound and _expands_in_a_write(command, analysis, ctx):
@@ -1119,6 +1141,13 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
     program = shell.program_name(argv[0])
     args = list(argv[1:])
 
+    if _is_session_program(argv[0], ctx):
+        return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
+    if program not in rules.harmless and program not in ("git", "gh") \
+            and any(shell.program_name(arg) in rules.session_programs for arg in args):
+        # `find -exec claude`, `chronic claude`, `make claude`: something
+        # that may run it. Never `cat claude` or `git log --grep claude`.
+        return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
     if program in rules.root_programs:
         return Verdict(gated=True, classes=("root",), rule=f"root:{program}")
     if program in rules.shells:
@@ -1179,6 +1208,24 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
         # may be a wrapper the gate cannot see through.
         return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     return UNGATED
+
+
+def _is_session_program(word: str, ctx: Context) -> bool:
+    """`word`, as the program of a command, is Claude Code: by its name, or
+    by what it resolves to (a symlink by another name, the native
+    installer's `.../claude/versions/<version>`, the package's own files)."""
+    rules = ctx.rules
+    if shell.program_name(word) in rules.session_programs:
+        return True
+    try:
+        found = _resolve(word, ctx) if "/" in word else shutil.which(word)
+        if not found:
+            return False
+        real = os.path.realpath(found)
+    except (OSError, ValueError):
+        return False
+    return (os.path.basename(real) in rules.session_programs or "/claude/versions/" in real
+            or any(package in real for package in rules.session_packages))
 
 
 def _action_classes(
@@ -1312,6 +1359,11 @@ def _judge_gh(
 ) -> Verdict | None:
     gh = ctx.rules.gh
     rule = f"default:gh:{' '.join(subpath)}"
+
+    if subpath in ctx.rules.tree_gh and _in_turn_checkout(ctx.cwd, ctx):
+        # `gh pr checkout` and `gh repo sync` act on the local checkout of
+        # the directory they run in, whatever `--repo` says.
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
 
     if subpath == ("api",):
         # Flags may stand before the subcommand too (`gh --method=DELETE api x`).
@@ -1821,12 +1873,116 @@ _GIT_ELSEWHERE = frozenset({"--chdir", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_D
                             "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES"})
 
 
+_GLOB_CHARS_RE = re.compile(r"[*?\[\]\\]")
+
+
+def _in_turn_checkout(where: Path, ctx: Context) -> bool:
+    """`where` lies in the turn checkout's own working tree: its nearest
+    `.git` is the turn checkout's. Not a linked worktree under it (its
+    settings do not load: host check 6), not another clone. When the turn
+    checkout is not known, every main worktree (a `.git` directory) counts."""
+    top = git_top_level(where)
+    if top is None:
+        return False
+    if ctx.turn_checkout is not None:
+        return os.path.realpath(top) == os.path.realpath(ctx.turn_checkout)
+    return os.path.isdir(os.path.join(top, ".git"))
+
+
+def _rewrites_turn_tree(call: GitCall, args: list[str], ctx: Context,
+                        env: tuple[str, ...]) -> bool:
+    """A git command that writes files of the working tree from a commit, a
+    patch, a stash or a remote, run in the turn checkout (or where the gate
+    cannot tell)."""
+    tree = ctx.rules.tree_git
+    if not call.placed:
+        # An option the gate does not know before the subcommand.
+        return any(arg in tree for arg in args) and _in_turn_checkout(ctx.cwd, ctx)
+    sub, rest = call.subcommand, list(call.args)
+    if sub not in tree:
+        return False
+    if sub == "reset" and not any(
+            _long_is(arg, "--hard") or _long_is(arg, "--merge") or _long_is(arg, "--keep")
+            for arg in rest):
+        return False  # soft or mixed: the index and HEAD, not the files
+    if sub == "stash" and rest and rest[0] in ("list", "show", "drop", "clear", "create"):
+        return False  # a plain `git stash` resets the files to HEAD, which may have moved
+    if sub == "apply" and "--index" not in rest and any(
+            arg in ("--cached", "--check", "--stat", "--numstat", "--summary") for arg in rest) \
+            and "--apply" not in rest:
+        return False
+    if sub == "read-tree" and "-u" not in rest:
+        return False
+    if call.redirected or _GIT_ELSEWHERE.intersection(env):
+        return True  # --work-tree, --git-dir, GIT_DIR=, `env -C`: not where it says
+    where = ctx.cwd if call.directory is None else Path(_resolve(call.directory, ctx))
+    if not _in_turn_checkout(where, ctx):
+        return False
+    paths = _tree_pathspecs(sub, rest)
+    return paths is None or not _paths_miss_settings(paths, where)
+
+
+def _tree_pathspecs(sub: str, rest: list[str]) -> list[str] | None:
+    """The paths of `git checkout <ref> -- <path>...` and `git restore
+    [--source <ref>] <path>...`, or None when the call is not in that form
+    (then it may write any file)."""
+    if sub == "checkout":
+        if "--" not in rest:
+            return None
+        index = rest.index("--")
+        if any(word.startswith("-") for word in rest[:index]):
+            return None  # an option the gate does not read here (-p, --pathspec-from-file)
+        return rest[index + 1:] or None
+    if sub == "restore":
+        paths: list[str] = []
+        index = 0
+        while index < len(rest):
+            word = rest[index]
+            if word == "--":
+                paths += rest[index + 1:]
+                break
+            if word in ("-s", "--source"):
+                index += 2
+                continue
+            if word.startswith("--source=") or (word.startswith("-s") and not word.startswith("--")):
+                index += 1
+                continue
+            if word.startswith("--pathspec-from-file"):
+                return None
+            if not word.startswith("-"):
+                paths.append(word)
+            index += 1
+        return paths or None
+    return None
+
+
+def _paths_miss_settings(paths: list[str], where: Path) -> bool:
+    """Every path is a plain path below the top of the checkout and outside
+    its `.claude`: no glob, no pathspec magic, not the top itself."""
+    top = git_top_level(where)
+    if top is None:
+        return False
+    root = os.path.realpath(top)
+    for path in paths:
+        if not path or path.startswith(":") or _GLOB_CHARS_RE.search(path):
+            return False
+        full = os.path.normpath(os.path.join(os.path.realpath(where), path))
+        if not full.startswith(root + os.sep):
+            return False
+        first = os.path.relpath(full, root).split(os.sep)[0]
+        if first in (".claude", ".", "..") or first.lower() == ".claude":
+            return False
+    return True
+
+
 def _judge_git(args: list[str], ctx: Context, env: tuple[str, ...] = ()) -> Verdict:
     call = read_git(args)
     if call.dangerous_config:
         # An alias, a command git will run, or another address, set on the
         # command line: whatever the subcommand says, this is not it.
         return Verdict(gated=True, rule="git:config-on-command-line")
+    if _rewrites_turn_tree(call, args, ctx, env):
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
     if not call.placed:
         if "push" in args:
             return Verdict(gated=True, rule="push:option-before-subcommand")

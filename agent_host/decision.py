@@ -95,6 +95,17 @@ REASON_SELF = (
     "[needs_desk] That one needs the desk: it writes to Jarvis's own rules or"
     " settings, which is never done by voice." + _STOP
 )
+REASON_SESSION = (
+    "[needs_desk] That one needs the desk: it starts another Claude Code session,"
+    " which runs outside the gate that guards this turn. Never by voice. Use a"
+    " subagent for help instead." + _STOP
+)
+REASON_CHECKOUT_TREE = (
+    "[needs_desk] That one needs the desk: it rewrites the files of the turn's own"
+    " checkout from a branch, a patch or a remote, which can bring in project settings"
+    " that load mid-turn. Do it in your own worktree (git worktree add, then git -C"
+    " <worktree> ...), never in the checkout itself." + _STOP
+)
 REASON_DESK = (
     "[needs_desk] That one needs the desk: it is an action that needs a spoken yes,"
     " and it cannot be confirmed by voice." + _STOP
@@ -335,7 +346,8 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
     real_cwd = Path(os.path.realpath(cwd))
 
     ctx = build_context(config, real_cwd, home=home, lib_dir=lib_dir, git=git)
-    ctx = dataclasses.replace(ctx, logical_cwd=Path(os.path.normpath(cwd)))
+    ctx = dataclasses.replace(ctx, logical_cwd=Path(os.path.normpath(cwd)),
+                              turn_checkout=turn_checkout)
     verdict = classify.classify(tool_name, tool_input, ctx)
     if not verdict.gated:
         return ALLOW
@@ -363,7 +375,10 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
         if settings is not None:
             return deny(REASON_SETTINGS, "settings_changed", why=settings)
         if verdict.desk_only:
-            return deny(REASON_SELF, "needs_desk")
+            reason = {classify.RULE_SESSION: REASON_SESSION,
+                      classify.RULE_CHECKOUT_TREE: REASON_CHECKOUT_TREE}.get(verdict.rule,
+                                                                         REASON_SELF)
+            return deny(reason, "needs_desk")
         if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
             return deny(REASON_NOT_UNDERSTOOD, None)
         if verdict.run_alone:

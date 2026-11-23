@@ -611,6 +611,45 @@ what sent turn `3e0b6159…` (a `web-fetch` read for a washing-machine search) t
 A host-local file may add a type to `read_only_types` (only a built-in: a type that an agent
 file defines is refused anyway). Listing `Agent` or `Task` under `[tools]` is an error.
 
+## Two roads around the gate, desk-only (2026-11-23)
+
+A security review of [#96](https://github.com/MWest2020/jarvis/pull/96) found two ways in
+which a call of a voice turn could act outside the gate. Both are now the class `self`, so
+they need the desk whatever `confirm` says (`[session]` and `[checkout_tree]` in
+`gate_rules.toml`, tests in `tests/test_agent_host_gate_session_tree.py`):
+
+- **A nested Claude Code session** (`self:session`). `claude -p ...` from `Bash` starts a
+  session of its own, and the turn's `--settings` hook never sees its tool calls (seen
+  live). Refused: the program `claude` or `claude.exe` by name, by path, or by what it
+  resolves to (a symlink by another name, the native installer's
+  `.../claude/versions/<version>`, a file inside the package), behind every wrapper the gate
+  unwraps or follows (`env`, `timeout`, `nohup`, `setsid`, `nice`, `stdbuf`, `time`, `exec`,
+  `xargs`, `watch`, `find -exec`, `bash -c`, `sh -c`, `sudo`, `ssh`, a `;`, a pipe, `&`),
+  as an argument of a program that may run it (`uv run claude`), and the package name
+  `@anthropic-ai/claude-code` anywhere in the call (`npx`, `bunx`, `pnpm dlx`, `yarn dlx`,
+  `npm exec`). Reading about it (`grep claude`, `cat CLAUDE.md`, `git log --grep claude`)
+  is not refused. Help inside a turn is a subagent, which the gate does see (host check 13).
+- **Rewriting the turn checkout's own files** (`self:checkout-tree`). Claude Code reloads a
+  project's `.claude/settings.json` in the middle of a turn, and a hook in it then runs next
+  to the gate (seen live); `settings_changed` (D36) only refuses the gated calls after it.
+  A fetched branch can carry such a file. So, with the turn checkout as the repository they
+  act on: `git checkout`, `switch`, `pull`, `merge`, `rebase`, `cherry-pick`, `revert`,
+  `am`, `apply` (not `--check`, `--stat`, `--cached`), `reset --hard`/`--merge`/`--keep`,
+  `restore`, `stash` (not `list`, `show`, `drop`, `clear`, `create`), `read-tree -u`,
+  `checkout-index`, `bisect`, `sparse-checkout`, `filter-branch`, and `gh pr checkout` and
+  `gh repo sync`. `git checkout <ref> -- <path>` and `git restore <path>` run when every path
+  is a plain path below the top of the checkout and outside `.claude`. Where the gate cannot
+  tell which tree a git call acts on (`--work-tree`, `--git-dir`, `-c`, `GIT_DIR=`,
+  `env -C`) it is refused too. `git fetch`, `git worktree add`, `git branch` and all of the
+  above **in a linked worktree** run: a linked worktree's settings do not load (host
+  check 6). The turn checkout is the trusted one from the wrapper's record; a call that
+  names it with `git -C` from a worktree is refused as well.
+
+  This is a stopgap. The real fix is to start the turn with `--setting-sources user`, so
+  that no project settings load at all, and have the wrapper append the checkout's
+  `CLAUDE.md` and `AGENTS.md` itself (they stop loading with that flag):
+  [#97](https://github.com/MWest2020/jarvis/issues/97).
+
 ## Host-local rules
 
 `/etc/jarvis-agent/rules.d/` holds gate rules that belong to this machine and that the
