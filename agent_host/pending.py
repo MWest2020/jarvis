@@ -92,7 +92,10 @@ _EMPTY_STATE = {
     "desk": False,         # a repair went wrong: every gated call needs the desk
     "grant_used": False,
     "events": [],          # what the gate answered, in order
+    "builders": 0,         # builder subagents started in this turn (D59)
 }
+# Keys a state written before they existed may lack: they take the default.
+_OPTIONAL_KEYS = frozenset({"builders"})
 
 
 class TurnState:
@@ -111,8 +114,12 @@ class TurnState:
             data = json.loads(read_text(path, MAX_STATE_BYTES, follow=False))
         except (OSError, ValueError) as exc:
             raise StateError(f"the gate's state for this turn cannot be read: {exc}") from exc
-        if not isinstance(data, dict) or set(data) != set(_EMPTY_STATE) \
+        if not isinstance(data, dict) or not (set(_EMPTY_STATE) - _OPTIONAL_KEYS
+                                              <= set(data) <= set(_EMPTY_STATE)) \
                 or not isinstance(data["events"], list):
+            raise StateError("the gate's state for this turn has another shape")
+        data.setdefault("builders", 0)
+        if not isinstance(data["builders"], int) or isinstance(data["builders"], bool):
             raise StateError("the gate's state for this turn has another shape")
         return cls(path, data)
 

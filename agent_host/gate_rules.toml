@@ -378,6 +378,13 @@ read_only_types = ["web-fetch", "Explore", "Plan", "claude-code-guide"]
 # no type at all (which type runs is then the configuration's, not the
 # call's), and any agent defined in a file.
 builder_types = ["general-purpose"]
+# At most this many builders per turn (security review of #96): the gate
+# counts the starts in the turn's state and refuses the next one for the
+# desk. A subagent cannot start another (a call that starts one with
+# `agent_id` in its hook input is refused), and the turn settings pin
+# CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 and
+# CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2 as well.
+max_builders = 2
 # For every type above: compared the way Claude Code compares agent names
 # (case, spaces, dashes and underscores do not count). A type that an agent
 # file also defines is gated, and so is one when an agent file cannot be read

@@ -241,8 +241,10 @@ def test_a_builder_starts_and_its_gated_calls_gate_through_the_real_process(setu
     own, in the same turn state."""
     tmp_path, config_path, checkout = setup
     env = _turn_env(config_path, checkout)
-    sub = {"agent_id": "a1b2c3d4", "agent_type": "general-purpose",
-           "transcript_path": "/x/subagents/agent-a1b2c3d4.jsonl"}
+    recorded = json.loads((REPO_ROOT / "tests" / "data" / "hook_input_subagent_2.1.322.json")
+                          .read_text())
+    # A recorded 2.1.322 hook input from inside a subagent; its cwd is the session's.
+    sub = {k: v for k, v in recorded.items() if k not in ("tool_name", "tool_input", "cwd")}
 
     def run(tool, tool_input, **extra):
         return _denied(_run(config_path, checkout, _payload(tool, tool_input, checkout, **extra),
@@ -255,6 +257,9 @@ def test_a_builder_starts_and_its_gated_calls_gate_through_the_real_process(setu
     assert run("Bash", {"command": "gh repo delete me/demo"}, **sub) == \
         decision.REASON_ONE_AT_A_TIME
     assert run("Agent", {**builder, "isolation": "remote"}, **sub).startswith("[needs_desk]")
+    # A subagent starts no other subagent, of any type.
+    assert run("Agent", builder, **sub) == decision.REASON_NESTED
+    assert run("Agent", {**builder, "subagent_type": "Explore"}, **sub) == decision.REASON_NESTED
     state = json.loads((tmp_path / "state" / "gate" / f"{env['JARVIS_TURN_ID']}.json").read_text())
     assert state["pending"] == {"tool": "Bash", "input": {"command": MERGE},
                                 "cwd": str(checkout.resolve())}

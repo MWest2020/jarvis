@@ -1,0 +1,14 @@
+{
+  "session_id": "dd5cd950-f613-4d15-9284-73b52b5f9777",
+  "transcript_path": "/home/agent/.claude/projects/-home-agent-projects-demo/dd5cd950-f613-4d15-9284-73b52b5f9777/subagents/agent-a5f3c2e1b7d94e08.jsonl",
+  "cwd": "@CHECKOUT@",
+  "prompt_id": "ab8e1a46-69fa-49c1-9709-832bdd7a8a55",
+  "permission_mode": "auto",
+  "effort": {"level": "medium"},
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {"command": "git status", "description": "Show the working tree status"},
+  "tool_use_id": "toolu_01YJJEaTFfM8VKo8Ao813Hfp",
+  "agent_id": "a5f3c2e1b7d94e08",
+  "agent_type": "general-purpose"
+}

@@ -453,7 +453,7 @@ def test_the_state_is_private_to_the_owner(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
     assert turn.config.gate_dir.stat().st_mode & 0o777 == 0o700
     assert set(json.loads(path.read_text())) == {
-        "pending", "refused", "repair_used", "desk", "grant_used", "events"}
+        "pending", "refused", "repair_used", "desk", "grant_used", "events", "builders"}
 
 
 def test_every_denial_has_a_code_and_the_notice_codes_are_d33s():

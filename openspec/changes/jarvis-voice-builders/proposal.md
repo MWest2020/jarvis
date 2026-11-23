@@ -64,8 +64,21 @@ the approval point.
   `tests/test_agent_host_gate_subagents.py`, `tests/test_agent_host_gate_entrypoint.py`.
 - Design: D59 in `openspec/changes/jarvis-full-agent/design.md`. Archive after
   `jarvis-full-agent`.
-- Limits, said plainly: a builder runs inside the turn and ends with it (the agent host's
-  `timeout_s`, 600 s by default). The bridge stops waiting after 170 s; a call a builder
+- **Fan-out is bounded** (security review of #96, 2026-11-23): at most two builders per
+  turn, counted by the gate in the turn's state (`max_builders = 2`); a call that starts a
+  subagent from inside one (`agent_id` in its hook input) is refused; and the turn settings
+  pin `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` and `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2`,
+  which the gate's environment comparison enforces.
+- A subagent's `cwd` stays the main session's (the turn checkout); it does not follow a
+  `cd`. A builder therefore runs git with `git -C <worktree>` and gh with `--repo`; a gated
+  `cd <worktree> && ...` is "run it alone", and a gated `git -C` call has no read-back.
+- Limits, said plainly: the builder itself runs inside the turn's `claude` process and ends
+  with it (the agent host's `timeout_s`, 600 s by default). **Processes it starts do not**:
+  Claude Code starts each shell detached, so the wrapper's `killpg` at the timeout never
+  reaches a background server, a `nohup` or a `setsid` child, and they run on after the
+  record, outside the gate. That held for the turn's own shell before this change; builders
+  make it likelier. The fix is a cgroup scope per turn, stopped after every turn:
+  [#99](https://github.com/MWest2020/jarvis/issues/99). The bridge stops waiting after 170 s; a call a builder
   makes pending after that is read back into a reply nobody hears. It does not run, and the
   next request clears it; the prompt tells Jarvis to ask for it again. Making that read-back
   reach Mark late is drive mode 2 ("an unheard read-back cancelled", arrivals).

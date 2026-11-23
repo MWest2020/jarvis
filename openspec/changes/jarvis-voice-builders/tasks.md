@@ -32,6 +32,23 @@
   - `tests/test_agent_host_gate_entrypoint.py`: the same through the real gate process.
   - `tests/test_agent_host_gate_subagents.py`: updated for the new type list.
 
+## 2b. Security review of #96 (2026-11-23)
+- [x] Holes in main fixed first, in their own PR (#98): a nested `claude` session and
+      rewriting the turn checkout's tree are desk-only; the real fix for the second is #97.
+- [x] Fan-out: `max_builders = 2` counted per turn in `TurnState` (`builders`), `Agent`/`Task`
+      with `agent_id` in the hook input refused (`subagent:nested`), and
+      `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2`
+      pinned in `turn-settings.json`.
+- [x] Detached processes outlive the turn: proposal and how-to corrected; cgroup scope per
+      turn is #99.
+- [x] Tests use a recorded 2.1.322 subagent hook input (`tests/data/`), `cwd` the checkout:
+      `git -C <worktree>` work runs, a gated `cd <worktree> && ...` is run-alone, a gated
+      `git -C` push needs the desk, a push to main from the checkout is read back, the
+      nested-agent refusal and the builder count. The prompt tells builders to use
+      `git -C` and `--repo`.
+- [ ] Host: check that 2.1.322 honours both `CLAUDE_CODE_MAX_*` variables, and record a
+      subagent hook input on the installed gate to compare with the fixture.
+
 ## 3. Prompt and docs
 - [x] `prompt.md`: Jarvis may start its own builder; the gate guards its calls; long work
       goes to the desk with `run_in_background: true`; end the turn when a builder reports

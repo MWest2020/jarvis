@@ -592,10 +592,15 @@ On `run_in_background`: an explicit `true` is refused as the declared intent to 
 the turn. Leaving it out is allowed, although Claude Code 2.1.322 then **launches in the
 background by default** (`launchedWithDefaults`, `requestShape: background`; it has
 `backgroundLaunchByDefault` and, for a fork, `forceAsync`). A subagent runs inside the turn's
-`claude` process, and the wrapper writes the record only after that process has ended (and
-kills its process group at the timeout), so it cannot act after the record: in host check
-13 such a subagent finished three seconds before the record was written. This rests on
-Claude Code's behaviour, so check 13 is run again on every Claude Code version.
+`claude` process, and the wrapper writes the record only after that process has ended, so the
+subagent itself cannot act after the record: in host check 13 such a subagent finished three
+seconds before the record was written. This rests on Claude Code's behaviour, so check 13 is
+run again on every Claude Code version. **Processes started from a shell are another matter**
+(security review of #96): Claude Code starts each shell detached, so the wrapper's `killpg`
+of the `claude` process group at the timeout does not reach a background server, a `nohup`
+or a `setsid` child of the turn or of a subagent. They run on after the record, outside the
+gate. A cgroup scope per turn, stopped after every turn, is
+[#99](https://github.com/MWest2020/jarvis/issues/99).
 
 **Writing an agent file is the class `self`.** Any `.claude/agents/` (a checkout's, the
 user's, the main worktree's), and everything in it, is protected like a checkout's settings:
@@ -617,6 +622,14 @@ with confirmation off. `SubagentHandback`, the tool with which a subagent hands 
 back, is ungated: until this change the gate refused it as a tool nobody listed, which is
 what sent turn `3e0b6159…` (a `web-fetch` read for a washing-machine search) to the desk.
 
+**Fan-out is bounded** (security review of #96): at most `max_builders` (2) builders per
+turn, counted by the gate in the turn's state under its lock (the next one is refused with
+`needs_desk`; read-only helpers are not counted); a call that starts a subagent from inside
+one is refused, whatever its type (Claude Code puts `agent_id` in the hook input of every
+call made inside a subagent); and `agent_host/turn-settings.json` pins
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` and `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2`, which
+the gate's environment comparison enforces like the other pins.
+
 A host-local file may add a type to `read_only_types` or `builder_types` (only a built-in: a
 type that an agent file defines is refused anyway). Listing `Agent` or `Task` under `[tools]`
 is an error.
@@ -629,13 +642,19 @@ so none of it is for the builder. Everything the gate gates for the turn it gate
 builder, by the same rules and in the same turn state (one `claude` process, one trusted
 record, one turn id):
 
+- **Its working directory.** A subagent's hook input carries the main session's `cwd`, the
+  turn checkout, and it does not follow a `cd` (recorded on 2.1.322). So a builder runs git
+  as `git -C <worktree> ...` and gh with `--repo`; its branch is pushed from the checkout
+  (worktrees share their refs). A gated `cd <worktree> && ...` is "run it alone", and a
+  gated `git -C` call has no read-back (it needs the desk), so a push to main is
+  `git push origin <branch>:main` from the checkout.
 - **A call that can be read back** (a merge, a push to a default branch, a mail to the
   driver, a named delete) becomes the turn's one pending call. The builder is told to stop
   and hand back ("If you are a subagent, hand back now ..."), the turn ends, and the driver
   hears the read-back built from the call, never the agent's line, exactly as for the
-  turn's own. After his yes the confirming turn names the call and **the builder's
-  directory**: the hash binds the `cwd` the call was made in, so the turn's agent runs it
-  there, once. A second gated call in the same turn, the builder's or the turn's, is
+  turn's own. After his yes the confirming turn names the call and its directory (the
+  hash binds the `cwd` the call was made in, for a builder the checkout), and the turn's
+  agent runs it there, once. A second gated call in the same turn, the builder's or the turn's, is
   refused and not pending (one at a time).
 - **A call that needs the desk** (not nameable, the class `self`, an agent file, a mail to
   anyone else, a subagent the rules do not let start) is refused with code `needs_desk`:

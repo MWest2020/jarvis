@@ -4,7 +4,9 @@
     "LD_PRELOAD": "",
     "LD_LIBRARY_PATH": "",
     "LD_AUDIT": "",
-    "GIT_CONFIG_COUNT": "0"
+    "GIT_CONFIG_COUNT": "0",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "2"
   },
   "hooks": {
     "PreToolUse": [

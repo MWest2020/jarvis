@@ -101,6 +101,10 @@ REASON_SELF = (
     "[needs_desk] That one needs the desk: it writes to Jarvis's own rules or"
     " settings, which is never done by voice." + _STOP
 )
+REASON_NESTED = (
+    "[needs_desk] A subagent cannot start another subagent by voice. Do the work"
+    " yourself, or hand back and say what else is needed." + _STOP
+)
 REASON_SESSION = (
     "[needs_desk] That one needs the desk: it starts another Claude Code session,"
     " which runs outside the gate that guards this turn. Never by voice. Use a"
@@ -161,6 +165,14 @@ def reason_subagent(rules) -> str:
         " and not one an agent file redefines. A helper that would run on after this"
         " turn, or any other, is passed to the coding session at the desk, which takes"
         " this request over and pings the driver. Nothing was run." + _STOP
+    )
+
+
+def reason_too_many_builders(limit: int) -> str:
+    return (
+        f"[needs_desk] At most {limit} builder subagents per turn, and this turn has"
+        " started them. Do the rest yourself, or hand it to the coding session by"
+        " starting the helper with run_in_background set to true. Nothing was run." + _STOP
     )
 
 
@@ -358,7 +370,12 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
     ctx = dataclasses.replace(ctx, logical_cwd=Path(os.path.normpath(cwd)),
                               turn_checkout=turn_checkout)
     verdict = classify.classify(tool_name, tool_input, ctx)
-    if not verdict.gated:
+    if tool_name in ctx.rules.subagent_tools and "agent_id" in payload:
+        # Claude Code puts `agent_id` in the hook input of a call made inside a
+        # subagent: a subagent that starts another. Never by voice (D59).
+        verdict = classify.Verdict(gated=True, rule="subagent:nested")
+    builder = not verdict.gated and classify.is_builder_start(tool_name, tool_input, ctx.rules)
+    if not verdict.gated and not builder:
         return ALLOW
 
     if turn_id is None or not pending.is_canonical_uuid(turn_id):
@@ -367,6 +384,18 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
         raise pending.StateError("no trusted turn checkout")
     with _turn_state_lock(config, turn_id, budget):
         state = pending.TurnState.load(config.gate_dir, turn_id)
+        if builder:
+            # Counted under the turn's lock, so two starts at once cannot both
+            # be the last one allowed.
+            limit = ctx.rules.subagent_max_builders
+            if state.data["builders"] >= limit:
+                verdict = classify.Verdict(gated=True, rule="subagent:too-many")
+                state.note("refused", code="needs_desk", verdict=verdict)
+                state.save()
+                return Decision(False, reason_too_many_builders(limit), verdict)
+            state.data["builders"] += 1
+            state.save()
+            return ALLOW
 
         def deny(reason: str, code: str | None, sentence: str | None = None,
                  why: str | None = None) -> Decision:
@@ -392,6 +421,8 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
             return deny(REASON_NOT_UNDERSTOOD, None)
         if verdict.run_alone:
             return deny(REASON_RUN_ALONE, "run_alone")
+        if verdict.rule == "subagent:nested":
+            return deny(REASON_NESTED, "needs_desk")
         if verdict.rule.startswith("subagent:"):
             # Refused and passed to the desk: the coding session builds it.
             return deny(reason_subagent(ctx.rules), "needs_desk")

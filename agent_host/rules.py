@@ -152,6 +152,7 @@ class Rules:
     subagent_tools: frozenset[str] = frozenset()
     subagent_types: tuple[str, ...] = ()
     subagent_builder_types: tuple[str, ...] = ()
+    subagent_max_builders: int = 0
     subagent_fields: frozenset[str] = frozenset()
     subagent_off_fields: frozenset[str] = frozenset()
     # A nested Claude Code session, and what rewrites the turn checkout's
@@ -409,8 +410,11 @@ def rules_from_dict(data: dict) -> Rules:
     tools = _table(data, "tools", "")
     _known_keys(tools, {"ungated", "write"}, "tools")
     subagents = _table(data, "subagents", "")
-    _known_keys(subagents, {"tools", "read_only_types", "builder_types", "fields", "off_fields"},
-                "subagents")
+    _known_keys(subagents, {"tools", "read_only_types", "builder_types", "max_builders",
+                            "fields", "off_fields"}, "subagents")
+    max_builders = subagents.get("max_builders", 0)
+    if not isinstance(max_builders, int) or isinstance(max_builders, bool) or max_builders < 0:
+        raise RulesError("subagents.max_builders must be a whole number, 0 or more")
     session = _table(data, "session", "")
     _known_keys(session, {"programs", "packages"}, "session")
     checkout_tree = _table(data, "checkout_tree", "")
@@ -495,6 +499,7 @@ def rules_from_dict(data: dict) -> Rules:
         subagent_types=(_strings(subagents, "read_only_types", "subagents.")
                         + _strings(subagents, "builder_types", "subagents.")),
         subagent_builder_types=_strings(subagents, "builder_types", "subagents."),
+        subagent_max_builders=max_builders,
         subagent_fields=frozenset(_strings(subagents, "fields", "subagents.")),
         subagent_off_fields=frozenset(_strings(subagents, "off_fields", "subagents.")),
         session_programs=frozenset(_strings(session, "programs", "session.")),

@@ -865,7 +865,10 @@ read back when the turn ends, its yes releases it once in the builder's director
 that needs the desk is passed to the coding session. Work that will not fit in the turn is
 handed on by starting the helper with `run_in_background: true`, which stays refused with
 `needs_desk`. A read-back for the start was not added: it could only say "start a builder",
-and the gate already asks about everything that matters inside it.
+and the gate already asks about everything that matters inside it. After the security review
+of #96: at most two builders per turn (counted in the turn's state), no subagent started from
+inside a subagent (`agent_id` in the hook input), the spawn depth and concurrency pinned in
+the turn settings; processes started from a shell outlive the turn until #99.
 
 ## Risks / Trade-offs
 

@@ -507,6 +507,13 @@ def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
     return UNGATED
 
 
+def is_builder_start(tool_name: str, tool_input: dict, rules: Rules) -> bool:
+    """A call that starts a builder (D59): the gate counts these per turn."""
+    kind = tool_input.get("subagent_type")
+    return (tool_name in rules.subagent_tools and isinstance(kind, str)
+            and agent_name_key(kind) in {agent_name_key(t) for t in rules.subagent_builder_types})
+
+
 def _main_worktree(directory: str) -> str | None:
     """The main worktree of the linked git worktree `directory` is in, read
     from its `.git` file and the `commondir` behind it (no git is run)."""

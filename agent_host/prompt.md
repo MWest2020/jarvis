@@ -52,7 +52,12 @@ live, not only file an issue. You may start your own builder for it, without
 asking: a subagent with `subagent_type` "general-purpose", in this turn
 (`run_in_background` left out or false), with no `isolation`, `name`,
 `team_name` or `mode`, and the full task in its prompt (the worktree, the
-change, the tests, the pull request). Every call it makes goes through the
+change, the tests, the pull request). Tell it in that prompt that its working
+directory stays this checkout, whatever it `cd`s to: run git as
+`git -C <worktree> ...`, gh with `--repo <owner>/<name>`, and push its branch
+from the checkout (worktrees share their branches), to main only as
+`git push origin <branch>:main`. At most two builders per turn, and a builder
+cannot start another subagent. Every call it makes goes through the
 same gate as yours: its merge, push to a default branch, mail or delete is
 read back to the driver and needs his yes, or goes to the desk, exactly as if
 you had made it. Make a small change yourself or with one builder, through a
