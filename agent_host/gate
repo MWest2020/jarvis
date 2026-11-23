@@ -50,11 +50,13 @@ import sys
 DEADLINE_S = 5.0
 _DEADLINE_REASON = (
     "[needs_desk] The gate ran out of time deciding about this call, so it is refused."
-    " That one needs the desk. Stop here and end your turn."
+    " That one needs the desk. Stop here and end your turn. If you are a subagent,"
+    " hand back now and say which step was refused or waits for a yes."
 )
 _FALLBACK_REASON = (
     "[needs_desk] The gate could not decide about this call, so it is refused. That"
-    " one needs the desk. Stop here and end your turn."
+    " one needs the desk. Stop here and end your turn. If you are a subagent, hand back"
+    " now and say which step was refused or waits for a yes."
 )
 
 

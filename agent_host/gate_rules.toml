@@ -349,39 +349,51 @@ ungated = [
 # Write a file: not gated, unless the file is one of Jarvis's own rules.
 write = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
-# --- subagents: read-only helpers only (#57, D58) ----------------------------
+# --- subagents: helpers and builders, in the turn (#57, D58, D59) -----------
 #
-# A voice turn may start a subagent only of a built-in type with no edit tools,
-# in the turn itself. Every tool call the subagent makes goes through this
-# gate like the turn's own (host check 13 in docs/how-to/agent-host.md):
-# the type is a seatbelt on top of that, not the wall (D40). Anything else is
-# gated with no class, so it needs the desk and goes to the coding session.
+# A voice turn may start a subagent of a built-in type, in the turn itself:
+# a read-only helper (#57, D58), or since 2026-11-23 a builder that edits
+# (Mark: "You need to be able to start your own sessions."; D59). Every tool
+# call the subagent makes goes through this gate like the turn's own (host
+# check 13): a push, a merge, a mail, a delete from inside a builder needs the
+# same spoken yes or the desk. The type is a seatbelt on top of that, not the
+# wall (D40). Anything else is gated with no class, so it needs the desk and
+# goes to the coding session.
 [subagents]
 # The tools that start a subagent (`Task` is the older name of `Agent`).
 tools = ["Agent", "Task"]
-# The types a voice turn may start, as Claude Code 2.1.322 builds them in. No
-# edit tools; their Bash and connector calls are gated per call:
+# The read-only types, as Claude Code 2.1.322 builds them in. No edit tools;
+# their Bash and connector calls are gated per call:
 #   web-fetch          WebFetch only
 #   Explore, Plan      everything but Agent, Edit, Write, NotebookEdit and
 #                      the artifact tools
 #   claude-code-guide  Bash, Read, WebFetch, WebSearch
-# Not: general-purpose, claude and fork (every tool, Agent included),
-# statusline-setup (edits settings), and any agent defined in a file.
-# Compared the way Claude Code compares agent names (case, spaces, dashes
-# and underscores do not count). A type that an agent file also defines is
-# gated, and so is one when an agent file cannot be read with certainty:
-# then it may not be the built-in that would run (classify.py,
-# `_agent_file_names`). Writing an agent file is the class `self`.
 read_only_types = ["web-fetch", "Explore", "Plan", "claude-code-guide"]
+# The builder types (D59): every tool, Agent included; each call gated as the
+# turn's own. Only general-purpose, the built-in that host check 13 ran
+# through the gate. Not: `claude` (the same tools under a second name, the
+# default of a fleet view; nothing a builder needs that general-purpose does
+# not give), `fork` (always asynchronous in 2.1.322, `forceAsync`, and it
+# carries the turn's whole conversation), statusline-setup (edits settings),
+# no type at all (which type runs is then the configuration's, not the
+# call's), and any agent defined in a file.
+builder_types = ["general-purpose"]
+# For every type above: compared the way Claude Code compares agent names
+# (case, spaces, dashes and underscores do not count). A type that an agent
+# file also defines is gated, and so is one when an agent file cannot be read
+# with certainty: then it may not be the built-in that would run
+# (classify.py, `_agent_file_names`). Writing an agent file is the class
+# `self`.
 # The input a call may hold. Any other field gates: `isolation` (a worktree,
 # or a remote session where this gate does not run), `name` and `team_name`
 # (an agent that outlives the turn and takes messages), `mode` (another
 # permission mode), and whatever a new version adds.
 fields = ["description", "prompt", "subagent_type", "model", "effort"]
 # Fields that may only be absent or JSON false. `run_in_background: true` is
-# the declared intent to run on after the turn. (Left out, 2.1.322 launches
-# in the background by default; the subagent still ends with the turn's
-# `claude` process, before the record: host check 13.)
+# the declared intent to run on after the turn: by voice that goes to the
+# desk. (Left out, 2.1.322 launches in the background by default; the
+# subagent still ends with the turn's `claude` process, before the record:
+# host check 13.)
 off_fields = ["run_in_background"]
 
 # --- the class `self`: Jarvis's own rules (D36). Always desk-only. -------------

@@ -66,9 +66,15 @@ from agent_host import checkout_settings, classify, naming, pending, rules as ru
 from agent_host.boundedio import Budget
 from agent_host.config import AgentHostConfig
 
+# A call from inside a subagent gets the same answer as the turn's own (host
+# check 13); the last sentence tells a subagent how to end (D59).
+_SUBAGENT_STOP = (
+    " If you are a subagent, hand back now and say which step was refused or waits"
+    " for a yes."
+)
 _STOP = (
     " Stop here and end your turn. Do not try another way to do the same thing, and"
-    " tell the driver in your spoken line what was refused."
+    " tell the driver in your spoken line what was refused." + _SUBAGENT_STOP
 )
 
 REASON_SETTINGS = (
@@ -103,11 +109,12 @@ REASON_PENDING = (
     "[pending] This action needs a spoken yes. The driver will now hear exactly what"
     " it does and be asked. Stop here and end your turn: do not run it another way, do"
     " not ask the driver yourself, and do not start another action that needs a yes."
+    + _SUBAGENT_STOP
 )
 REASON_ONE_AT_A_TIME = (
     "[pending] One confirmation at a time: an action of this turn is already waiting"
     " for the driver's yes, so this one is refused and is not waiting. Stop here and"
-    " end your turn; it can be asked for again after the first is done."
+    " end your turn; it can be asked for again after the first is done." + _SUBAGENT_STOP
 )
 REASON_TARGET_CHANGED = (
     "[target_changed] The push target changed since it was read back to the driver,"
@@ -130,17 +137,19 @@ def reason_missing(parts) -> str:
 
 
 def reason_subagent(rules) -> str:
-    """A subagent that is not a read-only helper (#57, D58). By voice that is
-    a build or a long job (an editing or background helper): it goes to the
-    desk, where the coding session takes the request over from the turn's
-    record and pings the driver (Mark 2026-11-17: a request by voice means
-    "build it", and a refused builder must not be lost)."""
+    """A subagent the rules do not let start by voice (#57, D58, D59): a type
+    that is not listed, one that runs on after the turn, in a worktree or a
+    remote session, under a name, a team or another mode. By voice that is a
+    long job: it goes to the desk, where the coding session takes the request
+    over from the turn's record and pings the driver (Mark 2026-11-17: a
+    request by voice means "build it", and a refused one must not be lost)."""
     return (
-        "[needs_desk] By voice only a read-only helper subagent can be started: subagent_type "
-        + ", ".join(rules.subagent_types) + ", in the foreground, with no isolation, name,"
-        " team or mode, and not one an agent file redefines. A helper that builds or"
-        " edits is passed to the coding session at the desk, which takes this request"
-        " over and pings the driver. Nothing was run." + _STOP
+        "[needs_desk] By voice a subagent can be started only as subagent_type "
+        + ", ".join(rules.subagent_types) + ", named explicitly, inside this turn"
+        " (run_in_background absent or false), with no isolation, name, team or mode,"
+        " and not one an agent file redefines. A helper that would run on after this"
+        " turn, or any other, is passed to the coding session at the desk, which takes"
+        " this request over and pings the driver. Nothing was run." + _STOP
     )
 
 
@@ -204,8 +213,8 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig,
     for a write to git's configuration, never for a push whose destination
     the configuration or the environment decides or the gate could not
     place, never for a call reached by unwrapping a shell (`bash -c`),
-    never for a tool nobody listed, never for a subagent that is not a
-    read-only helper (#57): "off" means "do not ask me", not "do not
+    never for a tool nobody listed, never for a subagent the rules do not
+    let start (#57, D59): "off" means "do not ask me", not "do not
     look". With `confirm_skip`, every class of the call must be skipped,
     and a call in no class is in no skipped class.
     """
@@ -219,7 +228,7 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig,
         return False
     if verdict.rule.startswith(("interpreter:", "shell:", "tool:", "subagent:", "git:config")):
         # Inline code, a shell on stdin, a tool nobody listed, a subagent
-        # that is not a read-only helper, and a change to git's configuration
+        # the rules do not let start, and a change to git's configuration
         # (which changes what every later git call does): desk-only, whatever
         # the switch says.
         return False

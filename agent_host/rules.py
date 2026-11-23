@@ -146,9 +146,12 @@ class Rules:
     # The class a gated connector tool is in, by the word in its name.
     mcp_classes: tuple[tuple[str, str], ...] = ()
     # The tools that start a subagent, and what such a call may hold to run
-    # by voice (#57): see [subagents] in gate_rules.toml.
+    # by voice (#57, D59): see [subagents] in gate_rules.toml.
+    # `subagent_types` is every type a voice turn may start: the read-only
+    # ones, then the builders (`subagent_builder_types`).
     subagent_tools: frozenset[str] = frozenset()
     subagent_types: tuple[str, ...] = ()
+    subagent_builder_types: tuple[str, ...] = ()
     subagent_fields: frozenset[str] = frozenset()
     subagent_off_fields: frozenset[str] = frozenset()
     # Mail to the user's own address (jarvis-mail-the-driver): see [own_mail]
@@ -398,7 +401,8 @@ def rules_from_dict(data: dict) -> Rules:
     tools = _table(data, "tools", "")
     _known_keys(tools, {"ungated", "write"}, "tools")
     subagents = _table(data, "subagents", "")
-    _known_keys(subagents, {"tools", "read_only_types", "fields", "off_fields"}, "subagents")
+    _known_keys(subagents, {"tools", "read_only_types", "builder_types", "fields", "off_fields"},
+                "subagents")
     own_mail = _table(data, "own_mail", "")
     _known_keys(own_mail, {"tools", "fields", "empty_fields", "off_fields"}, "own_mail")
     own_mail_fields = frozenset(_strings(own_mail, "fields", "own_mail."))
@@ -476,7 +480,9 @@ def rules_from_dict(data: dict) -> Rules:
         self_tree_programs=frozenset(_strings(self_, "tree_programs", "self.")),
         tool_actions=tuple(_tool_action(i, raw) for i, raw in enumerate(tool_actions_raw)),
         subagent_tools=subagent_tools,
-        subagent_types=_strings(subagents, "read_only_types", "subagents."),
+        subagent_types=(_strings(subagents, "read_only_types", "subagents.")
+                        + _strings(subagents, "builder_types", "subagents.")),
+        subagent_builder_types=_strings(subagents, "builder_types", "subagents."),
         subagent_fields=frozenset(_strings(subagents, "fields", "subagents.")),
         subagent_off_fields=frozenset(_strings(subagents, "off_fields", "subagents.")),
         own_mail_tools=frozenset(_strings(own_mail, "tools", "own_mail.")),

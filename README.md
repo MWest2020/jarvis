@@ -83,8 +83,9 @@ Android 10+ phone with Tailscale.
 Built and merged: the bridge in both modes, the gate with read-back and spoken yes, the
 agent host installer, the Android app (sideloaded, built by CI), streamed replies, sending
 a question after a few seconds of silence, sessions that end after an idle hour,
-read-only helper subagents in a voice turn, and refused actions handed to the coding
-session at the desk. `full` mode is live on the author's own setup.
+helper subagents in a voice turn (read-only helpers, and since 2026-11-23 a builder
+Jarvis starts itself, every call of it behind the same gate), and refused actions handed
+to the coding session at the desk. `full` mode is live on the author's own setup.
 
 Approved but not built yet: drive mode (where was I, nothing lost on a bad connection, a
 drive log at the desk), notifications on the phone, confirming with a fingerprint, and a

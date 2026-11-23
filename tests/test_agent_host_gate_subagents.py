@@ -1,9 +1,10 @@
-"""Subagents by voice: read-only helpers only (#57, D58).
+"""Subagents by voice: read-only helpers (#57, D58) and builders (D59).
 
 One test per rule of [subagents] in gate_rules.toml: a match and a near
 miss. That the gate also judges every call a subagent makes is a property
 of Claude Code, shown on the host (docs/how-to/agent-host.md, host check
-13); here it is the call that starts one.
+13); here it is the call that starts one. What a builder does once started
+is in test_agent_host_gate_builders.py.
 """
 import os
 import sys
@@ -56,8 +57,8 @@ def test_a_type_is_compared_as_claude_code_compares_agent_names(ctx, kind):
 # --- every other type is refused -----------------------------------------------------
 
 @pytest.mark.parametrize("kind", [
-    "general-purpose", "claude", "fork", "statusline-setup", "dashboard-builder",
-    "web-fetcher", "Explorer", "web-fetch2", "", "   ",
+    "claude", "fork", "statusline-setup", "dashboard-builder",
+    "web-fetcher", "Explorer", "web-fetch2", "general-purpose2", "general", "", "   ",
 ])
 def test_any_other_type_is_gated(ctx, kind):
     verdict = _verdict(ctx, kind)
@@ -159,11 +160,18 @@ def _decide(tmp_path, tool, data, **config):
 
 
 @pytest.mark.parametrize("confirm", ["on", "off"])
-@pytest.mark.parametrize("extra", [{}, {"run_in_background": True}, {"isolation": "worktree"}])
-def test_a_refused_subagent_says_what_can_be_started_whatever_the_switch(tmp_path, confirm, extra):
-    result = _decide(tmp_path, *_agent("general-purpose", **extra), confirm=confirm)
+@pytest.mark.parametrize("kind,extra", [
+    ("claude", {}), ("fork", {}), (None, {}),
+    ("general-purpose", {"run_in_background": True}),
+    ("general-purpose", {"isolation": "worktree"}),
+    ("general-purpose", {"isolation": "remote"}),
+])
+def test_a_refused_subagent_says_what_can_be_started_whatever_the_switch(tmp_path, confirm,
+                                                                         kind, extra):
+    result = _decide(tmp_path, *_agent(kind, **extra), confirm=confirm)
     assert not result.allow
-    assert result.reason.startswith("[needs_desk]") and "web-fetch, Explore" in result.reason
+    assert result.reason.startswith("[needs_desk]")
+    assert "web-fetch, Explore, Plan, claude-code-guide, general-purpose" in result.reason
     assert "coding session" in result.reason
 
 
@@ -195,7 +203,9 @@ def test_a_read_only_subagent_is_let_through_and_so_is_its_report(tmp_path):
 def test_the_repository_rules_name_the_subagent_tools_and_types():
     rules = load_rules(None)
     assert rules.subagent_tools == {"Agent", "Task"}
-    assert set(rules.subagent_types) == {"web-fetch", "Explore", "Plan", "claude-code-guide"}
+    assert set(rules.subagent_types) == {"web-fetch", "Explore", "Plan", "claude-code-guide",
+                                         "general-purpose"}
+    assert rules.subagent_builder_types == ("general-purpose",)
     assert not rules.subagent_tools & rules.tools_ungated
     assert "SubagentHandback" in rules.tools_ungated
 

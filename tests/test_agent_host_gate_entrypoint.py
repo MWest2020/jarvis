@@ -234,6 +234,32 @@ def test_one_pending_call_per_turn_through_the_real_process(setup):
                                 "cwd": str(checkout.resolve())}
 
 
+def test_a_builder_starts_and_its_gated_calls_gate_through_the_real_process(setup):
+    """D59: a voice turn starts a general-purpose builder in silence, and the
+    calls the builder makes (the hook input Claude Code builds inside a
+    subagent: its own agent fields and transcript) are judged as the turn's
+    own, in the same turn state."""
+    tmp_path, config_path, checkout = setup
+    env = _turn_env(config_path, checkout)
+    sub = {"agent_id": "a1b2c3d4", "agent_type": "general-purpose",
+           "transcript_path": "/x/subagents/agent-a1b2c3d4.jsonl"}
+
+    def run(tool, tool_input, **extra):
+        return _denied(_run(config_path, checkout, _payload(tool, tool_input, checkout, **extra),
+                            env=env))
+
+    builder = {"description": "Fix it", "prompt": "fix the bug", "subagent_type": "general-purpose"}
+    assert run("Agent", builder) is None
+    assert run("Bash", {"command": "pytest -q"}, **sub) is None
+    assert run("Bash", {"command": MERGE}, **sub) == decision.REASON_PENDING
+    assert run("Bash", {"command": "gh repo delete me/demo"}, **sub) == \
+        decision.REASON_ONE_AT_A_TIME
+    assert run("Agent", {**builder, "isolation": "remote"}, **sub).startswith("[needs_desk]")
+    state = json.loads((tmp_path / "state" / "gate" / f"{env['JARVIS_TURN_ID']}.json").read_text())
+    assert state["pending"] == {"tool": "Bash", "input": {"command": MERGE},
+                                "cwd": str(checkout.resolve())}
+
+
 def test_a_turn_id_the_wrapper_did_not_issue_denies(setup):
     _, config_path, checkout = setup
     for turn_id in ("t1", "../x", ""):
