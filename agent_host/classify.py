@@ -49,6 +49,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import unicodedata
@@ -94,6 +95,12 @@ _PUSH_VALUE_OPTIONS = ("--repo", "--receive-pack", "--exec", "--push-option")
 
 
 RULE_CONFIRM_SWITCH = "self:confirm-switch"
+# Desk-only, whatever the switch (security review of #96): a Claude Code
+# session started from a call, which this gate does not reach, and a git or
+# gh command that rewrites the turn checkout's working tree, which can bring
+# in a `.claude/settings.json` that Claude Code loads mid-turn.
+RULE_SESSION = "self:session"
+RULE_CHECKOUT_TREE = "self:checkout-tree"
 
 
 @dataclass(frozen=True)
@@ -359,6 +366,9 @@ class Context:
     # The call's directory as the call names it, before symlinks are
     # resolved (the gate sets it; `cwd` is the real path).
     logical_cwd: Path | None = None
+    # The directory the turn was started in (the gate sets it from the
+    # trusted record). Unknown: every main worktree counts as it.
+    turn_checkout: Path | None = None
 
 
 def context_for(
@@ -700,6 +710,10 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
                        command=shell.Command(switch, (("root", "sudo"),)))
     if _shell_writes_protected(command, ctx):
         return Verdict(gated=True, classes=("self",), rule="self:shell")
+    if any(package in command for package in rules.session_packages):
+        # `npx @anthropic-ai/claude-code`, `pnpm dlx ...`, behind whatever
+        # wrapper: the package name anywhere in the call is enough.
+        return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
 
     everyday = _everyday_form(command, ctx)
     if everyday is not None:
@@ -707,6 +721,14 @@ def _classify_bash(command: str, ctx: Context) -> Verdict:
 
     analysis = _analyse(command, ctx)
 
+    if analysis.compound:
+        # A desk-only piece anywhere decides, before any other refusal: a
+        # session behind `xargs`, after a `;`, sent to the background.
+        for candidate in analysis.commands:
+            verdict = _judge(candidate, ctx)
+            if verdict.desk_only:
+                return Verdict(gated=True, classes=verdict.classes, run_alone=True,
+                               rule=verdict.rule, command=candidate)
     if analysis.refuse:
         return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     if not analysis.compound and _expands_in_a_write(command, analysis, ctx):
@@ -1119,6 +1141,16 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
     program = shell.program_name(argv[0])
     args = list(argv[1:])
 
+    if _is_session_program(argv[0], ctx):
+        return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
+    if program not in rules.harmless and program not in ("git", "gh") \
+            and any(shell.program_name(arg) in rules.session_programs for arg in args):
+        # `find -exec claude`, `chronic claude`, `make claude`: something
+        # that may run it. Never `cat claude` or `git log --grep claude`.
+        return Verdict(gated=True, classes=("self",), rule=RULE_SESSION)
+    if (program in rules.tree_copy or program in rules.tree_unpack) \
+            and _lands_on_turn_checkout(program, args, ctx):
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
     if program in rules.root_programs:
         return Verdict(gated=True, classes=("root",), rule=f"root:{program}")
     if program in rules.shells:
@@ -1179,6 +1211,24 @@ def _judge(command: shell.Command, ctx: Context, *, remote: bool = False) -> Ver
         # may be a wrapper the gate cannot see through.
         return Verdict(gated=True, run_alone=True, rule=RULE_NOT_UNDERSTOOD)
     return UNGATED
+
+
+def _is_session_program(word: str, ctx: Context) -> bool:
+    """`word`, as the program of a command, is Claude Code: by its name, or
+    by what it resolves to (a symlink by another name, the native
+    installer's `.../claude/versions/<version>`, the package's own files)."""
+    rules = ctx.rules
+    if shell.program_name(word) in rules.session_programs:
+        return True
+    try:
+        found = _resolve(word, ctx) if "/" in word else shutil.which(word)
+        if not found:
+            return False
+        real = os.path.realpath(found)
+    except (OSError, ValueError):
+        return False
+    return (os.path.basename(real) in rules.session_programs or "/claude/versions/" in real
+            or any(package in real for package in rules.session_packages))
 
 
 def _action_classes(
@@ -1312,6 +1362,15 @@ def _judge_gh(
 ) -> Verdict | None:
     gh = ctx.rules.gh
     rule = f"default:gh:{' '.join(subpath)}"
+
+    if subpath == ("pr", "merge") and _deletes_branch(rest) and _in_turn_checkout(ctx.cwd, ctx):
+        # After the merge gh switches the local checkout to the default
+        # branch and pulls it: the turn checkout's files, from the remote.
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
+    if subpath in ctx.rules.tree_gh and _in_turn_checkout(ctx.cwd, ctx):
+        # `gh pr checkout` and `gh repo sync` act on the local checkout of
+        # the directory they run in, whatever `--repo` says.
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
 
     if subpath == ("api",):
         # Flags may stand before the subcommand too (`gh --method=DELETE api x`).
@@ -1821,12 +1880,313 @@ _GIT_ELSEWHERE = frozenset({"--chdir", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_D
                             "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES"})
 
 
+_GLOB_CHARS_RE = re.compile(r"[*?\[\]\\]")
+
+
+def _in_turn_checkout(where: Path, ctx: Context) -> bool:
+    """`where` lies in the turn checkout's own working tree: its nearest
+    `.git` is the turn checkout's. Not a linked worktree under it (its
+    settings do not load: host check 6), not another clone. When the turn
+    checkout is not known, every main worktree (a `.git` directory) counts."""
+    top = git_top_level(where)
+    if top is None:
+        return False
+    if ctx.turn_checkout is not None:
+        return os.path.realpath(top) == os.path.realpath(ctx.turn_checkout)
+    return os.path.isdir(os.path.join(top, ".git"))
+
+
+def _deletes_branch(args: list[str]) -> bool:
+    """`gh pr merge` with -d / --delete-branch, also in a group (`-sd`)."""
+    for arg in args:
+        if arg == "--":
+            break
+        if arg == "--delete-branch" or (arg.startswith("--delete-branch=")
+                                        and arg.split("=", 1)[1].lower() != "false"):
+            return True
+        if re.fullmatch(r"-[A-Za-z]+", arg) and "d" in arg[1:]:
+            return True
+    return False
+
+
+_REMOTE_WORD_RE = re.compile(r"[^/]*:")
+
+
+def _option_values(args: list[str], shorts: tuple[str, ...], longs: tuple[str, ...]) -> list[str]:
+    """Every value of the given options: `-C dir`, `-Cdir`, `--directory dir`,
+    `--directory=dir`."""
+    found: list[str] = []
+    for index, arg in enumerate(args):
+        for short in shorts:
+            if arg == short:
+                found.append(args[index + 1] if index + 1 < len(args) else "")
+            elif arg.startswith(short) and not arg.startswith("--") and len(arg) > len(short):
+                found.append(arg[len(short):])
+        for long in longs:
+            if arg == long:
+                found.append(args[index + 1] if index + 1 < len(args) else "")
+            elif arg.startswith(long + "="):
+                found.append(arg[len(long) + 1:])
+    return found
+
+
+def _short_group_has(args: list[str], letters: str, *, first_bare: bool = False) -> bool:
+    """A single-dash group of letters holds one of `letters` (`-xzf`), or,
+    with `first_bare`, the first word without a dash does (`tar xzf`)."""
+    for index, arg in enumerate(args):
+        word = arg
+        if first_bare and index == 0 and re.fullmatch(r"[A-Za-z]+", arg):
+            word = "-" + arg
+        if re.fullmatch(r"-[A-Za-z0-9]+", word) and any(ch in word[1:] for ch in letters):
+            return True
+    return False
+
+
+def _hits_checkout_top(dest: str, ctx: Context, *, files_only: bool = False) -> bool:
+    """`dest` is the top of the turn checkout (unless only plain files land
+    there) or lies in its `.claude`. A glob or an unreadable one counts."""
+    if not dest or dest.startswith("-") or _GLOB_CHARS_RE.search(dest):
+        return True
+    real = os.path.realpath(_resolve(dest, ctx))
+    probe = real if os.path.isdir(real) else os.path.dirname(real)
+    if not _in_turn_checkout(Path(probe), ctx):
+        return False
+    top = git_top_level(Path(probe))
+    if top is None:
+        return True
+    rel = os.path.relpath(real, os.path.realpath(top))
+    first = rel.split(os.sep)[0]
+    if first.lower() == ".claude" or first == "..":
+        return True
+    return rel == "." and not files_only
+
+
+def _lands_on_turn_checkout(program: str, args: list[str], ctx: Context) -> bool:
+    """A copy or an unpack whose destination is the top of the turn checkout
+    or its `.claude` ([checkout_tree] in the rules)."""
+    rules = ctx.rules
+    if program in rules.tree_unpack:
+        if program in ("tar", "bsdtar"):
+            if not ("--extract" in args or "--get" in args
+                    or _short_group_has(args, "x", first_bare=True)):
+                return False
+            dests = _option_values(args, ("-C",), ("--directory",))
+        elif program == "unzip":
+            if _short_group_has(args, "lvtZz"):
+                return False  # lists, tests or shows a comment
+            dests = _option_values(args, ("-d",), ("--exdir",))
+        elif program == "patch":
+            if "--dry-run" in args:
+                return False
+            dests = _option_values(args, ("-d",), ("--directory",))
+        elif program == "cpio":
+            if _short_group_has(args, "p") or "--pass-through" in args:
+                operands = [a for a in args if not a.startswith("-")]
+                return _hits_checkout_top(operands[-1] if operands else "", ctx)
+            if not (_short_group_has(args, "i") or "--extract" in args):
+                return False
+            dests = _option_values(args, ("-D",), ("--directory",))
+        else:  # 7z, 7za, 7zz
+            operands = [a for a in args if not a.startswith("-")]
+            if not operands or operands[0] not in ("x", "e"):
+                return False
+            dests = [a[2:] for a in args if a.startswith("-o")]
+        return any(_hits_checkout_top(dest, ctx) for dest in (dests or ["."]))
+
+    # A copy: the target directory, or any operand after the first.
+    no_target = recursive = False
+    if program in _COREUTILS_COPY:
+        targets, operands, no_target, recursive = _coreutils_copy_args(program, args)
+    else:
+        # rsync, scp, ditto: no target option (rsync's `-t` keeps times).
+        targets, operands = [], [a for a in args if not a.startswith("-")]
+    if not targets:
+        targets = [a for a in operands[1:] if not _REMOTE_WORD_RE.match(a)]
+    if not targets:
+        return False
+    # What lands at the top: a source's contents (`dir/.`, `dir/`, `.`, or
+    # any source with -T / --no-target-directory), a glob, or a source that
+    # is itself a `.claude`. A directory by its own name lands as a
+    # subdirectory (`cp -r /tmp/c .` makes `./c`).
+    sources = [a for a in operands if a not in targets]
+    risky = program == "ditto" or no_target \
+        or any(_spills_into_destination(a) for a in sources)
+    if program not in ("mv", "ln"):
+        if program not in _COREUTILS_COPY:
+            recursive = (_short_group_has(args, "rRad" if program == "rsync" else "rRa")
+                         or any(a in ("--recursive", "--archive", "--dirs") for a in args)
+                         or program == "ditto")
+        risky = risky and recursive
+    return any(_hits_checkout_top(t, ctx, files_only=not risky) for t in targets)
+
+
+_COREUTILS_COPY = frozenset({"cp", "install", "mv", "ln"})
+# Short options of these that take a value (`-S .bak`, install's `-m 644`).
+_COREUTILS_VALUE_SHORTS = {"install": "Smog"}
+_COREUTILS_VALUE_LONGS = frozenset({"--suffix", "--mode", "--owner", "--group",
+                                    "--strip-program"})
+
+
+def _coreutils_copy_args(program: str, args: list[str]
+                         ) -> tuple[list[str], list[str], bool, bool]:
+    """(the `-t` targets, the operands, whether -T is given, whether it is
+    recursive) of `cp`,
+    `install`, `mv` or `ln`, with short options read out of bundles
+    (`-rt .`, `-art.`, `-rT`) and long options by any unique prefix."""
+    value_shorts = _COREUTILS_VALUE_SHORTS.get(program, "S")
+    targets: list[str] = []
+    operands: list[str] = []
+    no_target = recursive = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            operands += args[index + 1:]
+            break
+        if arg == "-" or not arg.startswith("-"):
+            operands.append(arg)
+            index += 1
+            continue
+        if arg.startswith("--"):
+            name, eq, value = arg.partition("=")
+            if _long_is(name, "--target-directory") and len(name) > len("--ta"):
+                targets.append(value if eq else (args[index + 1] if index + 1 < len(args) else ""))
+                index += 1 if eq else 2
+                continue
+            if _long_is(name, "--no-target-directory") and len(name) > len("--no-"):
+                no_target = True
+            if any(_long_is(name, long) and len(name) > 3
+                   for long in ("--recursive", "--archive", "--parents")):
+                recursive = True
+            if not eq and any(_long_is(name, long) for long in _COREUTILS_VALUE_LONGS):
+                index += 2
+                continue
+            index += 1
+            continue
+        letters = arg[1:]
+        step = 1
+        for position, letter in enumerate(letters):
+            rest = letters[position + 1:]
+            if letter == "t":
+                targets.append(rest or (args[index + 1] if index + 1 < len(args) else ""))
+                step = 1 if rest else 2
+                break
+            if letter == "T":
+                no_target = True
+            if letter in "rRa":
+                recursive = True
+            if letter in value_shorts:
+                step = 1 if rest else 2
+                break
+        index += step
+    return targets, operands, no_target, recursive
+
+
+def _spills_into_destination(source: str) -> bool:
+    path = source.split(":", 1)[1] if _REMOTE_WORD_RE.match(source) else source
+    if not path or path in (".", "./") or path.endswith(("/", "/.")) or _GLOB_CHARS_RE.search(path):
+        return True
+    return os.path.basename(os.path.normpath(path)).lower() == ".claude"
+
+
+def _rewrites_turn_tree(call: GitCall, args: list[str], ctx: Context,
+                        env: tuple[str, ...]) -> bool:
+    """A git command that writes files of the working tree from a commit, a
+    patch, a stash or a remote, run in the turn checkout (or where the gate
+    cannot tell)."""
+    tree = ctx.rules.tree_git
+    if not call.placed:
+        # An option the gate does not know before the subcommand.
+        return any(arg in tree for arg in args) and _in_turn_checkout(ctx.cwd, ctx)
+    sub, rest = call.subcommand, list(call.args)
+    if sub not in tree:
+        return False
+    if len(rest) == 2 and not rest[1].startswith("-") and (
+            (sub == "checkout" and rest[0] in ("-b", "-B"))
+            or (sub == "switch" and rest[0] in ("-c", "-C", "--create", "--force-create"))):
+        return False  # a new branch at HEAD, no start point: no file changes
+    if sub == "reset" and not any(
+            _long_is(arg, "--hard") or _long_is(arg, "--merge") or _long_is(arg, "--keep")
+            for arg in rest):
+        return False  # soft or mixed: the index and HEAD, not the files
+    if sub == "stash" and rest and rest[0] in ("list", "show", "drop", "clear", "create"):
+        return False  # a plain `git stash` resets the files to HEAD, which may have moved
+    if sub == "apply" and "--index" not in rest and any(
+            arg in ("--cached", "--check", "--stat", "--numstat", "--summary") for arg in rest) \
+            and "--apply" not in rest:
+        return False
+    if sub == "read-tree" and "-u" not in rest:
+        return False
+    if call.redirected or _GIT_ELSEWHERE.intersection(env):
+        return True  # --work-tree, --git-dir, GIT_DIR=, `env -C`: not where it says
+    where = ctx.cwd if call.directory is None else Path(_resolve(call.directory, ctx))
+    if not _in_turn_checkout(where, ctx):
+        return False
+    paths = _tree_pathspecs(sub, rest)
+    return paths is None or not _paths_miss_settings(paths, where)
+
+
+def _tree_pathspecs(sub: str, rest: list[str]) -> list[str] | None:
+    """The paths of `git checkout <ref> -- <path>...` and `git restore
+    [--source <ref>] <path>...`, or None when the call is not in that form
+    (then it may write any file)."""
+    if sub == "checkout":
+        if "--" not in rest:
+            return None
+        index = rest.index("--")
+        if any(word.startswith("-") for word in rest[:index]):
+            return None  # an option the gate does not read here (-p, --pathspec-from-file)
+        return rest[index + 1:] or None
+    if sub == "restore":
+        paths: list[str] = []
+        index = 0
+        while index < len(rest):
+            word = rest[index]
+            if word == "--":
+                paths += rest[index + 1:]
+                break
+            if word in ("-s", "--source"):
+                index += 2
+                continue
+            if word.startswith("--source=") or (word.startswith("-s") and not word.startswith("--")):
+                index += 1
+                continue
+            if word.startswith("--pathspec-from-file"):
+                return None
+            if not word.startswith("-"):
+                paths.append(word)
+            index += 1
+        return paths or None
+    return None
+
+
+def _paths_miss_settings(paths: list[str], where: Path) -> bool:
+    """Every path is a plain path below the top of the checkout and outside
+    its `.claude`: no glob, no pathspec magic, not the top itself."""
+    top = git_top_level(where)
+    if top is None:
+        return False
+    root = os.path.realpath(top)
+    for path in paths:
+        if not path or path.startswith(":") or _GLOB_CHARS_RE.search(path):
+            return False
+        full = os.path.normpath(os.path.join(os.path.realpath(where), path))
+        if not full.startswith(root + os.sep):
+            return False
+        first = os.path.relpath(full, root).split(os.sep)[0]
+        if first in (".claude", ".", "..") or first.lower() == ".claude":
+            return False
+    return True
+
+
 def _judge_git(args: list[str], ctx: Context, env: tuple[str, ...] = ()) -> Verdict:
     call = read_git(args)
     if call.dangerous_config:
         # An alias, a command git will run, or another address, set on the
         # command line: whatever the subcommand says, this is not it.
         return Verdict(gated=True, rule="git:config-on-command-line")
+    if _rewrites_turn_tree(call, args, ctx, env):
+        return Verdict(gated=True, classes=("self",), rule=RULE_CHECKOUT_TREE)
     if not call.placed:
         if "push" in args:
             return Verdict(gated=True, rule="push:option-before-subcommand")

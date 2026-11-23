@@ -418,6 +418,53 @@ read_programs = [
 # is a write to it.
 tree_programs = ["rm", "mv", "find", "chmod", "chown", "chgrp"]
 
+# --- the class `self`: a nested session, and the turn checkout's tree ----------
+#
+# Security review of #96 (2026-11-23). Both are desk-only, whatever the switch.
+#
+# A Claude Code session started from a call (`claude -p ...`) runs without
+# this gate: the turn's `--settings` hook does not reach its tool calls (seen
+# live). Its program, by name or path and behind any wrapper the gate
+# unwraps (`env`, `timeout`, `nohup`, `setsid`, `nice`, `stdbuf`, `xargs`,
+# `bash -c` ...), or a package runner of its package (`npx`, `bunx`,
+# `pnpm dlx`, `yarn dlx`: the package name anywhere in the call), is the
+# rule `self:session`.
+[session]
+programs = ["claude", "claude.exe"]
+packages = ["@anthropic-ai/claude-code"]
+
+# Claude Code reloads a project's `.claude/settings.json` mid-turn, and a hook
+# in it runs next to the gate (seen live); D36's `settings_changed` only
+# refuses the gated calls after it. So a git or gh command that rewrites the
+# working tree of the turn checkout itself (where a fetched branch can bring
+# such a file in) is the rule `self:checkout-tree`. In another worktree it
+# runs: a linked worktree's settings do not load (host check 6). Stopgap
+# until the turn reads user settings only (`--setting-sources user`).
+# Narrowed in classify.py: `reset` only with --hard, --merge or --keep;
+# `stash` not list, show, drop, clear or create; `apply` not when it only checks or
+# writes the index; `read-tree` only with -u.
+[checkout_tree]
+git = [
+    "checkout", "switch", "pull", "merge", "rebase", "restore", "reset",
+    "cherry-pick", "revert", "am", "apply", "stash", "read-tree",
+    "checkout-index", "bisect", "sparse-checkout", "filter-branch",
+]
+gh = [["pr", "checkout"], ["repo", "sync"]]
+# Re-review of #98: a copy or an unpack over the turn checkout plants the
+# file as well (`git clone <x> /tmp/c` and `cp -r /tmp/c/. .`). These are the
+# rule `self:checkout-tree` when their destination is the top of the turn
+# checkout or its `.claude` (a plain subdirectory runs). The destination is
+# the target (`-t`, or any operand after the first) of a copy, the `-C`,
+# `-d`, `-D` or `-o` directory of an unpack, or else the working directory.
+# A glob or a destination the gate cannot read counts as the checkout. A
+# copy to the top only counts when it is recursive and a source spills its
+# contents there (`dir/.`, `dir/`, `.`, a glob, `ditto`, -T) or is a `.claude`
+# (`mv` and `ln` need no -r); a directory by its own name lands as a
+# subdirectory. Anything that lands in `.claude` counts. `cp`, `install`,
+# `mv` and `ln` are read like their own parser (-t and -T in a bundle).
+copy = ["cp", "rsync", "scp", "install", "ditto", "mv", "ln"]
+unpack = ["tar", "bsdtar", "unzip", "patch", "cpio", "7z", "7za", "7zz"]
+
 # --- rules that name an action (D36's table) ---------------------------------
 #
 # class:    one of merge, deploy, delete, force, api, account, message,
