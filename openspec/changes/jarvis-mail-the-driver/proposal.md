@@ -20,16 +20,23 @@ the approval point.
 ## What Changes
 
 - **A mail to the driver himself can be confirmed by voice.** A new rule section,
-  `[own_mail]` in `agent_host/gate_rules.toml`, lists the connector tools that send one
-  mail (Gmail `send_message` and `reply`) and the input fields they may hold. A new
-  configuration key, `own_mail`, holds the user's own addresses. A call of one of those
-  tools is read back as "Send a mail to <address>." only when:
-  - `to` holds exactly one own address;
-  - there is no cc, no bcc and no reply-all;
+  `[own_mail]` in `agent_host/gate_rules.toml`, lists the connector tool that sends one
+  mail (Gmail `send_message`) and the input fields it may hold, including
+  `replyThreadId` and `replyToMessageId` for threading. A new configuration key,
+  `own_mail`, holds the user's own addresses. A call is read back as "Send a mail to
+  <address>." only when all of these hold:
+  - `to` holds exactly one own address, as plain ASCII with nothing around it;
+  - there is no cc and no bcc;
   - there is no field outside the list, so no draft and no attachment.
 
-  Every other call of them has no sentence and needs the desk. A host-local
-  `[[tool_actions]]` rule is not consulted for these tools, so it cannot widen them.
+  Every other Gmail call has no sentence and needs the desk. That includes the
+  connector's `reply`, which may copy a thread's default cc recipients the call does not
+  show. A host-local `[[tool_actions]]` rule is never consulted for a Gmail tool, and
+  `[own_mail]` is read from the repository's rules only, so a host file cannot widen it.
+- **No Gmail tool is ever exempt from confirmation.** `confirm = "off"` and
+  `confirm_skip` do not apply to any `mcp__` tool whose name contains "gmail". Before this
+  change, either setting let a send to any address with an attachment, a forward or a
+  draft through unasked, because the switch is checked before naming.
 - **The read-back names the address, not the subject.** The `jarvis-full-agent` rule that
   a read-back holds no text from the call stands. Speaking the subject would put the
   agent's own words in the driver's ear at the one moment he is asked for a yes. Whether to
@@ -45,7 +52,7 @@ the approval point.
 
 - Added requirement in `voice-bridge`: Mail to the driver himself.
 - Affected code: `agent_host/gate_rules.toml`, `agent_host/rules.py`,
-  `agent_host/naming.py`, `agent_host/config.py`, `agent_host/config.example.toml`,
+  `agent_host/naming.py`, `agent_host/decision.py`, `agent_host/config.py`, `agent_host/config.example.toml`,
   `agent_host/prompt.md`.
 - Fits into `jarvis-full-agent` (whose spec already says that sending mail is gated and
   read back with every recipient) as a narrow naming rule. It is a change of its own

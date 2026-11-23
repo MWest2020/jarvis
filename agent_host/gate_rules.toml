@@ -304,25 +304,29 @@ create = ["create", "fork"]
 message = ["send", "reply", "forward", "post", "message", "comment", "invite"]
 
 # --- mail to the user's own address (jarvis-mail-the-driver) -------------------
-# A call of one of these connector tools is read back ("Send a mail to <address>.")
-# and can be confirmed by voice only when it is one mail to one of the user's own
-# addresses alone (`own_mail` in the configuration). Every other call of them has no
+# A call of this connector tool is read back ("Send a mail to <address>.") and can be
+# confirmed by voice only when it is one mail to one of the user's own addresses
+# alone (`own_mail` in the configuration), written as plain ASCII with nothing around
+# it. No Gmail tool is ever exempt from confirmation (`confirm = "off"` and
+# `confirm_skip` do not apply to it). Every other call of them has no
 # sentence and needs the desk. A host-local [[tool_actions]] for these tools is not
 # consulted. Without `own_mail`, every mail needs the desk.
 [own_mail]
-tools = ["mcp__claude_ai_Gmail__send_message", "mcp__claude_ai_Gmail__reply"]
+# Not `reply`: it may copy a thread's default cc recipients, which the call does not
+# show. A mail in a thread is a send with `replyThreadId` or `replyToMessageId`.
+# This section is read from this file only; a host-local file that sets it is an error.
+tools = ["mcp__claude_ai_Gmail__send_message"]
 # The input such a call may hold. Any other field gates without a sentence: a draft
 # (`draftId`, sent as it is to whoever it names), `attachments`, and whatever a new
-# version adds. A reply must name its recipient in `to`: by default it goes to the
-# sender of the message, which the call does not show.
+# version adds.
 fields = [
     "to", "cc", "bcc", "subject", "body", "htmlBody", "includeSignature",
-    "replyThreadId", "replyToMessageId", "messageId", "replyAll",
+    "replyThreadId", "replyToMessageId",
 ]
 # Fields that may only be absent or empty.
 empty_fields = ["cc", "bcc"]
 # Fields that may only be absent or JSON false.
-off_fields = ["replyAll"]
+off_fields = []
 
 # --- built-in tools --------------------------------------------------------------
 # A tool that is neither `Bash`, a connector tool (`mcp__*`, above), nor on

@@ -624,25 +624,35 @@ always refused by voice.
 ## Mail to yourself
 
 A voice turn can mail you, and nobody else (change `jarvis-mail-the-driver`). The gate
-gates every connector tool whose name says it sends. For the mail tools listed under
-`[own_mail]` in `gate_rules.toml` (today the claude.ai Gmail connector's `send_message`
-and `reply`), it reads a call back only when the call is one mail to one address in
-`own_mail`, alone:
+gates every connector tool whose name says it sends. For the mail tool listed under
+`[own_mail]` in `gate_rules.toml` (the claude.ai Gmail connector's `send_message`), it
+reads a call back only when the call is one mail to one address in `own_mail`, alone:
 
-- `to` holds exactly one address from `own_mail` (case and surrounding spaces do not
-  count);
-- `cc` and `bcc` are absent or empty, and `replyAll` is absent or false;
-- the call holds no field outside the `[own_mail]` list, so a draft (`draftId`, which is
-  sent as it is to whoever it names) or an attachment is never nameable;
-- a reply names its recipient in `to`. By default a reply goes to the sender of the
-  message, which the call does not show.
+- `to` holds exactly one address from `own_mail`, as plain ASCII with nothing around it.
+  Case does not count. A lookalike such as a Kelvin sign for "k", or a no-break or em
+  space, makes the call not nameable, so the read-back is always the bytes that run;
+- `cc` and `bcc` are absent or empty;
+- the call holds no field outside the `[own_mail]` list. So a draft (`draftId`, which is
+  sent as it is to whoever it names) or an attachment is never nameable.
 
-The read-back is "Send a mail to you@example.org." and needs a yes. The subject and the
-body are not spoken: the read-back holds no text from the call (D36). Every other call of
-these tools has no sentence and needs the desk. A forward, trash, draft, label or spam
-tool is gated with no sentence, so it needs the desk too. A host-local `[[tool_actions]]`
-rule is not consulted for the `[own_mail]` tools, so a host file cannot widen them to
-other recipients. Without `own_mail`, every mail needs the desk, as before.
+A mail in a thread is the same send with `replyThreadId` or `replyToMessageId`. The
+connector's `reply` tool is never nameable, because it may copy a thread's default cc
+recipients, which the call does not show.
+
+The read-back is "Send a mail to you@example.org." and it needs a yes. The subject and
+body are not spoken: the read-back holds no text from the call (D36). Every other Gmail
+call has no sentence and needs the desk: reply, forward, trash, draft, label, spam, or a
+send to anyone else. The same goes for those tools under another connector name. A
+host-local `[[tool_actions]]` rule is never consulted for a Gmail tool.
+
+`[own_mail]` comes from the repository's `gate_rules.toml` only: a file in `rules.d`
+that sets it is an error, so a host file cannot widen it. Without `own_mail`, every
+mail needs the desk.
+
+**No Gmail tool is ever exempt from confirmation.** `confirm = "off"` and
+`confirm_skip` (`message` included) do not apply to any `mcp__` tool whose name
+contains "gmail", in any case. A mail to you is still read back and needs a yes, and
+everything else still needs the desk.
 
 The agent learns the address from your own instructions and memory, which the turn
 loads (for Mark: the digest mail goes to his address). To name it in the prompt as
@@ -655,6 +665,7 @@ switch it off, all recorded as "not confirmed: confirmation is off" in the turn 
 
 - for everything: `confirm = "off"` in `config.toml`;
 - for single classes: `confirm_skip = ["message"]`;
+  (neither ever covers a Gmail tool: see [Mail to yourself](#mail-to-yourself))
 - by voice, or from a shell: `sudo /usr/local/lib/jarvis-agent/confirm off` (or
   `off <class>`, `on`). By voice this is itself read back with a fixed sentence and needs
   a yes; no other edit of the configuration can be made by voice.

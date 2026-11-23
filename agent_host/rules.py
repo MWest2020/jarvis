@@ -505,5 +505,10 @@ def load_rules(rules_dir: Path | None, base_path: Path = BASE_RULES_PATH) -> Rul
             extra = _read_toml(path)
             if extra.get("version", 1) != 1:
                 raise RulesError(f"rules file {path}: version must be 1")
+            if "own_mail" in extra:
+                # Who may be mailed by voice comes from the repository's rules
+                # and the configuration only: a host file cannot widen it.
+                raise RulesError(f"rules file {path}: [own_mail] is set in the repository's "
+                                 "rules only, never in a host-local file")
             data = _merge(data, extra, path.name)
     return rules_from_dict(data)

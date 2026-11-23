@@ -724,6 +724,12 @@ def _name_command(verdict: classify.Verdict, ctx, config) -> Named | Missing | N
         return None
 
 
+def is_mail_tool(tool_name: str) -> bool:
+    """A Gmail connector tool, under any connector name (jarvis-mail-the-driver):
+    never exempt from confirmation, and named by [own_mail] or not at all."""
+    return tool_name.startswith("mcp__") and "gmail" in tool_name.lower()
+
+
 def _name_own_mail(tool_input: dict, ctx, config, verdict_classes=()) -> Named | None:
     """A mail tool of [own_mail] (jarvis-mail-the-driver): nameable only as one
     mail to one of the user's own addresses alone. Anything else in the call
@@ -744,21 +750,29 @@ def _name_own_mail(tool_input: dict, ctx, config, verdict_classes=()) -> Named |
         to = [to]
     if not isinstance(to, list) or len(to) != 1 or not isinstance(to[0], str):
         return None
-    address = to[0].strip().lower()
-    if address not in config.own_mail:
+    raw = to[0]
+    # The raw value, as it will run: plain ASCII with nothing around it, so the
+    # read-back cannot differ from the bytes sent (a Kelvin sign lowers to "k",
+    # an em space strips away). Only then is the case ignored.
+    if not raw.isascii() or raw != raw.strip():
         return None
     try:
-        spoken = targets.mail_address(address).spoken
+        spoken = targets.mail_address(raw).spoken
     except NotNameable:
+        return None
+    if raw.lower() not in config.own_mail:
         return None
     return Named(_mail_sentence([spoken], [], []), frozenset({"message"}) | set(verdict_classes))
 
 
 def _name_tool(tool_name: str, tool_input: dict, ctx, config, verdict_classes=()) -> Named | None:
     """A connector tool with a naming rule: [own_mail] for the mail tools it
-    lists (and only that rule), else a host-local `[[tool_actions]]`."""
+    lists (and only that rule); no rule at all for any other Gmail tool; else a
+    host-local `[[tool_actions]]`."""
     if tool_name in ctx.rules.own_mail_tools:
         return _name_own_mail(tool_input, ctx, config, verdict_classes)
+    if is_mail_tool(tool_name):
+        return None     # reply, forward, a draft ...: never by voice, whatever rules.d says
     for rule in ctx.rules.tool_actions:
         if not fnmatch.fnmatchcase(tool_name, rule.tool):
             continue

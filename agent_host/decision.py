@@ -38,7 +38,7 @@ tested without a process.
   environment's.
 - `confirm = "off"`, or a call whose classes are all in `confirm_skip`:
   the call is let through and noted as not confirmed, when it is one call
-  the gate fully understood. The class `self`, a compound command, inline
+  the gate fully understood and not a Gmail connector tool. The class `self`, a compound command, inline
   code and a tool nobody listed are refused as always.
 - A grant releases exactly once: an atomic "used" marker per grant, and
   the turn's state is read and written under a lock. Both live in the
@@ -194,7 +194,8 @@ def build_context(config: AgentHostConfig, cwd: Path, *, home: Path | None = Non
     )
 
 
-def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> bool:
+def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig,
+                         tool_name: str = "") -> bool:
     """Is confirmation switched off for this call?
 
     Only for a single call the gate fully understood. Never for the class
@@ -209,6 +210,10 @@ def confirmation_off_for(verdict: classify.Verdict, config: AgentHostConfig) -> 
     and a call in no class is in no skipped class.
     """
     if "self" in verdict.classes or verdict.run_alone:
+        return False
+    if naming.is_mail_tool(tool_name):
+        # A mail to anyone, a draft, an attachment or a forward must never
+        # run unasked: switching confirmation off does not cover Gmail.
         return False
     if verdict.rule == classify.RULE_NOT_UNDERSTOOD:
         return False
@@ -366,7 +371,7 @@ def _decide(payload, config, *, turn_checkout, turn_id, grant, grant_base, home,
         if verdict.rule.startswith("subagent:"):
             # Refused and passed to the desk: the coding session builds it.
             return deny(reason_subagent(ctx.rules), "needs_desk")
-        if confirmation_off_for(verdict, config):
+        if confirmation_off_for(verdict, config, tool_name):
             state.note("not_confirmed", code=None, verdict=verdict)
             state.save()
             return Decision(True, "", verdict)
