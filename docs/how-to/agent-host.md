@@ -645,7 +645,9 @@ they need the desk whatever `confirm` says (`[session]` and `[checkout_tree]` in
   check 6). `git checkout -b <name>` and `git switch -c <name>` without a start point run
   (no file changes). `gh pr merge -d`/`--delete-branch` in the turn checkout is refused
   too: after the merge gh switches the checkout to the default branch and pulls it; merge
-  with `--repo` and without `-d`, or from a worktree.
+  with `--repo` and without `-d`, or from a worktree. The turn checkout is the trusted one
+  from the wrapper's record; a call that names it with `git -C` (or as a copy's
+  destination) from a worktree is refused as well.
 
   **Copies and unpacks** (re-review of #98): `git clone <x> /tmp/c` and `cp -r /tmp/c/. .`
   plant the file as well. `cp`, `rsync`, `scp`, `install`, `ditto`, `mv`, `ln`, `tar -x`,
@@ -655,10 +657,12 @@ they need the desk whatever `confirm` says (`[session]` and `[checkout_tree]` in
   working directory. A glob or a destination the gate cannot read counts as the checkout.
   A plain subdirectory runs (`tar -xf x.tar -C src`). A copy to the top only counts when it
   is recursive (`mv` and `ln` always are) and a source spills its contents there (`dir/.`,
-  `dir/`, `.`, a glob, `ditto`) or is a `.claude`: `cp /tmp/x.json .` and `cp -r /tmp/c .`
-  (which makes `./c`) run. Reads (`tar -t`, `unzip -l`,
-  `patch --dry-run`) and copies out of the checkout run. The turn checkout is the trusted one from the wrapper's record; a call that
-  names it with `git -C` from a worktree is refused as well.
+  `dir/`, `.`, a glob, `ditto`, or any source with `-T`/`--no-target-directory`) or is a
+  `.claude`. For `cp`, `install`, `mv` and `ln` the options are read as their own parser
+  does: `-t` and `-T` inside a bundle (`-rt .`, `-rt.`, `-aT`) and long options by a unique
+  prefix; rsync's `-t` keeps times and is no target. So `cp /tmp/x.json .` and
+  `cp -r /tmp/c .` (which makes `./c`) run. Reads (`tar -t`, `unzip -l`, `patch --dry-run`)
+  and copies out of the checkout run.
 
   This is a stopgap. The real fix is to start the turn with `--setting-sources user`, so
   that no project settings load at all, and have the wrapper append the checkout's
