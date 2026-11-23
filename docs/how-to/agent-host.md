@@ -642,7 +642,22 @@ they need the desk whatever `confirm` says (`[session]` and `[checkout_tree]` in
   tell which tree a git call acts on (`--work-tree`, `--git-dir`, `-c`, `GIT_DIR=`,
   `env -C`) it is refused too. `git fetch`, `git worktree add`, `git branch` and all of the
   above **in a linked worktree** run: a linked worktree's settings do not load (host
-  check 6). The turn checkout is the trusted one from the wrapper's record; a call that
+  check 6). `git checkout -b <name>` and `git switch -c <name>` without a start point run
+  (no file changes). `gh pr merge -d`/`--delete-branch` in the turn checkout is refused
+  too: after the merge gh switches the checkout to the default branch and pulls it; merge
+  with `--repo` and without `-d`, or from a worktree.
+
+  **Copies and unpacks** (re-review of #98): `git clone <x> /tmp/c` and `cp -r /tmp/c/. .`
+  plant the file as well. `cp`, `rsync`, `scp`, `install`, `ditto`, `mv`, `ln`, `tar -x`,
+  `bsdtar`, `unzip`, `patch`, `cpio -i`/`-p` and `7z x` are refused when their destination
+  is the top of the turn checkout or its `.claude`: the target (`-t`, or any operand after
+  the first) of a copy, the `-C`, `-d`, `-D` or `-o` directory of an unpack, or else the
+  working directory. A glob or a destination the gate cannot read counts as the checkout.
+  A plain subdirectory runs (`tar -xf x.tar -C src`). A copy to the top only counts when it
+  is recursive (`mv` and `ln` always are) and a source spills its contents there (`dir/.`,
+  `dir/`, `.`, a glob, `ditto`) or is a `.claude`: `cp /tmp/x.json .` and `cp -r /tmp/c .`
+  (which makes `./c`) run. Reads (`tar -t`, `unzip -l`,
+  `patch --dry-run`) and copies out of the checkout run. The turn checkout is the trusted one from the wrapper's record; a call that
   names it with `git -C` from a worktree is refused as well.
 
   This is a stopgap. The real fix is to start the turn with `--setting-sources user`, so

@@ -42,7 +42,7 @@ def _not_nameable(env, command):
 def test_a_merge_is_read_back_with_its_number_repository_and_commit(env):
     assert _sentence(env, f"gh pr merge 21 --repo {M} --match-head-commit {SHA}") \
         == "Merge pull request 21 on demo, at commit 3f9c2ab."
-    assert _sentence(env, f"gh pr merge 21 -R {F} --match-head-commit={SHA} --squash --delete-branch") \
+    assert _sentence(env, f"gh pr merge 21 -R {F} --match-head-commit={SHA} --squash") \
         == "Merge pull request 21 on demo of them, at commit 3f9c2ab."
     assert _sentence(env, f"gh pr merge 21 --repo {M} --match-head-commit {SHA} --subject 'a b' --body text") \
         == "Merge pull request 21 on demo, at commit 3f9c2ab."

