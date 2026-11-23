@@ -154,6 +154,13 @@ class Rules:
     subagent_builder_types: tuple[str, ...] = ()
     subagent_fields: frozenset[str] = frozenset()
     subagent_off_fields: frozenset[str] = frozenset()
+    # A nested Claude Code session, and what rewrites the turn checkout's
+    # tree: desk-only (security review of #96). See [session] and
+    # [checkout_tree] in gate_rules.toml.
+    session_programs: frozenset[str] = frozenset()
+    session_packages: tuple[str, ...] = ()
+    tree_git: frozenset[str] = frozenset()
+    tree_gh: frozenset[tuple[str, ...]] = frozenset()
     # Mail to the user's own address (jarvis-mail-the-driver): see [own_mail]
     # in gate_rules.toml.
     own_mail_tools: frozenset[str] = frozenset()
@@ -175,6 +182,7 @@ class Rules:
         return (
             frozenset(self.programs) | self.action_programs | frozenset(self.http)
             | self.transfer_programs | self.root_programs | {"git", "rm", "find"}
+            | self.session_programs
         )
 
 
@@ -355,7 +363,7 @@ def rules_from_dict(data: dict) -> Rules:
         "version", "read_verbs", "global_flags", "programs", "gh", "http", "git",
         "transfer", "root", "shell", "rm", "mcp", "self", "actions", "option_classes",
         "tool_actions",
-        "interpreters", "tools", "subagents", "own_mail",
+        "interpreters", "tools", "subagents", "own_mail", "session", "checkout_tree",
     }, "rules")
     if data.get("version") != 1:
         raise RulesError("rules: version must be 1")
@@ -403,6 +411,10 @@ def rules_from_dict(data: dict) -> Rules:
     subagents = _table(data, "subagents", "")
     _known_keys(subagents, {"tools", "read_only_types", "builder_types", "fields", "off_fields"},
                 "subagents")
+    session = _table(data, "session", "")
+    _known_keys(session, {"programs", "packages"}, "session")
+    checkout_tree = _table(data, "checkout_tree", "")
+    _known_keys(checkout_tree, {"git", "gh"}, "checkout_tree")
     own_mail = _table(data, "own_mail", "")
     _known_keys(own_mail, {"tools", "fields", "empty_fields", "off_fields"}, "own_mail")
     own_mail_fields = frozenset(_strings(own_mail, "fields", "own_mail."))
@@ -485,6 +497,10 @@ def rules_from_dict(data: dict) -> Rules:
         subagent_builder_types=_strings(subagents, "builder_types", "subagents."),
         subagent_fields=frozenset(_strings(subagents, "fields", "subagents.")),
         subagent_off_fields=frozenset(_strings(subagents, "off_fields", "subagents.")),
+        session_programs=frozenset(_strings(session, "programs", "session.")),
+        session_packages=_strings(session, "packages", "session."),
+        tree_git=frozenset(_strings(checkout_tree, "git", "checkout_tree.")),
+        tree_gh=frozenset(_paths(checkout_tree, "gh", "checkout_tree.")),
         own_mail_tools=frozenset(_strings(own_mail, "tools", "own_mail.")),
         own_mail_fields=own_mail_fields,
         own_mail_empty_fields=frozenset(_strings(own_mail, "empty_fields", "own_mail.")),

@@ -430,6 +430,39 @@ read_programs = [
 # is a write to it.
 tree_programs = ["rm", "mv", "find", "chmod", "chown", "chgrp"]
 
+# --- the class `self`: a nested session, and the turn checkout's tree ----------
+#
+# Security review of #96 (2026-11-23). Both are desk-only, whatever the switch.
+#
+# A Claude Code session started from a call (`claude -p ...`) runs without
+# this gate: the turn's `--settings` hook does not reach its tool calls (seen
+# live). Its program, by name or path and behind any wrapper the gate
+# unwraps (`env`, `timeout`, `nohup`, `setsid`, `nice`, `stdbuf`, `xargs`,
+# `bash -c` ...), or a package runner of its package (`npx`, `bunx`,
+# `pnpm dlx`, `yarn dlx`: the package name anywhere in the call), is the
+# rule `self:session`.
+[session]
+programs = ["claude", "claude.exe"]
+packages = ["@anthropic-ai/claude-code"]
+
+# Claude Code reloads a project's `.claude/settings.json` mid-turn, and a hook
+# in it runs next to the gate (seen live); D36's `settings_changed` only
+# refuses the gated calls after it. So a git or gh command that rewrites the
+# working tree of the turn checkout itself (where a fetched branch can bring
+# such a file in) is the rule `self:checkout-tree`. In another worktree it
+# runs: a linked worktree's settings do not load (host check 6). Stopgap
+# until the turn reads user settings only (`--setting-sources user`).
+# Narrowed in classify.py: `reset` only with --hard, --merge or --keep;
+# `stash` not list, show, drop, clear or create; `apply` not when it only checks or
+# writes the index; `read-tree` only with -u.
+[checkout_tree]
+git = [
+    "checkout", "switch", "pull", "merge", "rebase", "restore", "reset",
+    "cherry-pick", "revert", "am", "apply", "stash", "read-tree",
+    "checkout-index", "bisect", "sparse-checkout", "filter-branch",
+]
+gh = [["pr", "checkout"], ["repo", "sync"]]
+
 # --- rules that name an action (D36's table) ---------------------------------
 #
 # class:    one of merge, deploy, delete, force, api, account, message,

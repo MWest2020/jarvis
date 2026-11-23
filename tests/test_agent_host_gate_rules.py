@@ -173,7 +173,6 @@ def test_an_unknown_group_is_taken_as_the_verb_and_gated(ctx):
     f"gh pr create --repo {M} --title x --body y",
     f"gh pr create -R {M} --fill",
     f"gh pr create --repo={M} --fill",
-    f"gh pr checkout 5 --repo {M}",
     f"gh pr comment 5 --repo {M} --body ok",
     f"gh issue create --repo {M} --title x",
     f"gh issue comment 5 --repo {M} --body ok",
@@ -190,7 +189,6 @@ def test_own_repository_work_needs_no_yes(ctx, command):
     (f"gh issue create --repo {F} --title x", ["message"]),
     (f"gh issue comment 5 --repo {F} --body hi", ["message"]),
     (f"gh pr review 5 --repo {F} --approve", ["message"]),
-    (f"gh pr checkout 5 --repo {F}", []),
     (f"gh repo clone {F}", []),
     # No explicit repository: nothing is taken from the checkout.
     ("gh pr create --fill", ["message"]),
@@ -206,6 +204,16 @@ def test_own_repository_work_needs_no_yes(ctx, command):
 ])
 def test_the_same_work_elsewhere_or_without_a_repository_is_gated(ctx, command, classes):
     _assert(ctx, command, True, classes)
+
+
+def test_gh_pr_checkout_in_a_worktree_is_own_repository_work(tmp_path):
+    # In the turn checkout itself it is desk-only (test_agent_host_gate_session_tree.py).
+    worktree = tmp_path / "projects" / "demo" / ".worktrees" / "fix"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: ../../.git/worktrees/fix\n")
+    ctx = make_ctx(tmp_path, cwd=worktree)
+    _assert(ctx, f"gh pr checkout 5 --repo {M}", False)
+    _assert(ctx, f"gh pr checkout 5 --repo {F}", True, [])
 
 
 def test_without_configured_owners_no_repository_is_own(tmp_path):
@@ -470,7 +478,7 @@ def test_a_push_is_classified_by_git_option_grammar(ctx, command, classes):
     "git log --all",
     "git fetch --prune --tags",
     "git branch -d feature",
-    "git stash push -m wip",
+    "git stash list",
     "git -c user.name=x commit -m y",
 ])
 def test_a_push_of_a_feature_branch_and_other_git_work_is_not_gated(ctx, command):
