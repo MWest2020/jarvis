@@ -7,6 +7,7 @@ path, name and identity is a configuration value (AGENTS.md).
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,9 @@ from agent_host.boundedio import read_regular
 from agent_host.command import EFFORT_LEVELS, MODEL_NAME
 from agent_host.egress import EgressConfig, EgressConfigError
 from agent_host.egress import parse_config as parse_egress
+
+# The shape of an address in `own_mail`; the read-back checks it again (targets.mail_address).
+_MAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
 
 
 class ConfigError(RuntimeError):
@@ -81,6 +85,10 @@ class AgentHostConfig:
     managed_settings_path: Path = DEFAULT_MANAGED_SETTINGS_PATH
     # Whose repositories are "own" (D36): owner names on the forge host.
     own_owners: tuple[str, ...] = ()
+    # The user's own mail addresses (jarvis-mail-the-driver): a mail to one of
+    # them alone is read back and can be confirmed by voice ([own_mail] in the
+    # rules). Empty: every mail needs the desk.
+    own_mail: tuple[str, ...] = ()
     # Voice confirmation (1b2, D36). "off" lets gated calls through
     # unconfirmed; `confirm_skip` does that for single classes.
     confirm: str = "on"
@@ -238,6 +246,12 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
     ):
         raise ConfigError("own_owners must be a list of owner names")
 
+    own_mail_raw = data.get("own_mail", [])
+    if not isinstance(own_mail_raw, list) or not all(
+        isinstance(address, str) and _MAIL_RE.fullmatch(address) for address in own_mail_raw
+    ):
+        raise ConfigError("own_mail must be a list of mail addresses (local@domain)")
+
     confirm = data.get("confirm", "on")
     if confirm not in ("on", "off"):
         raise ConfigError('confirm must be "on" or "off"')
@@ -300,6 +314,7 @@ def config_from_dict(data: dict, *, config_path: Path = DEFAULT_CONFIG_PATH) -> 
             data.get("managed_settings_path", DEFAULT_MANAGED_SETTINGS_PATH),
             "managed_settings_path"),
         own_owners=tuple(own_owners_raw),
+        own_mail=tuple(address.lower() for address in own_mail_raw),
         confirm=confirm,
         confirm_skip=frozenset(confirm_skip),
         confirm_program=_path(data.get("confirm_program", DEFAULT_CONFIRM_PROGRAM),

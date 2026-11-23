@@ -193,6 +193,7 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `rules_dir` | no (default `/etc/jarvis-agent/rules.d`) | Host-local gate rules. |
 | `managed_settings_path` | no (default `/etc/claude-code/managed-settings.json`) | Where Claude Code's managed settings are on this host. A write to it is in the class `self`. Never written by Jarvis or by `install.sh`. |
 | `own_owners` | no (default none) | Owner names on the forge host whose repositories are your own. A read-back says "name" for these and "name of owner" for all others. |
+| `own_mail` | no (default none) | Your own mail addresses. A connector mail to one of them alone is read back ("Send a mail to you@example.org.") and can be confirmed by voice; every other mail needs the desk. See [Mail to yourself](#mail-to-yourself). |
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
@@ -620,6 +621,45 @@ identity but Jarvis's. The files are TOML in the format of
 directory and never writes into it. A write to it by the agent is in the class `self`:
 always refused by voice.
 
+## Mail to yourself
+
+A voice turn can mail you, and nobody else (change `jarvis-mail-the-driver`). The gate
+gates every connector tool whose name says it sends. For the mail tool listed under
+`[own_mail]` in `gate_rules.toml` (the claude.ai Gmail connector's `send_message`), it
+reads a call back only when the call is one mail to one address in `own_mail`, alone:
+
+- `to` holds exactly one address from `own_mail`, as plain ASCII with nothing around it.
+  Case does not count. A lookalike such as a Kelvin sign for "k", or a no-break or em
+  space, makes the call not nameable, so the read-back is always the bytes that run;
+- `cc` and `bcc` are absent or empty;
+- the call holds no field outside the `[own_mail]` list. So a draft (`draftId`, which is
+  sent as it is to whoever it names) or an attachment is never nameable.
+
+A mail in a thread is the same send with `replyThreadId`. `replyToMessageId` is not
+on the list: it needs the connector's read access, and what the server does with it
+cannot be checked without sending. The
+connector's `reply` tool is never nameable, because it may copy a thread's default cc
+recipients, which the call does not show.
+
+The read-back is "Send a mail to you@example.org." and it needs a yes. The subject and
+body are not spoken: the read-back holds no text from the call (D36). Every other Gmail
+call has no sentence and needs the desk: reply, forward, trash, draft, label, spam, or a
+send to anyone else. The same goes for those tools under another connector name. A
+host-local `[[tool_actions]]` rule is never consulted for a Gmail tool.
+
+`[own_mail]` comes from the repository's `gate_rules.toml` only: a file in `rules.d`
+that sets it is an error, so a host file cannot widen it. Without `own_mail`, every
+mail needs the desk.
+
+**No Gmail tool is ever exempt from confirmation.** `confirm = "off"` and
+`confirm_skip` (`message` included) do not apply to any `mcp__` tool whose name
+contains "gmail", in any case. A mail to you is still read back and needs a yes, and
+everything else still needs the desk.
+
+The agent learns the address from your own instructions and memory, which the turn
+loads (for Mark: the digest mail goes to his address). To name it in the prompt as
+well, put one line in a `second_prompt_file`.
+
 ## Switching confirmation off
 
 Everything is allowed; the gate guards against misheard speech in a car. Three ways to
@@ -627,6 +667,7 @@ switch it off, all recorded as "not confirmed: confirmation is off" in the turn 
 
 - for everything: `confirm = "off"` in `config.toml`;
 - for single classes: `confirm_skip = ["message"]`;
+  (neither ever covers a Gmail tool: see [Mail to yourself](#mail-to-yourself))
 - by voice, or from a shell: `sudo /usr/local/lib/jarvis-agent/confirm off` (or
   `off <class>`, `on`). By voice this is itself read back with a fixed sentence and needs
   a yes; no other edit of the configuration can be made by voice.
