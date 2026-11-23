@@ -46,8 +46,20 @@
       `git -C` push needs the desk, a push to main from the checkout is read back, the
       nested-agent refusal and the builder count. The prompt tells builders to use
       `git -C` and `--repo`.
-- [ ] Host: check that 2.1.322 honours both `CLAUDE_CODE_MAX_*` variables, and record a
-      subagent hook input on the installed gate to compare with the fixture.
+- [x] Host: check that 2.1.322 honours both `CLAUDE_CODE_MAX_*` variables (2026-11-23,
+      installed `df2c7af`). Depth 1: a builder is not offered `Agent` or `Task` (its tool
+      list; `ToolSearch select:Agent,Task` answers "No matching deferred tools found"; its
+      meta says `spawnDepth: 1`), while a depth-1 subagent without the pin has `Agent`.
+      Concurrency 2: of three `Explore` helpers started at once, two ran side by side and
+      Claude Code refused the third ("Concurrent subagent limit reached. You can run 2
+      subagents at once."), turn `8f5326ef…`.
+- [ ] Host: record a subagent hook input on the installed gate to compare with the fixture.
+      Not possible as installed: the action log keeps `tool`, `what`, `cwd`, `status` and
+      `hash`, never the hook input. What could be compared (2026-11-23): the hook `cwd` of a
+      builder's call is the turn checkout, also for `git -C <worktree>` (as in the fixture);
+      the real `agent_id` is 17 characters (`a` and 16 hex, e.g. `afad571b0e1e6abd0`, twelve
+      subagents), the fixture's 16 (`a5f3c2e1b7d94e08`); the gate only tests that the key is
+      present. A full record needs a hook that dumps its input.
 
 ## 3. Prompt and docs
 - [x] `prompt.md`: Jarvis may start its own builder; the gate guards its calls; long work
@@ -59,10 +71,24 @@
 - [x] D59 in `openspec/changes/jarvis-full-agent/design.md`.
 
 ## 4. Wiring (host)
-- [ ] Merged, then installed on agent-lxc with `install.sh` (new rules and prompt).
-- [ ] Host check 13 again with the installed gate and without a test rule: a
+- [x] Merged, then installed on agent-lxc with `install.sh` (new rules and prompt):
+      `/usr/local/lib/jarvis-agent/VERSION` is `df2c7af`, 2026-11-23.
+- [x] Host check 13 again with the installed gate and without a test rule: a
       `general-purpose` subagent starts, its `git status` runs, a probe merge from inside
       it is read back (answered no), a `Write` to the gate's configuration is refused.
+      2026-11-23, installed `df2c7af`, Claude Code 2.1.322, through the installed wrapper in
+      a throwaway sandbox clone: builder `git -C <worktree> status` ran (turn `a33b07b0…`);
+      its `gh pr merge 1 --repo MWest2020/jarvis-sandbox-probe --match-head-commit …` read
+      back as "Merge pull request 1 on jarvis-sandbox-probe, at commit 1177e37. Status
+      unknown." (turn `66781768…`), answered no, record `a2041f5e…` `cancelled`, nothing
+      ran; its `Write` of `/etc/jarvis-agent/config.toml` refused `self:write` (turn
+      `dc464318…`, file unchanged). Also `self:session` for `claude --version` in the turn
+      and in a builder (`301cc557…`, `46b192f6…`), `self:checkout-tree` for `git stash` in
+      the turn checkout (`2094e202…`) while `git -C <linked worktree> checkout other` ran
+      (`d1354b4c…`). The turn agent declined by itself (its prompt) to make a third builder
+      call, `claude -p` and `git checkout <branch>` in the checkout, so `subagent:too-many`
+      and `subagent:nested` were shown on the installed `decision.decide` in a harness, not
+      live; a builder has no `Agent` tool to nest with.
 - [ ] By voice: "fix <a small bug>". The builder opens a pull request; "merge it" is read
       back.
 - [ ] Archive, after `jarvis-full-agent`.
