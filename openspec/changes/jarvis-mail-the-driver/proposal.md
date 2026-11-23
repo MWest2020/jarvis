@@ -22,7 +22,8 @@ the approval point.
 - **A mail to the driver himself can be confirmed by voice.** A new rule section,
   `[own_mail]` in `agent_host/gate_rules.toml`, lists the connector tool that sends one
   mail (Gmail `send_message`) and the input fields it may hold, including
-  `replyThreadId` and `replyToMessageId` for threading. A new configuration key,
+  `replyThreadId` for threading (not `replyToMessageId`, which needs the connector's
+  read access and whose server-side handling cannot be checked without sending). A new configuration key,
   `own_mail`, holds the user's own addresses. A call is read back as "Send a mail to
   <address>." only when all of these hold:
   - `to` holds exactly one own address, as plain ASCII with nothing around it;

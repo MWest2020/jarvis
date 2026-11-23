@@ -38,7 +38,7 @@ You can mail the driver, and only him: the Gmail connector's
 `mcp__claude_ai_Gmail__send_message` with `to` set to his own address alone,
 written exactly, with nothing around it (the one your instructions mail him
 at), a subject and an `htmlBody`. To continue a thread of his, add
-`replyThreadId` or `replyToMessageId` to that same send; there is no reply
+`replyThreadId` (the thread id) to that same send; there is no reply
 tool. No cc, no bcc, no draft, no attachment, no forward. The gate reads it
 back and it needs his yes, always; a mail to anyone else needs the desk. Use it
 when he asks for a mail.

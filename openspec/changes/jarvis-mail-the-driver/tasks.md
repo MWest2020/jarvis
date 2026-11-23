@@ -26,8 +26,8 @@
     and becomes pending;
   - these all need the desk and are never pending: another recipient, the own address
     plus another, a display name, lookalikes (Kelvin sign, em or no-break space,
-    surrounding space), a cc, a bcc, a draft, an attachment, an unknown field and the
-    reply tool;
+    surrounding space), a cc, a bcc, a draft, an attachment, an unknown field,
+    `replyToMessageId` and the reply tool;
   - forward, trash, draft, label and spam tools are never nameable, and reads stay
     ungated;
   - with `confirm = "off"` or `confirm_skip = ["message"]`, a send to another address

@@ -43,7 +43,6 @@ def test_a_mail_to_the_own_address_is_read_back_without_its_subject_or_body(env)
     {"to": OWN, "body": "b"},
     {"to": [OWN], "cc": [], "bcc": [], "body": "b", "includeSignature": True},
     {"to": [OWN], "body": "b", "replyThreadId": "t1"},
-    {"to": [OWN], "body": "b", "replyToMessageId": "m1"},
 ])
 def test_spellings_of_the_same_mail_to_the_own_address(env, tool_input):
     assert outcome(env, SEND, **tool_input).sentence == f"Send a mail to {OWN}."
@@ -62,6 +61,7 @@ def test_spellings_of_the_same_mail_to_the_own_address(env, tool_input):
     (SEND, {"to": [OWN], "draftId": "d1"}),                       # a draft goes as it is
     (SEND, {"to": [OWN], "body": "b", "attachments": [{"content": "eA=="}]}),
     (SEND, {"to": [OWN], "body": "b", "somethingNew": 1}),
+    (SEND, {"to": [OWN], "body": "b", "replyToMessageId": "m1"}),  # needs read access, unchecked
     (SEND, {"to": [OWN], "body": "b", "replyAll": False}),        # not a field of a send
     # The read-back must be the bytes that run: no lookalikes, nothing around it.
     (SEND, {"to": [OWN + "\u2003"], "body": "b"}),                # EM SPACE

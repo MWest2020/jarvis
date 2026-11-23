@@ -635,7 +635,9 @@ reads a call back only when the call is one mail to one address in `own_mail`, a
 - the call holds no field outside the `[own_mail]` list. So a draft (`draftId`, which is
   sent as it is to whoever it names) or an attachment is never nameable.
 
-A mail in a thread is the same send with `replyThreadId` or `replyToMessageId`. The
+A mail in a thread is the same send with `replyThreadId`. `replyToMessageId` is not
+on the list: it needs the connector's read access, and what the server does with it
+cannot be checked without sending. The
 connector's `reply` tool is never nameable, because it may copy a thread's default cc
 recipients, which the call does not show.
 
