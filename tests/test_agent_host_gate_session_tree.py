@@ -314,3 +314,40 @@ def test_a_new_branch_without_a_start_point_runs_in_the_checkout(tmp_path, repo,
 def test_a_new_branch_with_a_start_point_is_still_desk_only(tmp_path, repo, command):
     checkout, _ = repo
     assert bash(command, _ctx(tmp_path, checkout, checkout)).rule == classify.RULE_CHECKOUT_TREE
+
+
+# --- re-review of #98 at 2400a4b: -T, and -t inside a bundle -----------------------------------
+
+@pytest.mark.parametrize("command", [
+    # -T / --no-target-directory copies the contents into the target.
+    "cp -rT /tmp/c .", "cp -r -T /tmp/c .", "cp -aT /tmp/c .", "cp -r --no-target-directory /tmp/c .",
+    "cp -rT /tmp/c ./", "cp -r --no-target /tmp/c .", "mv -T /tmp/c .", "ln -sT /tmp/c .",
+    # -t read out of a bundle, attached or not, and by a long prefix.
+    "cp -rt . /tmp/c/.", "cp -art . /tmp/c/.", "cp -vrt . /tmp/c/.", "cp -rt. /tmp/c/.",
+    "cp -rt ./ /tmp/c/.", "cp -r --target . /tmp/c/.", "cp --rec -t . /tmp/c/.",
+    "cp -rTt . /tmp/c", "mv -ft . /tmp/c/*",
+])
+def test_cp_t_and_T_spellings_onto_the_turn_checkout_are_desk_only(tmp_path, repo, command):
+    checkout, _ = repo
+    verdict = bash(command, _ctx(tmp_path, checkout, checkout))
+    assert verdict.gated and verdict.desk_only, (command, verdict)
+
+
+@pytest.mark.parametrize("command", [
+    "cp -rT /tmp/c src", "cp -rt src /tmp/c/.", "cp -t . /tmp/x.json", "cp -vt . /tmp/x.json",
+    "install -m 644 -t . /tmp/x.json", "cp -S .bak -r /tmp/c .", "rsync -avt /tmp/c src/",
+    "mv -t src /tmp/c/x",
+])
+def test_the_same_options_into_a_subdirectory_or_for_plain_files_run(tmp_path, repo, command):
+    checkout, _ = repo
+    assert not bash(command, _ctx(tmp_path, checkout, checkout)).desk_only, command
+
+
+def test_rsync_t_keeps_times_and_is_not_a_target(tmp_path, repo):
+    checkout, _ = repo
+    ctx = _ctx(tmp_path, checkout, checkout)
+    # `-t .` would make `.` a target and the source the only operand: the
+    # contents copy must still be seen, with the destination where rsync puts it.
+    assert bash("rsync -rt /tmp/c/ .", ctx).rule == classify.RULE_CHECKOUT_TREE
+    assert bash("rsync -avt /tmp/c/ .", ctx).rule == classify.RULE_CHECKOUT_TREE
+    assert bash("rsync -t /tmp/c/ src/", ctx).rule != classify.RULE_CHECKOUT_TREE

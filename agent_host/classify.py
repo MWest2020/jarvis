@@ -2004,23 +2004,92 @@ def _lands_on_turn_checkout(program: str, args: list[str], ctx: Context) -> bool
         return any(_hits_checkout_top(dest, ctx) for dest in (dests or ["."]))
 
     # A copy: the target directory, or any operand after the first.
-    targets = _option_values(args, ("-t",), ("--target-directory",))
-    operands = [a for a in args if not a.startswith("-") and a not in targets]
+    no_target = recursive = False
+    if program in _COREUTILS_COPY:
+        targets, operands, no_target, recursive = _coreutils_copy_args(program, args)
+    else:
+        # rsync, scp, ditto: no target option (rsync's `-t` keeps times).
+        targets, operands = [], [a for a in args if not a.startswith("-")]
     if not targets:
         targets = [a for a in operands[1:] if not _REMOTE_WORD_RE.match(a)]
     if not targets:
         return False
-    # What lands at the top: a source's contents (`dir/.`, `dir/`, `.`), a
-    # glob, or a source that is itself a `.claude`. A directory by its own
-    # name lands as a subdirectory (`cp -r /tmp/c .` makes `./c`).
+    # What lands at the top: a source's contents (`dir/.`, `dir/`, `.`, or
+    # any source with -T / --no-target-directory), a glob, or a source that
+    # is itself a `.claude`. A directory by its own name lands as a
+    # subdirectory (`cp -r /tmp/c .` makes `./c`).
     sources = [a for a in operands if a not in targets]
-    risky = program == "ditto" or any(_spills_into_destination(a) for a in sources)
+    risky = program == "ditto" or no_target \
+        or any(_spills_into_destination(a) for a in sources)
     if program not in ("mv", "ln"):
-        recursive = (_short_group_has(args, "rRad" if program == "rsync" else "rRa")
-                     or any(a in ("--recursive", "--archive", "--parents", "--dirs")
-                            for a in args) or program == "ditto")
+        if program not in _COREUTILS_COPY:
+            recursive = (_short_group_has(args, "rRad" if program == "rsync" else "rRa")
+                         or any(a in ("--recursive", "--archive", "--dirs") for a in args)
+                         or program == "ditto")
         risky = risky and recursive
     return any(_hits_checkout_top(t, ctx, files_only=not risky) for t in targets)
+
+
+_COREUTILS_COPY = frozenset({"cp", "install", "mv", "ln"})
+# Short options of these that take a value (`-S .bak`, install's `-m 644`).
+_COREUTILS_VALUE_SHORTS = {"install": "Smog"}
+_COREUTILS_VALUE_LONGS = frozenset({"--suffix", "--mode", "--owner", "--group",
+                                    "--strip-program"})
+
+
+def _coreutils_copy_args(program: str, args: list[str]
+                         ) -> tuple[list[str], list[str], bool, bool]:
+    """(the `-t` targets, the operands, whether -T is given, whether it is
+    recursive) of `cp`,
+    `install`, `mv` or `ln`, with short options read out of bundles
+    (`-rt .`, `-art.`, `-rT`) and long options by any unique prefix."""
+    value_shorts = _COREUTILS_VALUE_SHORTS.get(program, "S")
+    targets: list[str] = []
+    operands: list[str] = []
+    no_target = recursive = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            operands += args[index + 1:]
+            break
+        if arg == "-" or not arg.startswith("-"):
+            operands.append(arg)
+            index += 1
+            continue
+        if arg.startswith("--"):
+            name, eq, value = arg.partition("=")
+            if _long_is(name, "--target-directory") and len(name) > len("--ta"):
+                targets.append(value if eq else (args[index + 1] if index + 1 < len(args) else ""))
+                index += 1 if eq else 2
+                continue
+            if _long_is(name, "--no-target-directory") and len(name) > len("--no-"):
+                no_target = True
+            if any(_long_is(name, long) and len(name) > 3
+                   for long in ("--recursive", "--archive", "--parents")):
+                recursive = True
+            if not eq and any(_long_is(name, long) for long in _COREUTILS_VALUE_LONGS):
+                index += 2
+                continue
+            index += 1
+            continue
+        letters = arg[1:]
+        step = 1
+        for position, letter in enumerate(letters):
+            rest = letters[position + 1:]
+            if letter == "t":
+                targets.append(rest or (args[index + 1] if index + 1 < len(args) else ""))
+                step = 1 if rest else 2
+                break
+            if letter == "T":
+                no_target = True
+            if letter in "rRa":
+                recursive = True
+            if letter in value_shorts:
+                step = 1 if rest else 2
+                break
+        index += step
+    return targets, operands, no_target, recursive
 
 
 def _spills_into_destination(source: str) -> bool:

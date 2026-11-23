@@ -477,9 +477,10 @@ gh = [["pr", "checkout"], ["repo", "sync"]]
 # `-d`, `-D` or `-o` directory of an unpack, or else the working directory.
 # A glob or a destination the gate cannot read counts as the checkout. A
 # copy to the top only counts when it is recursive and a source spills its
-# contents there (`dir/.`, `dir/`, `.`, a glob, `ditto`) or is a `.claude`
+# contents there (`dir/.`, `dir/`, `.`, a glob, `ditto`, -T) or is a `.claude`
 # (`mv` and `ln` need no -r); a directory by its own name lands as a
-# subdirectory. Anything that lands in `.claude` counts.
+# subdirectory. Anything that lands in `.claude` counts. `cp`, `install`,
+# `mv` and `ln` are read like their own parser (-t and -T in a bundle).
 copy = ["cp", "rsync", "scp", "install", "ditto", "mv", "ln"]
 unpack = ["tar", "bsdtar", "unzip", "patch", "cpio", "7z", "7za", "7zz"]
 
