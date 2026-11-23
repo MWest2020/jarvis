@@ -725,10 +725,6 @@ the words are spoken:
 - the reply is not a read-back: a read-back is spoken exactly as built, tag or not;
 - `JARVIS_SING` is not `0` (and for a parody tune, `JARVIS_SING_PARODY` is not `0`).
 
-When the agent tagged its line and the bridge said it without the beat, the log says why
-(`beatbox tag dropped: switched_on=True asked=False`); a beat that plays logs
-`beatboxed: <pattern>`.
-
 In `full` mode the agent host needs the new `prompt.md` (`agent_host/install.sh`, see
 [`agent-host.md`](agent-host.md)); until then its agent never writes the tag and nothing
 changes. A sung line may be 240 characters instead of 160 (tag included). The agent is asked for
@@ -787,6 +783,19 @@ SPOKEN SUMMARY: [beatbox: hip-hop] Alright, here's a beat for the road.
 random. A name is normalised like a tune name (`[beatbox: Boots and Cats]` works), and
 `[beat box]` and `[beat-box]` count as the tag. A sing tag written after it is removed,
 never said.
+
+**Why the driver's own words must ask for it.** The agent reads repositories, web pages
+and mail, and it can be wrong; a 15-second beat in the car on an ordinary answer is
+the kind of thing a check the model does not control should stop. So the bridge plays
+a beat only when the tag is first on the agent's line *and* the transcript of this turn
+asks for one. Whisper mishears "beatbox" (23 Nov 2026: "Jarvis, drop a beatbox" came out
+as "Jawers, troop en peedbox!"), so the ask also takes the misheard forms in
+`bridge/beatbox.py` (`MISHEARD`).
+
+When the agent tagged its line and the bridge said it without the beat, the log says why:
+`beatbox tag dropped: switched_on=True asked=False tag_first=True` (whether the feature is
+on, whether the driver asked, whether the tag stood where it can be played). A beat that
+plays logs `beatboxed: <pattern>`. Neither line holds the transcript.
 
 | Tag | Beat | Tempo, length |
 |---|---|---|

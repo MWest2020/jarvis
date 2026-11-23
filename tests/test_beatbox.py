@@ -507,14 +507,16 @@ MARKS_LINE = "Here's a beat for the road, Mark."
 
 @pytest.mark.parametrize("transcript", [
     MARKS_WORDS, "peedbox", "peetbox", "beadbox", "beat-box", "beet box", "bietbox",
-    "biedbox", "Pete box", "peat box please", "kun je peedboxen", "beatbax"])
+    "biedbox", "Pete box", "peat box please", "kun je peedboxen", "beatbax",
+    "beatboks", "bietboks", "peat bocks", "bait box", "baitbox", "bijtbox"])
 def test_the_driver_asks_even_when_whisper_mishears_beatbox(transcript):
     assert beatbox.asked_for_a_beat(transcript)
 
 
 @pytest.mark.parametrize("transcript", [
     "a pizza box", "check the postbox", "my inbox", "the toolbox", "an Xbox",
-    "a bento box", "the beta box", "put it in the box", "a beaten box"])
+    "a bento box", "the beta box", "put it in the box", "a beaten box",
+    "Dropbox", "een boks", "het bad box", "de lunchbox", "speed box"])
 def test_other_boxes_do_not_ask(transcript):
     assert not beatbox.asked_for_a_beat(transcript)
 
@@ -566,4 +568,6 @@ def test_a_tag_dropped_because_nobody_asked_is_logged(full, caplog):
     full.host.scenario(mode="wrapper", spoken=TAGGED)
     with caplog.at_level("INFO", logger="bridge.server"):
         full.say("what is open?")
-    assert any("beatbox tag dropped" in r.getMessage() for r in caplog.records)
+    dropped = [r.getMessage() for r in caplog.records if "beatbox tag dropped" in r.getMessage()]
+    assert dropped and "tag_first=True" in dropped[0]
+    assert "what is open" not in dropped[0]  # never the transcript
