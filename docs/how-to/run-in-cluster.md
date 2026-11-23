@@ -7,7 +7,7 @@ last_reviewed: 2026-11-15
 The bridge as one pod on a cluster that runs the
 [Tailscale Kubernetes operator](https://tailscale.com/kb/1236/kubernetes-operator), reachable
 only over the tailnet plus the token. Why and the decisions: the change
-[`run-bridge-in-cluster`](../../openspec/changes/run-bridge-in-cluster/design.md). For a
+[`run-bridge-in-cluster`](../../openspec/changes/archive/2026-11-23-run-bridge-in-cluster/design.md). For a
 workstation, see [`bridge-service.md`](bridge-service.md).
 
 The manifests belong in your own cluster repository; this page gives the pieces.

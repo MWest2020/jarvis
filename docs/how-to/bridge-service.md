@@ -116,7 +116,7 @@ directory or under `JARVIS_PROJECTS_ROOT` (the read-only agent can read everythi
 It also needs the OpenSSH client on `PATH`.
 
 **Which projects.** In `full` mode the agent host decides (change
-[`jarvis-general-conversation`](../../openspec/changes/jarvis-general-conversation/design.md),
+[`jarvis-general-conversation`](../../openspec/changes/archive/2026-11-23-jarvis-general-conversation/design.md),
 D52):
 
 - `GET /projects` asks the agent host for its list (one ssh connection with the list
@@ -361,7 +361,7 @@ streamed reply's status line says HTTP/1.1, which a chunked body needs, and it c
 
 ### Streamed replies
 
-Change [`jarvis-streaming-speech`](../../openspec/changes/jarvis-streaming-speech/design.md)
+Change [`jarvis-streaming-speech`](../../openspec/changes/archive/2026-11-23-jarvis-streaming-speech/design.md)
 (S1 to S8). A client that sends `Accept: audio/L16;rate=24000;channels=1` over HTTP/1.1 (the
 phone app does since 2026-11-17) gets:
 
@@ -652,7 +652,7 @@ only the baked voices work (`bm_george` and `af_heart`); see
 
 ## Singing (easter egg)
 
-Change [`jarvis-sing`](../../openspec/changes/jarvis-sing/proposal.md) (Mark,
+Change [`jarvis-sing`](../../openspec/changes/archive/2026-11-23-jarvis-sing/proposal.md) (Mark,
 2026-11-17: "make jarvis able to sing"). Ask "Jarvis, sing a song", "zing iets" or
 "sing happy birthday" and Jarvis sings a short tune in its own voice instead of speaking.
 
@@ -765,7 +765,7 @@ sf.write('/tmp/sing-test.wav', tts.sing(song, voice='bm_george'), 24000)
 
 ## Beatboxing (easter egg)
 
-Change [`jarvis-beatbox`](../../openspec/changes/jarvis-beatbox/proposal.md) (Mark,
+Change [`jarvis-beatbox`](../../openspec/changes/archive/2026-11-23-jarvis-beatbox/proposal.md) (Mark,
 2026-11-18, after hearing the songs: "Can it beatbox?"). Ask "Jarvis, beatbox", "drop a
 beat" or "doe eens een beat" and Jarvis says one short line and then beatboxes for 10 to
 11 seconds.
