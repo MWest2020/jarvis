@@ -45,8 +45,14 @@ ODD_TAG = re.compile(r"\[\s*beat[- ]?box\w*[^\]\[\n]{0,60}\]\s*", re.IGNORECASE)
 OPEN_TAG = re.compile(r"\[\s*beat[- ]?box\w*\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECASE)
 # What the driver must have said in this turn: a word that asks for a beat, in English
 # or Dutch ("beatbox", "beat box", "doe eens een beat", "een beatje", "drop a beat",
-# "boots and cats").
-ASKED = re.compile(r"\b(beat[- ]?box\w*|beats?|beatjes?|boots and cats)\b", re.IGNORECASE)
+# "boots and cats"). Also "beatbox" as Whisper mishears it from Mark in the car: on
+# 23 Nov 2026 "Jarvis, drop a beatbox" came out as "Jawers, troop en peedbox!", the
+# agent tagged its line, and the bridge said the line without the beat. So a b or p,
+# a vowel, a d or t, and "box" (or "bax"): "peedbox", "beadbox", "bietbox", "Pete box".
+# Never a box alone ("inbox", "postbox", "pizza box"); the agent's tag is needed too.
+MISHEARD = r"[bp](?:ea|ee|ie|ei|e|i)[dt]{1,2}e?[- ]?b[ao]x\w*"
+ASKED = re.compile(rf"\b(beat[- ]?box\w*|beats?|beatjes?|boots and cats|{MISHEARD})\b",
+                   re.IGNORECASE)
 
 
 @dataclass(frozen=True)

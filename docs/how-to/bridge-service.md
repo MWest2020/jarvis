@@ -725,6 +725,10 @@ the words are spoken:
 - the reply is not a read-back: a read-back is spoken exactly as built, tag or not;
 - `JARVIS_SING` is not `0` (and for a parody tune, `JARVIS_SING_PARODY` is not `0`).
 
+When the agent tagged its line and the bridge said it without the beat, the log says why
+(`beatbox tag dropped: switched_on=True asked=False`); a beat that plays logs
+`beatboxed: <pattern>`.
+
 In `full` mode the agent host needs the new `prompt.md` (`agent_host/install.sh`, see
 [`agent-host.md`](agent-host.md)); until then its agent never writes the tag and nothing
 changes. A sung line may be 240 characters instead of 160 (tag included). The agent is asked for
@@ -829,7 +833,12 @@ beatbox tag is removed and the line is spoken:
 - the tag is the very first thing on the agent's own spoken line (only the bridge's fixed
   sentences, `FRAMING_SENTENCES`, are looked past);
 - the driver's own words in this turn ask for it: "beatbox" (also "beatboxen",
-  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats";
+  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats", or "beatbox" as
+  Whisper mishears it: a b or p, a vowel, a d or t, then "box" ("peedbox", "beadbox",
+  "bietbox", "Pete box"). On 23 Nov 2026 "Jarvis, drop a beatbox" came out as "Jawers,
+  troop en peedbox!"; the agent tagged its line and the bridge, finding no word that
+  asked, said only "Here's a beat for the road, Mark." A box alone ("inbox", "pizza box")
+  never asks;
 - the reply is not a read-back;
 - `JARVIS_BEATBOX` is not `0`.
 
