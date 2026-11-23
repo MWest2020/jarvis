@@ -193,6 +193,7 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `rules_dir` | no (default `/etc/jarvis-agent/rules.d`) | Host-local gate rules. |
 | `managed_settings_path` | no (default `/etc/claude-code/managed-settings.json`) | Where Claude Code's managed settings are on this host. A write to it is in the class `self`. Never written by Jarvis or by `install.sh`. |
 | `own_owners` | no (default none) | Owner names on the forge host whose repositories are your own. A read-back says "name" for these and "name of owner" for all others. |
+| `own_mail` | no (default none) | Your own mail addresses. A connector mail to one of them alone is read back ("Send a mail to you@example.org.") and can be confirmed by voice; every other mail needs the desk. See [Mail to yourself](#mail-to-yourself). |
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
@@ -619,6 +620,33 @@ identity but Jarvis's. The files are TOML in the format of
 `/usr/local/lib/jarvis-agent/gate_rules.toml`, root-owned. The installer creates the
 directory and never writes into it. A write to it by the agent is in the class `self`:
 always refused by voice.
+
+## Mail to yourself
+
+A voice turn can mail you, and nobody else (change `jarvis-mail-the-driver`). The gate
+gates every connector tool whose name says it sends. For the mail tools listed under
+`[own_mail]` in `gate_rules.toml` (today the claude.ai Gmail connector's `send_message`
+and `reply`), it reads a call back only when the call is one mail to one address in
+`own_mail`, alone:
+
+- `to` holds exactly one address from `own_mail` (case and surrounding spaces do not
+  count);
+- `cc` and `bcc` are absent or empty, and `replyAll` is absent or false;
+- the call holds no field outside the `[own_mail]` list, so a draft (`draftId`, which is
+  sent as it is to whoever it names) or an attachment is never nameable;
+- a reply names its recipient in `to`. By default a reply goes to the sender of the
+  message, which the call does not show.
+
+The read-back is "Send a mail to you@example.org." and needs a yes. The subject and the
+body are not spoken: the read-back holds no text from the call (D36). Every other call of
+these tools has no sentence and needs the desk. A forward, trash, draft, label or spam
+tool is gated with no sentence, so it needs the desk too. A host-local `[[tool_actions]]`
+rule is not consulted for the `[own_mail]` tools, so a host file cannot widen them to
+other recipients. Without `own_mail`, every mail needs the desk, as before.
+
+The agent learns the address from your own instructions and memory, which the turn
+loads (for Mark: the digest mail goes to his address). To name it in the prompt as
+well, put one line in a `second_prompt_file`.
 
 ## Switching confirmation off
 

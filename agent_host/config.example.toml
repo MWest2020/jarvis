@@ -72,6 +72,9 @@ rules_dir = "/etc/jarvis-agent/rules.d"
 managed_settings_path = "/etc/claude-code/managed-settings.json"
 # Owner names on the forge host whose repositories are your own (spoken as "name", not "name of owner").
 own_owners = []
+# Your own mail addresses. A connector mail to one of them alone (no cc, bcc, draft or
+# attachment) is read back and can be confirmed by voice; every other mail needs the desk.
+own_mail = []
 # Run by the wrapper after a confirmed call ran: a list of words, the read-back is appended as the last. Empty: no notification.
 notify_command = []
 # Asked for a merge's review decision and checks; the wrapper adds the number, --repo and --json.
