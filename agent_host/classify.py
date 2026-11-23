@@ -476,11 +476,13 @@ def agent_name_key(name: str) -> str:
 
 
 def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
-    """A call that starts a subagent runs by voice only as a read-only type,
-    in the turn itself, with nothing in its input the rules do not know.
-    Every call the subagent makes comes through the gate on its own (host
-    check 13); this rule keeps the helpers to the built-in ones without
-    edit tools."""
+    """A call that starts a subagent runs by voice only as a built-in type
+    the rules list (a read-only helper, or a builder: D58, D59), in the turn
+    itself, with nothing in its input the rules do not know. Every call the
+    subagent makes comes through the gate on its own (host check 13), so a
+    builder's push, merge or mail needs the same yes as the turn's own; this
+    rule keeps the subagents to built-ins that end with the turn and run
+    under this gate."""
     rules = ctx.rules
     if set(tool_input) - rules.subagent_fields - rules.subagent_off_fields:
         return Verdict(gated=True, rule="subagent:field")
@@ -489,7 +491,8 @@ def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
            for key in rules.subagent_off_fields):
         return Verdict(gated=True, rule="subagent:background")
     kind = tool_input.get("subagent_type")
-    # No type is Claude Code's general-purpose agent: every tool.
+    # No type: which agent runs is then Claude Code's default (general-purpose
+    # unless configured otherwise), not something the call says.
     if not isinstance(kind, str) or not kind.strip():
         return Verdict(gated=True, rule="subagent:type")
     key = agent_name_key(kind)
@@ -502,6 +505,13 @@ def _judge_subagent(tool_input: dict, ctx: Context) -> Verdict:
     if key in names:
         return Verdict(gated=True, rule="subagent:shadowed")
     return UNGATED
+
+
+def is_builder_start(tool_name: str, tool_input: dict, rules: Rules) -> bool:
+    """A call that starts a builder (D59): the gate counts these per turn."""
+    kind = tool_input.get("subagent_type")
+    return (tool_name in rules.subagent_tools and isinstance(kind, str)
+            and agent_name_key(kind) in {agent_name_key(t) for t in rules.subagent_builder_types})
 
 
 def _main_worktree(directory: str) -> str | None:

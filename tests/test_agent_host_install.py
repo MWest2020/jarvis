@@ -161,10 +161,13 @@ def test_the_static_turn_settings_in_the_repository_hold_only_what_d34_allows():
     assert set(settings) == {"disableAllHooks", "env", "hooks"}
     assert settings["disableAllHooks"] is False
     assert "permissions" not in settings
-    # env holds only pins of what loads code or changes git's configuration; PATH and
-    # HOME are added per host by the installer. No grant, no JARVIS_* (D34, D36).
+    # env holds only pins of what loads code or changes git's configuration, and the
+    # subagent limits (D59); PATH and HOME are added per host by the installer. No
+    # grant, no JARVIS_* (D34, D36).
     assert settings["env"] == {"LD_PRELOAD": "", "LD_LIBRARY_PATH": "", "LD_AUDIT": "",
-                               "GIT_CONFIG_COUNT": "0"}
+                               "GIT_CONFIG_COUNT": "0",
+                               "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+                               "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "2"}
 
 
 def test_a_second_run_changes_nothing_and_keeps_what_was_filled_in(source, destdir):

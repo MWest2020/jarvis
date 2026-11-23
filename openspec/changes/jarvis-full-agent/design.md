@@ -851,6 +851,25 @@ wants done, and the desk builds it. `SubagentHandback`
 is ungated. Until this change `Agent` was listed as ungated outright, so every type started;
 the refusal behind #57 was the subagent's `SubagentHandback`.
 
+### D59. A voice turn may start its own builder (2026-11-23, change jarvis-voice-builders)
+
+Mark, by voice on 2026-11-23, after a builder for a bug fix was refused under D58: "Now why
+was it refused? You need to be able to start your own sessions." `[subagents]` gains
+`builder_types = ["general-purpose"]`: a voice turn starts it without a yes, under every
+other condition of D58 (named type, in the turn, no `isolation`, `name`, `team_name` or
+`mode`, not shadowed by an agent file). `claude` and `fork` stay refused: the first adds
+nothing to `general-purpose`, the second is always asynchronous and carries the turn's
+whole conversation. The wall is still the gate, not the type (D40): every call the builder
+makes is judged in the turn's state, a nameable one becomes the turn's pending call and is
+read back when the turn ends, its yes releases it once in the builder's directory, and one
+that needs the desk is passed to the coding session. Work that will not fit in the turn is
+handed on by starting the helper with `run_in_background: true`, which stays refused with
+`needs_desk`. A read-back for the start was not added: it could only say "start a builder",
+and the gate already asks about everything that matters inside it. After the security review
+of #96: at most two builders per turn (counted in the turn's state), no subagent started from
+inside a subagent (`agent_id` in the hook input), the spawn depth and concurrency pinned in
+the turn settings; processes started from a shell outlive the turn until #99.
+
 ## Risks / Trade-offs
 
 - **A misheard instruction now has effects.** "Close issue twelve" heard as "twenty" closes

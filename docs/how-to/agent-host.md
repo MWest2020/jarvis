@@ -490,7 +490,8 @@ the coding session at the desk takes these turns over from their records
 - a gated call refused for the desk: an entry in `gated_actions` with `outcome: refused` and
   `code` one of `needs_desk`, `settings_changed`, `target_changed` (other refusals, such as
   a split or a missing target the agent repairs, or `run_alone`, are part of a normal turn).
-  A refused helper that is not read-only (a builder, a background job) has code `needs_desk`
+  A refused subagent (since 2026-11-23 above all one started with `run_in_background: true`,
+  which is how a voice turn hands on work that will not fit in it) has code `needs_desk`
   since 2026-11-17, so the coding session builds what was asked;
 - a new repository that could not be set up as a project: `outcome: confirmed` with a
   `project` field that starts with `not ready` (`name_taken`, `needs_desk`, a name no
@@ -538,23 +539,31 @@ gate does not know sends the turn to the desk: add its verb here, with a test in
 
 A voice turn may start **read-only helper subagents** (Mark, 2026-11-17,
 [#57](https://github.com/MWest2020/jarvis/issues/57)): a web page read by `web-fetch`
-while the turn goes on, a search by `Explore`. What holds this up is that Claude Code runs
-the turn's hooks for every tool call a subagent makes, so the gate judges each call inside
-it as it judges the turn's own (host check 13). The rule on the type is a seatbelt on top of
-that (D40), not the wall.
+while the turn goes on, a search by `Explore`. Since 2026-11-23 it may also start **its own
+builder**, a `general-purpose` subagent that edits, commits, pushes a branch and opens a
+pull request, without a yes to start it (Mark, by voice: "You need to be able to start your
+own sessions."; change `jarvis-voice-builders`, D59). What holds this up is that Claude Code
+runs the turn's hooks for every tool call a subagent makes, so the gate judges each call
+inside it as it judges the turn's own (host check 13). The rule on the type is a seatbelt on
+top of that (D40), not the wall.
 
 `[subagents]` in `gate_rules.toml` lets an `Agent` call (or `Task`, the older name) through
 only when all of this holds:
 
-- `subagent_type` is one of `web-fetch`, `Explore`, `Plan`, `claude-code-guide`, compared
-  the way Claude Code compares agent names (case, spaces, dashes and underscores do not
-  count). On Claude Code 2.1.322 these are built-ins with **no edit tools; their `Bash` and
-  connector calls are gated per call** like the turn's own: `web-fetch` has `WebFetch` only;
-  `Explore` and `Plan` have everything but `Agent`, `Edit`, `Write`, `NotebookEdit` and the
-  artifact tools; `claude-code-guide` has `Bash`, `Read`, `WebFetch` and `WebSearch`. Not
-  allowed: `general-purpose`, `claude` and `fork` (every tool, `Agent` included),
-  `statusline-setup` (edits settings), no type at all (that is `general-purpose`), and any
-  agent defined in a file;
+- `subagent_type` is one of `read_only_types` (`web-fetch`, `Explore`, `Plan`,
+  `claude-code-guide`) or `builder_types` (`general-purpose`), compared the way Claude Code
+  compares agent names (case, spaces, dashes and underscores do not count). On Claude Code
+  2.1.322 the read-only ones are built-ins with **no edit tools; their `Bash` and connector
+  calls are gated per call** like the turn's own: `web-fetch` has `WebFetch` only; `Explore`
+  and `Plan` have everything but `Agent`, `Edit`, `Write`, `NotebookEdit` and the artifact
+  tools; `claude-code-guide` has `Bash`, `Read`, `WebFetch` and `WebSearch`.
+  `general-purpose` has every tool, `Agent` included, and every one of its calls is gated
+  as the turn's own (below). Not allowed: `claude` (the same tools under a second name, the
+  default of a fleet view: nothing a builder needs that `general-purpose` does not give, and
+  host check 13 ran `general-purpose`), `fork` (always asynchronous in 2.1.322, and it
+  carries the turn's whole conversation), `statusline-setup` (edits settings), no type at
+  all (which agent runs is then Claude Code's default, not the call's), and any agent
+  defined in a file;
 - no agent file redefines that name. Looked at: `~/.claude/agents/`, and `.claude/agents/`
   in the call's directory and every directory above it, from the directory as the call
   names it and from its real path, and the same for the main worktree when the call is in a
@@ -583,10 +592,15 @@ On `run_in_background`: an explicit `true` is refused as the declared intent to 
 the turn. Leaving it out is allowed, although Claude Code 2.1.322 then **launches in the
 background by default** (`launchedWithDefaults`, `requestShape: background`; it has
 `backgroundLaunchByDefault` and, for a fork, `forceAsync`). A subagent runs inside the turn's
-`claude` process, and the wrapper writes the record only after that process has ended (and
-kills its process group at the timeout), so it cannot act after the record: in host check
-13 such a subagent finished three seconds before the record was written. This rests on
-Claude Code's behaviour, so check 13 is run again on every Claude Code version.
+`claude` process, and the wrapper writes the record only after that process has ended, so the
+subagent itself cannot act after the record: in host check 13 such a subagent finished three
+seconds before the record was written. This rests on Claude Code's behaviour, so check 13 is
+run again on every Claude Code version. **Processes started from a shell are another matter**
+(security review of #96): Claude Code starts each shell detached, so the wrapper's `killpg`
+of the `claude` process group at the timeout does not reach a background server, a `nohup`
+or a `setsid` child of the turn or of a subagent. They run on after the record, outside the
+gate. A cgroup scope per turn, stopped after every turn, is
+[#99](https://github.com/MWest2020/jarvis/issues/99).
 
 **Writing an agent file is the class `self`.** Any `.claude/agents/` (a checkout's, the
 user's, the main worktree's), and everything in it, is protected like a checkout's settings:
@@ -599,8 +613,8 @@ the next `Agent` call, which reads the agents directories again: one that redefi
 allowed type, or cannot be read with certainty, gates that call.
 
 Anything else is refused with `[needs_desk]`: a sentence that names what can be started, and
-that the request goes to the coding session at the desk. By voice such a helper is a build or
-a long job; on 2026-11-17 a Bazibo change Mark asked for was refused this way while the
+that the request goes to the coding session at the desk. By voice such a helper is a long job
+(since 2026-11-23 a builder that fits in the turn is not refused); on 2026-11-17 a Bazibo change Mark asked for was refused this way while the
 refusal was not passed on (it had no code), so nothing happened. Since then it carries code
 `needs_desk`, the turn stops, and the coding session takes the request over from the record
 and pings Mark. A small step the agent can do itself in its own worktree it still does itself. It stays refused
@@ -608,8 +622,60 @@ with confirmation off. `SubagentHandback`, the tool with which a subagent hands 
 back, is ungated: until this change the gate refused it as a tool nobody listed, which is
 what sent turn `3e0b6159…` (a `web-fetch` read for a washing-machine search) to the desk.
 
-A host-local file may add a type to `read_only_types` (only a built-in: a type that an agent
-file defines is refused anyway). Listing `Agent` or `Task` under `[tools]` is an error.
+**Fan-out is bounded** (security review of #96): at most `max_builders` (2) builders per
+turn, counted by the gate in the turn's state under its lock (the next one is refused with
+`needs_desk`; read-only helpers are not counted); a call that starts a subagent from inside
+one is refused, whatever its type (Claude Code puts `agent_id` in the hook input of every
+call made inside a subagent); and `agent_host/turn-settings.json` pins
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` and `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2`, which
+the gate's environment comparison enforces like the other pins.
+
+A host-local file may add a type to `read_only_types` or `builder_types` (only a built-in: a
+type that an agent file defines is refused anyway). Listing `Agent` or `Task` under `[tools]`
+is an error.
+
+### What a builder may do, and what still needs Mark
+
+A builder works in a worktree, edits, runs the tests, commits, pushes its branch and opens
+a pull request on one of the user's own repositories: none of that is gated for the turn,
+so none of it is for the builder. Everything the gate gates for the turn it gates for the
+builder, by the same rules and in the same turn state (one `claude` process, one trusted
+record, one turn id):
+
+- **Its working directory.** A subagent's hook input carries the main session's `cwd`, the
+  turn checkout, and it does not follow a `cd` (recorded on 2.1.322). So a builder runs git
+  as `git -C <worktree> ...` and gh with `--repo`; its branch is pushed from the checkout
+  (worktrees share their refs). A gated `cd <worktree> && ...` is "run it alone", and a
+  gated `git -C` call has no read-back (it needs the desk), so a push to main is
+  `git push origin <branch>:main` from the checkout.
+- **A call that can be read back** (a merge, a push to a default branch, a mail to the
+  driver, a named delete) becomes the turn's one pending call. The builder is told to stop
+  and hand back ("If you are a subagent, hand back now ..."), the turn ends, and the driver
+  hears the read-back built from the call, never the agent's line, exactly as for the
+  turn's own. After his yes the confirming turn names the call and its directory (the
+  hash binds the `cwd` the call was made in, for a builder the checkout), and the turn's
+  agent runs it there, once. A second gated call in the same turn, the builder's or the turn's, is
+  refused and not pending (one at a time).
+- **A call that needs the desk** (not nameable, the class `self`, an agent file, a mail to
+  anyone else, a subagent the rules do not let start) is refused with code `needs_desk`:
+  the bridge says "I passed that on to the coding session." and the coding session takes it
+  over from the record, as for the turn's own.
+- `confirm = "off"` or `confirm_skip` applies inside a builder exactly as in the turn: what
+  it lets through for the turn it lets through for the builder, and what it never covers
+  (the class `self`, Gmail, a subagent) it does not cover there either.
+
+Nothing passes in silence that would not pass in silence for the turn. Two limits stay:
+
+- **A turn that outlives the bridge's wait.** The bridge waits 170 s and then says "It's
+  still running at the desk. Ask me for the result in a bit."; the turn goes on, up to the
+  agent host's `timeout_s` (600 s by default). A call a builder makes pending after that
+  is read back into a reply nobody hears; it does not run, and the next request clears it.
+  The prompt tells the agent to run that call again when Mark asks for the result, so that
+  the gate reads it back then. A turn killed at `timeout_s` reads nothing back.
+- **Size.** A builder runs inside the turn and ends with it. Work that will not fit (a
+  feature, anything that may take more than a few minutes) is handed on by starting the
+  builder with `run_in_background: true`: refused as a helper that would outlive the turn,
+  with code `needs_desk`, so the coding session builds it.
 
 ## Two roads around the gate, desk-only (2026-11-23)
 
@@ -982,8 +1048,8 @@ the new version**:
    kill switch set. (A hook that Claude Code itself times out fails open, on 2.1.322 at
    least; the gate's own deadline is what makes the answer a denial.)
 5. Then the rest of the table. If check 13 fails (a call made inside a subagent does not
-   reach the gate), empty `read_only_types` in `gate_rules.toml` and install that before
-   Jarvis uses the new version: then no subagent starts by voice.
+   reach the gate), empty `read_only_types` and `builder_types` in `gate_rules.toml` and
+   install that before Jarvis uses the new version: then no subagent starts by voice.
 6. Write the version and the outcomes into the table, and only then set `enabled = true`.
 
 ### Host checks (task 1.17)

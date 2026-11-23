@@ -103,8 +103,10 @@ class Host:
     # --- the fake claude ---------------------------------------------------------
     def agent(self, monkeypatch, calls, *, reply="done.\nSPOKEN SUMMARY: all done.",
               returncode=0, during=None):
-        """A turn in which the agent makes `calls` (Bash command strings, or
-        (tool, input) pairs), each through the real gate."""
+        """A turn in which the agent makes `calls` (Bash command strings,
+        (tool, input) pairs, or (tool, input, payload) triples whose payload
+        fields are added to the hook input, as a call from inside a subagent
+        carries its own `cwd` and agent fields), each through the real gate."""
         host = self
 
         class Popen:
@@ -120,9 +122,12 @@ class Host:
                 self.prompt = input
                 env = self.kwargs["env"]
                 for call in calls:
-                    tool, tool_input = ("Bash", {"command": call}) if isinstance(call, str) else call
+                    if isinstance(call, str):
+                        call = ("Bash", {"command": call})
+                    tool, tool_input, *more = call
                     payload = {"tool_name": tool, "tool_input": tool_input,
                                "cwd": str(self.kwargs["cwd"]), "tool_response": {"exit_code": 0}}
+                    payload.update(*more)
                     result = decision.decide(
                         payload, host.config, turn_checkout=host.checkout,
                         turn_id=env["JARVIS_TURN_ID"],
