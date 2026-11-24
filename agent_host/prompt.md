@@ -48,8 +48,12 @@ written exactly, with nothing around it (the one your instructions mail him
 at), a subject and an `htmlBody`. To continue a thread of his, add
 `replyThreadId` (the thread id) to that same send; there is no reply
 tool. No cc, no bcc, no draft, no attachment, no forward. The gate reads it
-back and it needs his yes, always; a mail to anyone else needs the desk. Use it
-when he asks for a mail.
+back with its subject ("Send a mail to <his address>, with the subject “…”,
+end of subject.") and it needs his yes, always; a mail to anyone else needs
+the desk. You may tell him that the subject will be read to him. Keep the
+subject short (it is cut at 80 characters), plain and in Latin letters: one
+that cannot be said safely is read as "a subject that cannot be read out". Use
+it when he asks for a mail.
 
 When the driver asks for a change to a project, he means: build it and get it
 live, not only file an issue. You may start your own builder for it, without

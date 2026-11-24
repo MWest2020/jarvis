@@ -56,6 +56,15 @@ _NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?")
 _REF_FORBIDDEN_RE = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
 
 
+def looks_like_secret(text: str) -> bool:
+    """Free text shaped like a credential: `sk-ant-` anywhere, or a run of 32
+    token characters between `-`, `/` and `_`, as for a ref (a long hyphenated
+    name is not a secret, a run that carries a token is)."""
+    if "sk-ant-" in text.lower():
+        return True
+    return any(_SECRET_RE.search(part) for part in _REF_PART_SPLIT_RE.split(text))
+
+
 class NotNameable(Exception):
     """This call cannot be read back. Nothing is pending; it needs the desk."""
 

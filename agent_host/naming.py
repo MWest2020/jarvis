@@ -14,7 +14,9 @@ A call is one of three things here:
   template needs stands explicitly in the call, and each target has the
   strict shape of its kind (agent_host.targets). The sentence is the
   template's fixed words plus those targets, all of them, and nothing else
-  from the call or from the agent.
+  from the call or from the agent. The one exception is the subject of a
+  mail to the driver's own address, framed and cleaned (`subject_phrase`,
+  Mark 2026-11-24, jarvis#92).
 - **Missing**: the call would be nameable but for explicit targets that are
   not in it. The outcome lists exactly those parts ("add --repo
   owner/name"), and which options one repair may add.
@@ -36,7 +38,9 @@ The sentence is made for the ear: a commit is its first seven hex digits, a
 from __future__ import annotations
 
 import fnmatch
+import re
 import shlex
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +50,7 @@ from agent_host.targets import NotNameable, join_spoken
 
 MAX_ITEMS = 3       # refs, names, hosts in one sentence
 MAX_RECIPIENTS = 5  # addresses in one sentence
+MAX_SUBJECT_CHARS = 80  # a spoken mail subject, the closing "…" included
 
 PART_REPO = "add --repo owner/name"
 PART_NAMESPACE = "add -n namespace"
@@ -570,7 +575,9 @@ def _addresses(values: list[str]) -> list[str]:
     return out
 
 
-def _mail_sentence(to: list[str], cc: list[str], bcc: list[str]) -> str:
+def _mail_sentence(to: list[str], cc: list[str], bcc: list[str],
+                   subject: str | None = None) -> str:
+    """`subject` is a phrase of `subject_phrase()`, only ever for [own_mail]."""
     if not to and not cc and not bcc:
         raise NotNameable("a mail without a recipient")
     if len(to) + len(cc) + len(bcc) > MAX_RECIPIENTS:
@@ -582,7 +589,87 @@ def _mail_sentence(to: list[str], cc: list[str], bcc: list[str]) -> str:
         parts.append(f"with a copy to {join_spoken(cc)}")
     if bcc:
         parts.append(f"with a blind copy to {join_spoken(bcc)}")
+    if subject is not None:
+        parts.append(subject)
     return "Send a mail " + ", ".join(parts) + "."
+
+
+# --- the subject of a mail to the driver (jarvis-mail-the-driver, #92) ------------------------
+# The one piece of agent text a read-back may hold, by Mark's decision of 2026-11-24
+# ("zou fijn zijn"): the subject of a mail to his own address. It is framed by fixed
+# words on both sides, "with the subject “...”, end of subject", so that nothing in it
+# reads as Jarvis's own words or as the question; a subject that could close that frame
+# itself, or that cannot be said safely, is replaced by a fixed phrase.
+
+SUBJECT_NONE = "without a subject"
+SUBJECT_UNREADABLE = "with a subject that cannot be read out"
+SUBJECT_CLOSE = "end of subject"
+_SUBJECT_CLOSE_LETTERS = "endofsubject"
+# Inside the frame a double quote of any kind becomes a plain apostrophe, so the
+# written read-back (notify ping, record) cannot close the quotes early either.
+_DOUBLE_QUOTES = str.maketrans(
+    {ch: "'" for ch in '"\u201c\u201d\u201e\u201f\u00ab\u00bb\u301d\u301e\u301f'})
+# Latin letters that do not decompose to a-z but are plainly Latin.
+_LATIN_EXTRA = frozenset("ßæøœÆØŒłŁđĐðÐþÞ")
+_NOT_LETTER_RE = re.compile(r"[^a-z]+")
+
+
+def _ascii_base(ch: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
+
+
+def _clean_subject(value: str) -> str:
+    """NFKC, every control, format (bidi, zero-width), private-use, surrogate or
+    unassigned character and every stray combining mark taken out, every kind of
+    white space or separator made one plain space, and trimmed."""
+    out = []
+    for ch in unicodedata.normalize("NFKC", value):
+        category = unicodedata.category(ch)
+        if ch.isspace() or category[0] == "Z":
+            out.append(" ")
+        elif category[0] in "CM":
+            continue
+        else:
+            out.append(ch)
+    return " ".join("".join(out).split()).translate(_DOUBLE_QUOTES)
+
+
+def _subject_readable(text: str) -> bool:
+    """Only Latin letters, ASCII digits, punctuation and symbols: another script's
+    lookalike (a Cyrillic `е`) or an invisible letter (Hangul filler) could hide
+    the closing words or say something else than it shows; not shaped like a
+    credential (the read-back skips the bridge's free-text filter and goes out in
+    the notify ping); and never the closing words of the frame, in any spelling."""
+    for ch in text:
+        category = unicodedata.category(ch)
+        if category[0] == "L":
+            base = _ascii_base(ch)
+            if ch not in _LATIN_EXTRA and not (base.isascii() and base.isalpha()):
+                return False
+        elif category[0] == "N" and not ch.isascii():
+            return False
+    if targets.looks_like_secret(text):
+        return False
+    letters = _NOT_LETTER_RE.sub("", "".join(_ascii_base(ch) for ch in text).lower())
+    return _SUBJECT_CLOSE_LETTERS not in letters
+
+
+def subject_phrase(value: object) -> str:
+    """How the read-back of a mail to the driver says its subject: the `subject`
+    field of the call and nothing else, cleaned, capped and framed. A subject that
+    is not text has no phrase (the call needs the desk)."""
+    if value is None:
+        return SUBJECT_NONE
+    if not isinstance(value, str):
+        raise NotNameable("a subject that is not text")
+    text = _clean_subject(value)
+    if not text:
+        return SUBJECT_NONE
+    if not _subject_readable(text):
+        return SUBJECT_UNREADABLE
+    if len(text) > MAX_SUBJECT_CHARS:
+        text = text[:MAX_SUBJECT_CHARS - 1].rstrip() + "\u2026"
+    return f"with the subject \u201c{text}\u201d, {SUBJECT_CLOSE}"
 
 
 def _name_mail(args, ctx, config) -> Named:
@@ -735,7 +822,8 @@ def _name_own_mail(tool_input: dict, ctx, config, verdict_classes=()) -> Named |
     mail to one of the user's own addresses alone. Anything else in the call
     (another recipient, a cc or bcc, a draft, an attachment, reply-all, a field
     nobody listed) leaves it without a sentence, so it needs the desk. Nothing
-    of the subject or body is spoken (D36: no text from the call)."""
+    of the body is spoken (D36: no text from the call). The subject is, framed
+    and cleaned (`subject_phrase`): Mark's exception of 2026-11-24 (#92)."""
     rules = ctx.rules
     if not config.own_mail or not isinstance(tool_input, dict):
         return None
@@ -762,7 +850,12 @@ def _name_own_mail(tool_input: dict, ctx, config, verdict_classes=()) -> Named |
         return None
     if raw.lower() not in config.own_mail:
         return None
-    return Named(_mail_sentence([spoken], [], []), frozenset({"message"}) | set(verdict_classes))
+    try:
+        subject = subject_phrase(tool_input.get("subject"))
+    except NotNameable:
+        return None
+    return Named(_mail_sentence([spoken], [], [], subject),
+                 frozenset({"message"}) | set(verdict_classes))
 
 
 def _name_tool(tool_name: str, tool_input: dict, ctx, config, verdict_classes=()) -> Named | None:

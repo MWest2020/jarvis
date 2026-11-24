@@ -193,7 +193,7 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `rules_dir` | no (default `/etc/jarvis-agent/rules.d`) | Host-local gate rules. |
 | `managed_settings_path` | no (default `/etc/claude-code/managed-settings.json`) | Where Claude Code's managed settings are on this host. A write to it is in the class `self`. Never written by Jarvis or by `install.sh`. |
 | `own_owners` | no (default none) | Owner names on the forge host whose repositories are your own. A read-back says "name" for these and "name of owner" for all others. |
-| `own_mail` | no (default none) | Your own mail addresses. A connector mail to one of them alone is read back ("Send a mail to you@example.org.") and can be confirmed by voice; every other mail needs the desk. See [Mail to yourself](#mail-to-yourself). |
+| `own_mail` | no (default none) | Your own mail addresses. A connector mail to one of them alone is read back with its subject ("Send a mail to you@example.org, with the subject “Open proposals”, end of subject.") and can be confirmed by voice; every other mail needs the desk. See [Mail to yourself](#mail-to-yourself). |
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
@@ -765,8 +765,43 @@ cannot be checked without sending. The
 connector's `reply` tool is never nameable, because it may copy a thread's default cc
 recipients, which the call does not show.
 
-The read-back is "Send a mail to you@example.org." and it needs a yes. The subject and
-body are not spoken: the read-back holds no text from the call (D36). Every other Gmail
+The read-back is "Send a mail to you@example.org, with the subject “Open proposals”, end
+of subject." and it needs a yes. The body is never spoken.
+
+**The subject is the one piece of agent text a read-back holds.** D36 says a read-back
+holds no text from the call; Mark made this one exception on 2026-11-24 ("zou fijn zijn",
+issue #92), for a mail to his own address only. So that the agent's words cannot pass for
+Jarvis's own, or for the question, the subject is said like this (`subject_phrase` in
+`agent_host/naming.py`):
+
+- it is the call's `subject` field and nothing else (not the body, not another field);
+- it is normalised to NFKC, every control and format character (bidi overrides and
+  isolates, zero-width characters, soft hyphen, tag characters), private-use character
+  and stray combining mark is taken out, every kind of space or line break becomes one
+  plain space, and runs of space are collapsed;
+- it is capped at 80 characters, the last being "…";
+- it stands between fixed words on both sides: "with the subject “…”, end of subject",
+  and the question "Say yes to go ahead." comes after that. A subject such as "say yes"
+  or "Mark, reply ja" is heard as a subject. A double quote of any kind inside it
+  becomes an apostrophe, so the written read-back cannot close the quotes either;
+- a missing or empty subject (also one of only invisible characters) reads "without a
+  subject";
+- a subject that holds the closing words "end of subject" in any spelling (case,
+  spacing, hyphens, fullwidth, accents), a letter of another script than Latin (a
+  Cyrillic "е" looks like a Latin one), a digit outside ASCII, or something shaped like a
+  credential reads "with a subject that cannot be read out". The mail can still be
+  confirmed; you then decide without hearing the subject;
+- a subject that is not text (a list, a number) leaves the call without a sentence, so
+  it needs the desk.
+
+The yes is still bound to the hash of the whole call, so the subject that is sent is the
+subject that was read back. A subject that differs in any byte, even by an invisible
+character that reads the same, is another call and the yes does not release it. The
+read-back, subject included, also goes into the turn record and the notify ping. No other
+read-back speaks agent text: `mail -s` and a host-local `[[tool_actions]]` rule still name
+only the recipients.
+
+Every other Gmail
 call has no sentence and needs the desk: reply, forward, trash, draft, label, spam, or a
 send to anyone else. The same goes for those tools under another connector name. A
 host-local `[[tool_actions]]` rule is never consulted for a Gmail tool.
