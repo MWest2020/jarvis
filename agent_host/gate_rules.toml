@@ -304,8 +304,8 @@ create = ["create", "fork"]
 message = ["send", "reply", "forward", "post", "message", "comment", "invite"]
 
 # --- mail to the user's own address (jarvis-mail-the-driver) -------------------
-# A call of this connector tool is read back ("Send a mail to <address>.") and can be
-# confirmed by voice only when it is one mail to one of the user's own addresses
+# A call of this connector tool is read back ("Send a mail to <address>, with the
+# subject “<subject>”, end of subject.") and can be confirmed by voice only when it is one mail to one of the user's own addresses
 # alone (`own_mail` in the configuration), written as plain ASCII with nothing around
 # it. No Gmail tool is ever exempt from confirmation (`confirm = "off"` and
 # `confirm_skip` do not apply to it). Every other call of them has no

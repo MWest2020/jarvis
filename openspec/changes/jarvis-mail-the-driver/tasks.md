@@ -4,9 +4,9 @@
 - [x] **Mark.** Build it. Mark, 2026-11-23: "Jarvis moet dit ook kunnen" (mail him, as the
       coding session does). Scope from the coding session: Mark is the only recipient,
       enforced by the gate.
-- [ ] **Mark.** Speak the subject in the read-back? Default: no. The read-back names the
-      address only, under the rule of `jarvis-full-agent` that it holds no text from the
-      call (a `waiting-on-mark` issue).
+- [x] **Mark.** Speak the subject in the read-back? Yes. Mark, 2026-11-24, digest reply
+      to #92: "zou fijn zijn". The one exception to the rule of `jarvis-full-agent` that
+      a read-back holds no text from the call, for a mail to his own address only.
 
 ## 2. Gate
 - [x] `[own_mail]` in `gate_rules.toml` (tools, fields, empty_fields, off_fields), parsed
@@ -22,7 +22,7 @@
       (security review of #91).
 - [x] `[mcp]` words: `label_thread`, `unlabel`, `spam`, `apply_`.
 - [x] Tests (`tests/test_agent_host_gate_own_mail.py`):
-  - a mail to the own address, threaded or not, is read back without subject or body
+  - a mail to the own address, threaded or not, is read back with its subject (see the task above), never its body,
     and becomes pending;
   - these all need the desk and are never pending: another recipient, the own address
     plus another, a display name, lookalikes (Kelvin sign, em or no-break space,
@@ -37,8 +37,21 @@
   - without `own_mail`, every mail needs the desk;
   - a host-local `[[tool_actions]]` or `[own_mail]` does not widen the tools.
 
+- [x] The subject in the read-back (#92): `subject_phrase` in `naming.py`, "with the
+      subject “…”, end of subject"; from the `subject` field only, a line break or an
+      invisible character needs the desk, NFKC, spaces collapsed, capped at 80 with "…",
+      "without a subject" when empty, "with a subject that cannot be read out" for
+      sentence punctuation, brackets (misaki markup), more than ten words, the words of
+      the frame, the question and every read-back template, a word for yes, another
+      script, or a credential (security review of #102). Tests: each rule, every
+      template refused as a subject, every kind of character spoken as built by the
+      bridge and unchanged by misaki's `preprocess`, a swapped subject refused by the
+      yes, and `mail -s` and `[[tool_actions]]` still without a subject.
+- [ ] The subject in a second voice, so that the ear tells it apart (#103).
+
 ## 3. Prompt and docs
-- [x] `prompt.md`: one paragraph on mailing the driver.
+- [x] `prompt.md`: one paragraph on mailing the driver (and that the subject is read to
+      him).
 - [x] `docs/how-to/agent-host.md`: `own_mail` in the configuration table, and a section
       "Mail to yourself".
 
@@ -46,6 +59,6 @@
 - [ ] `own_mail = ["mark@westerweel.work"]` in `/etc/jarvis-agent/config.toml`, and the
       new rules and prompt installed with `install.sh`.
 - [ ] By voice: "mail me the open proposals". The read-back is "Send a mail to
-      mark@westerweel.work.", the mail arrives after the yes, and "mail it to someone
+      mark@westerweel.work, with the subject “…”, end of subject.", the mail arrives after the yes, and "mail it to someone
       else" is refused with the desk.
 - [ ] Archive, after `jarvis-full-agent`.

@@ -193,7 +193,7 @@ nothing a turn or a project's settings can set chooses another configuration.
 | `rules_dir` | no (default `/etc/jarvis-agent/rules.d`) | Host-local gate rules. |
 | `managed_settings_path` | no (default `/etc/claude-code/managed-settings.json`) | Where Claude Code's managed settings are on this host. A write to it is in the class `self`. Never written by Jarvis or by `install.sh`. |
 | `own_owners` | no (default none) | Owner names on the forge host whose repositories are your own. A read-back says "name" for these and "name of owner" for all others. |
-| `own_mail` | no (default none) | Your own mail addresses. A connector mail to one of them alone is read back ("Send a mail to you@example.org.") and can be confirmed by voice; every other mail needs the desk. See [Mail to yourself](#mail-to-yourself). |
+| `own_mail` | no (default none) | Your own mail addresses. A connector mail to one of them alone is read back with its subject ("Send a mail to you@example.org, with the subject “Open proposals”, end of subject.") and can be confirmed by voice; every other mail needs the desk. See [Mail to yourself](#mail-to-yourself). |
 | `notify_command` | no (default none) | A list of words. Run by the wrapper, not the agent, after a confirmed call ran, with the read-back appended as the last word. Empty: no notification. |
 | `pr_status_command` | no (default `["gh", "pr", "view"]`) | Asked for a merge's review decision and check roll-up; the wrapper adds the number, `--repo` and `--json`. |
 | `retention_days` | no (default `90`) | How long records and action logs are kept. |
@@ -765,8 +765,61 @@ cannot be checked without sending. The
 connector's `reply` tool is never nameable, because it may copy a thread's default cc
 recipients, which the call does not show.
 
-The read-back is "Send a mail to you@example.org." and it needs a yes. The subject and
-body are not spoken: the read-back holds no text from the call (D36). Every other Gmail
+The read-back is "Send a mail to you@example.org, with the subject “Open proposals”, end
+of subject." and it needs a yes. The body is never spoken.
+
+**The subject is the one piece of agent text a read-back holds.** D36 says a read-back
+holds no text from the call. Mark made this one exception on 2026-11-24 ("zou fijn zijn",
+issue #92), and only for a mail to his own address. The subject stands between fixed
+words: "with the subject “…”, end of subject", and the question "Say yes to go ahead."
+follows. The quotes are silent in speech, so the frame alone cannot keep a subject from
+sounding like Jarvis's own words, like the end of the frame, like the question or like
+another action. `subject_phrase` in `agent_host/naming.py` therefore refuses broadly.
+A refused subject costs little: the read-back says "with a subject that cannot be read
+out", and the mail can still be confirmed without the subject being heard.
+
+- **What is read is what is sent.** The subject is the call's `subject` field and
+  nothing else (not the body, not another field). It may be changed only by NFKC and by
+  collapsing ordinary spaces. A line break (CR, LF, a line or paragraph separator), a
+  control or format character (bidi overrides and isolates, zero-width characters, soft
+  hyphen, BOM, tag characters), or a private-use or unassigned character leaves the call
+  without a sentence, so it needs the desk. A subject that is not text does the same.
+- **Cleaned and capped.** NFKC, stray combining marks taken out, runs of spaces made one,
+  any double quote made an apostrophe (so the written read-back cannot close the quotes),
+  and at most 80 characters, the last being "…".
+- **Empty.** A missing subject, an empty one, or one of only spaces reads "without a
+  subject".
+- **"Cannot be read out"** is said when the subject:
+  - holds punctuation other than `, ' - # % & * @ / _` and apostrophes. That refuses
+    sentence punctuation (`. ! ? ; :` and "…"), other scripts' stops, dashes the voice
+    reads as a pause, and brackets, which Kokoro's G2P (misaki) reads as markup
+    (`[word](/phonemes/)` changes how a word is said);
+  - has more than 10 words;
+  - in its letters, lowercased and run together, holds a word of the frame, the
+    question or a read-back. The list is `SUBJECT_REFUSED_LETTERS`: `subj`,
+    `onderwerp`, `quote`, `yes`, `goahead`, `sendamail`, `merge`, `pullrequest`,
+    `commit`, `push`, `deploy`, `delete`, and the verbs of every read-back template
+    (a test keeps it complete). It catches "end off subject", "end of subjekt",
+    "einde onderwerp" and "y e s", and also "yesterday": a broad refusal by design;
+  - has a word that means yes (`ja`, `yeah`, `ok`, `okay`, `akkoord`, …), also spelt
+    out letter by letter (`SUBJECT_REFUSED_WORDS`). "Jarvis" is not refused;
+  - has a letter of another script than Latin (a Cyrillic "е" looks like a Latin one;
+    Hangul filler is invisible), or a digit outside ASCII as written ("1½" would become
+    "11⁄2");
+  - looks like a credential or names one: `sk-` in any spacing, an AWS, Slack, GitHub,
+    GitLab or Google key prefix, a JWT, a run of 20 or more mixed letters and digits, a
+    run of 32 token characters, or the words password, passwd, `pw:`, token, secret,
+    api key, wachtwoord.
+
+The yes is still bound to the hash of the whole call, so the subject that is sent is the
+subject that was read back. A subject that differs in any byte is another call, even if
+it reads the same (a fullwidth letter, a double space), and the yes does not release it.
+The read-back, subject included, also goes into the turn record and the notify ping. No
+other read-back speaks agent text: `mail -s` and a host-local `[[tool_actions]]` rule
+still name only the recipients. The real fix is #103: speak the subject in a second
+voice, so that the ear can tell it apart, and then relax these refusals.
+
+Every other Gmail
 call has no sentence and needs the desk: reply, forward, trash, draft, label, spam, or a
 send to anyone else. The same goes for those tools under another connector name. A
 host-local `[[tool_actions]]` rule is never consulted for a Gmail tool.
