@@ -56,13 +56,42 @@ _NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?")
 _REF_FORBIDDEN_RE = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
 
 
+_KEY_SHAPE_RE = re.compile(
+    r"(?:AKIA|ASIA)[A-Z0-9]{12,}"            # AWS access key id
+    r"|xox[abpr]-"                            # Slack
+    r"|gh[pos]_|github_pat_|glpat-"           # GitHub, GitLab
+    r"|AIza[0-9A-Za-z_-]{8,}"                 # Google API key
+    r"|eyJ[A-Za-z0-9_-]{6,}"                  # a JWT's header
+    r"|(?<![A-Za-z0-9])[sS]\s*[kK]\s*-"        # sk- in any spacing
+    r"|\bpw\s*[:=]",
+    re.ASCII)
+_SECRET_WORDS = ("password", "passwd", "token", "secret", "apikey", "wachtwoord")
+_MIXED_RUN = 20
+
+
 def looks_like_secret(text: str) -> bool:
-    """Free text shaped like a credential: `sk-ant-` anywhere, or a run of 32
-    token characters between `-`, `/` and `_`, as for a ref (a long hyphenated
-    name is not a secret, a run that carries a token is)."""
-    if "sk-ant-" in text.lower():
+    """Free text shaped like a credential, or about one:
+
+    - `sk-ant-` anywhere, or a run of 32 token characters between `-`, `/` and
+      `_`, as for a ref (a long hyphenated name is not a secret);
+    - a known key prefix (AWS, Slack, GitHub, GitLab, Google, a JWT, `sk-` in
+      any spacing, `pw:`);
+    - a run of 20 or more letters and digits that mixes them, or mixes case
+      after its first letter;
+    - a credential word (password, passwd, token, secret, api key, wachtwoord).
+    """
+    if "sk-ant-" in text.lower() or _KEY_SHAPE_RE.search(text):
         return True
-    return any(_SECRET_RE.search(part) for part in _REF_PART_SPLIT_RE.split(text))
+    if any(_SECRET_RE.search(part) for part in _REF_PART_SPLIT_RE.split(text)):
+        return True
+    for run in re.findall(r"[A-Za-z0-9]{%d,}" % _MIXED_RUN, text):
+        has_digit = any(ch.isdigit() for ch in run)
+        has_letter = any(ch.isalpha() for ch in run)
+        rest = run[1:]
+        if (has_digit and has_letter) or (rest != rest.lower() and rest != rest.upper()):
+            return True
+    letters = re.sub(r"[^a-z]", "", text.lower())
+    return any(word in letters for word in _SECRET_WORDS)
 
 
 class NotNameable(Exception):

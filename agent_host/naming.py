@@ -597,31 +597,66 @@ def _mail_sentence(to: list[str], cc: list[str], bcc: list[str],
 # --- the subject of a mail to the driver (jarvis-mail-the-driver, #92) ------------------------
 # The one piece of agent text a read-back may hold, by Mark's decision of 2026-11-24
 # ("zou fijn zijn"): the subject of a mail to his own address. It is framed by fixed
-# words on both sides, "with the subject “...”, end of subject", so that nothing in it
-# reads as Jarvis's own words or as the question; a subject that could close that frame
-# itself, or that cannot be said safely, is replaced by a fixed phrase.
+# words on both sides, "with the subject “...”, end of subject". The quotes are silent
+# in speech, so the frame alone does not keep a subject from sounding like Jarvis's own
+# words, the end of the frame, a question or another action. A subject that could is
+# refused broadly, not by an exact spelling: it is then read as "a subject that cannot
+# be read out" and the mail can still be confirmed. A subject that would be changed by
+# more than NFKC and collapsing ordinary spaces (a line break, a control or format
+# character) leaves the call without a sentence, so what is read is what is sent.
+# The real fix, the subject in a second voice, is jarvis#103.
 
+MAX_SUBJECT_WORDS = 10
 SUBJECT_NONE = "without a subject"
 SUBJECT_UNREADABLE = "with a subject that cannot be read out"
 SUBJECT_CLOSE = "end of subject"
-_SUBJECT_CLOSE_LETTERS = "endofsubject"
 # Inside the frame a double quote of any kind becomes a plain apostrophe, so the
 # written read-back (notify ping, record) cannot close the quotes early either.
 _DOUBLE_QUOTES = str.maketrans(
     {ch: "'" for ch in '"\u201c\u201d\u201e\u201f\u00ab\u00bb\u301d\u301e\u301f'})
+# The only punctuation a spoken subject may hold. Everything else is refused: sentence
+# punctuation (. ! ? ; : and "…", which NFKC makes "..."), any other script's full stop,
+# dashes that the voice reads as a pause, and brackets, which Kokoro's G2P (misaki)
+# reads as markup: `[text](/phonemes/)` replaces how a word is said.
+_SUBJECT_PUNCTUATION = frozenset(",'-#%&*@/_\u2018\u2019")
 # Latin letters that do not decompose to a-z but are plainly Latin.
 _LATIN_EXTRA = frozenset("ßæøœÆØŒłŁđĐðÐþÞ")
-_NOT_LETTER_RE = re.compile(r"[^a-z]+")
+# Refused anywhere in the subject's letters, lowercased, without spaces or anything
+# else: the frame and the question, and the words of the read-back sentences (the
+# templates in this module and agent_host.prstatus; a test keeps the list complete).
+SUBJECT_REFUSED_LETTERS = (
+    "subj", "onderwerp", "quote", "yes", "sayja", "zegja", "goahead",
+    "sendamail", "copyto", "copyfiles", "withacopy", "blindcopy",
+    "merge", "pullrequest", "commit", "push", "deploy", "delete", "archive",
+    "uninstall", "rollback", "restart", "approve", "requestchanges",
+    "postacomment", "postareview", "openapull", "openanissue", "createthe",
+    "switchvoice", "confirmation", "asroot", "throughhost", "namespace", "oncluster",
+    "checks", "statusunknown", "hasmoved",
+)
+# Refused as a word (also spelt out letter by letter): yes in other words.
+SUBJECT_REFUSED_WORDS = frozenset({
+    "ja", "jaa", "jah", "ya", "yah", "yeah", "yep", "yup", "ok", "okay", "oke",
+    "akkoord", "sure",
+})
+_LETTERS_RE = re.compile(r"[a-z]+")
 
 
 def _ascii_base(ch: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
 
 
+def _raw_subject_changes(value: str) -> bool:
+    """Would cleaning change the subject beyond NFKC and ordinary spaces? A line
+    break (CR, LF, a line or paragraph separator), a control, format (bidi,
+    zero-width), private-use, surrogate or unassigned character: the read-back
+    would say one thing and the hash release another."""
+    return any(unicodedata.category(ch)[0] == "C" or unicodedata.category(ch) in ("Zl", "Zp")
+               for ch in value)
+
+
 def _clean_subject(value: str) -> str:
-    """NFKC, every control, format (bidi, zero-width), private-use, surrogate or
-    unassigned character and every stray combining mark taken out, every kind of
-    white space or separator made one plain space, and trimmed."""
+    """NFKC, stray combining marks taken out, every kind of space made one plain
+    space, trimmed, and double quotes made apostrophes."""
     out = []
     for ch in unicodedata.normalize("NFKC", value):
         category = unicodedata.category(ch)
@@ -634,12 +669,31 @@ def _clean_subject(value: str) -> str:
     return " ".join("".join(out).split()).translate(_DOUBLE_QUOTES)
 
 
+def _spoken_words(text: str) -> list[str]:
+    """The words a voice would say, lowercased in a-z; a run of single letters
+    ("j a") is one word ("ja")."""
+    words: list[str] = []
+    run = ""
+    for word in _LETTERS_RE.findall("".join(_ascii_base(ch) for ch in text).lower()):
+        if len(word) == 1:
+            run += word
+            continue
+        if run:
+            words.append(run)
+            run = ""
+        words.append(word)
+    if run:
+        words.append(run)
+    return words
+
+
 def _subject_readable(text: str) -> bool:
-    """Only Latin letters, ASCII digits, punctuation and symbols: another script's
-    lookalike (a Cyrillic `е`) or an invisible letter (Hangul filler) could hide
-    the closing words or say something else than it shows; not shaped like a
+    """See the comment above: only Latin letters, ASCII digits, symbols and a few
+    marks of punctuation (another script's lookalike, a Cyrillic `е`, or an
+    invisible letter could say something else than it shows); at most ten words;
+    no word of the frame, the question or a read-back; nothing shaped like a
     credential (the read-back skips the bridge's free-text filter and goes out in
-    the notify ping); and never the closing words of the frame, in any spelling."""
+    the notify ping)."""
     for ch in text:
         category = unicodedata.category(ch)
         if category[0] == "L":
@@ -648,24 +702,37 @@ def _subject_readable(text: str) -> bool:
                 return False
         elif category[0] == "N" and not ch.isascii():
             return False
-    if targets.looks_like_secret(text):
+        elif category[0] == "P" and ch not in _SUBJECT_PUNCTUATION:
+            return False
+    if len(text.split()) > MAX_SUBJECT_WORDS:
         return False
-    letters = _NOT_LETTER_RE.sub("", "".join(_ascii_base(ch) for ch in text).lower())
-    return _SUBJECT_CLOSE_LETTERS not in letters
+    words = _spoken_words(text)
+    letters = "".join(words)
+    if any(refused in letters for refused in SUBJECT_REFUSED_LETTERS):
+        return False
+    if SUBJECT_REFUSED_WORDS.intersection(words):
+        return False
+    return not targets.looks_like_secret(text)
 
 
 def subject_phrase(value: object) -> str:
     """How the read-back of a mail to the driver says its subject: the `subject`
     field of the call and nothing else, cleaned, capped and framed. A subject that
-    is not text has no phrase (the call needs the desk)."""
+    is not text, or that cleaning would change (a line break, an invisible
+    character), has no phrase: the call needs the desk."""
     if value is None:
         return SUBJECT_NONE
     if not isinstance(value, str):
         raise NotNameable("a subject that is not text")
+    if _raw_subject_changes(value):
+        raise NotNameable("a subject with a line break, control or format character")
     text = _clean_subject(value)
     if not text:
         return SUBJECT_NONE
-    if not _subject_readable(text):
+    # A digit outside ASCII is refused as written, before NFKC turns "1½" into
+    # "11⁄2" or "x²" into "x2".
+    if not _subject_readable(text) or any(
+            unicodedata.category(ch)[0] == "N" and not ch.isascii() for ch in value):
         return SUBJECT_UNREADABLE
     if len(text) > MAX_SUBJECT_CHARS:
         text = text[:MAX_SUBJECT_CHARS - 1].rstrip() + "\u2026"

@@ -38,13 +38,16 @@
   - a host-local `[[tool_actions]]` or `[own_mail]` does not widen the tools.
 
 - [x] The subject in the read-back (#92): `subject_phrase` in `naming.py`, "with the
-      subject “…”, end of subject"; from the `subject` field only, NFKC without control
-      or format characters, white space collapsed, capped at 80 with "…", "without a
-      subject" when empty, "with a subject that cannot be read out" for the frame's
-      closing words, another script or a credential shape. Tests: each rule, a subject
-      that sounds like Jarvis, every kind of character spoken as built by the bridge, a
-      swapped subject refused by the yes, and `mail -s` and `[[tool_actions]]` still
-      without a subject.
+      subject “…”, end of subject"; from the `subject` field only, a line break or an
+      invisible character needs the desk, NFKC, spaces collapsed, capped at 80 with "…",
+      "without a subject" when empty, "with a subject that cannot be read out" for
+      sentence punctuation, brackets (misaki markup), more than ten words, the words of
+      the frame, the question and every read-back template, a word for yes, another
+      script, or a credential (security review of #102). Tests: each rule, every
+      template refused as a subject, every kind of character spoken as built by the
+      bridge and unchanged by misaki's `preprocess`, a swapped subject refused by the
+      yes, and `mail -s` and `[[tool_actions]]` still without a subject.
+- [ ] The subject in a second voice, so that the ear tells it apart (#103).
 
 ## 3. Prompt and docs
 - [x] `prompt.md`: one paragraph on mailing the driver (and that the subject is read to

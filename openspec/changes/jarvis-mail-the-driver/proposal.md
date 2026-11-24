@@ -43,12 +43,16 @@ the approval point.
   speaking the subject puts the agent's own words in the driver's ear at the one moment he
   is asked for a yes. Mark decided otherwise on 2026-11-24 (#92, digest reply: *"zou fijn
   zijn"*). So the subject is the one exception to that rule, for a mail to his own address
-  only, and it is made safe to speak: from the `subject` field only, NFKC without control
-  or format characters, white space collapsed, capped at 80 characters with "…", framed
-  by fixed words on both sides ("with the subject “…”, end of subject"), "without a
-  subject" when there is none, and "with a subject that cannot be read out" when it could
-  close the frame itself, holds another script's letters or looks like a credential. The
-  yes stays bound to the hash of the whole call, so a swapped subject is refused.
+  only, and it is made safe to speak: from the `subject` field only, changed by nothing
+  but NFKC and collapsed spaces (a line break or an invisible character needs the desk),
+  capped at 80 characters with "…", framed by fixed words on both sides ("with the
+  subject “…”, end of subject"), and "without a subject" when there is none. The quotes
+  are silent, so a subject that could sound like Jarvis, the frame's end, the question or
+  another action is refused broadly (sentence punctuation, brackets, more than ten words,
+  the words of the frame, the question and every read-back, a word for yes, another
+  script, a credential): it reads "with a subject that cannot be read out". The yes stays
+  bound to the hash of the whole call, so a swapped subject is refused. The real fix, the
+  subject in a second voice, is #103.
 - **Mail that is labelled, hidden or marked is gated too.** `label_thread`, `unlabel`,
   `spam` and `apply_` join the `[mcp]` words. Gmail's `label_thread`, `unlabel_thread`,
   `mark_thread_spam` and `apply_sensitive_thread_label` used to run ungated. They have no
