@@ -478,6 +478,29 @@ def _whisper_language() -> str | None:
     return raw
 
 
+def _whisper_languages(fixed: str | None) -> tuple[str, ...]:
+    """JARVIS_WHISPER_LANGUAGES: the languages the driver speaks, comma-separated
+    ("nl,en"). Whisper's detection then picks the likeliest of these only, so English
+    misheard as German comes out as English or Dutch (26 Nov 2026: "boots and cats" came
+    back as "Okay, du buchst im Katz."). Unset: every language, as before. Not with
+    JARVIS_WHISPER_LANGUAGE, which fixes one."""
+    raw = os.environ.get("JARVIS_WHISPER_LANGUAGES", "").strip()
+    if not raw:
+        return ()
+    codes = _whisper_codes()
+    langs = tuple(dict.fromkeys(part.strip() for part in raw.split(",") if part.strip()))
+    for lang in langs:
+        if not _WHISPER_LANGUAGE.fullmatch(lang) or (codes is not None and lang not in codes):
+            raise ConfigError(f"JARVIS_WHISPER_LANGUAGES={raw!r} must be language codes "
+                              f"whisper knows, separated by commas, such as nl,en")
+    if len(langs) < 2:
+        raise ConfigError(f"JARVIS_WHISPER_LANGUAGES={raw!r} names one language: set "
+                          f"JARVIS_WHISPER_LANGUAGE={langs[0] if langs else ''} for that")
+    if fixed is not None:
+        raise ConfigError("set JARVIS_WHISPER_LANGUAGE or JARVIS_WHISPER_LANGUAGES, not both")
+    return langs
+
+
 def _whisper_codes() -> frozenset[str] | None:
     """The language codes faster-whisper accepts, or None when it is not installed (a test
     environment; the shape check then stands). Importing the tokenizer loads no model."""
@@ -512,6 +535,8 @@ class BridgeConfig:
     confirm_min_speech_s: float = DEFAULT_CONFIRM_MIN_SPEECH_S
     whisper_beam_size: int = DEFAULT_WHISPER_BEAM_SIZE
     whisper_language: str | None = None
+    # The languages detection may pick from (JARVIS_WHISPER_LANGUAGES); () is any.
+    whisper_languages: tuple[str, ...] = ()
     # jarvis-streaming-speech S1: stream a reply to a client that asks for it.
     stream_replies: bool = True
     # jarvis-sing: the easter egg; JARVIS_SING=0 switches it off.
@@ -542,6 +567,8 @@ class BridgeConfig:
             options["beam_size"] = self.whisper_beam_size
         if self.whisper_language is not None:
             options["language"] = self.whisper_language
+        if self.whisper_languages:
+            options["languages"] = self.whisper_languages
         return options
 
     def current_projects(self) -> dict[str, ProjectConfig]:
@@ -643,7 +670,8 @@ def load_config() -> BridgeConfig:
         whisper_model=os.environ.get("JARVIS_WHISPER_MODEL", "base"),
         kokoro_voice=os.environ.get("JARVIS_KOKORO_VOICE", "bm_george"),
         whisper_beam_size=_whisper_beam_size(),
-        whisper_language=_whisper_language(),
+        whisper_language=(language := _whisper_language()),
+        whisper_languages=_whisper_languages(language),
         stream_replies=_stream_replies(),
         sing=_sing(),
         sing_parody=_sing_parody(),

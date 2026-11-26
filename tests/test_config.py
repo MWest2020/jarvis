@@ -502,3 +502,32 @@ def test_a_control_word_cannot_be_a_confirmation_word(monkeypatch, tmp_path):
     _full_env(monkeypatch, tmp_path, JARVIS_NOTE_WORDS="note,yes")
     with pytest.raises(ConfigError, match="control word and a confirmation word"):
         load_config()
+
+
+# 26 Nov 2026: Mark's English "boots and cats" came back as German ("Okay, du buchst im
+# Katz."). JARVIS_WHISPER_LANGUAGES limits the detection to the languages he speaks.
+
+def test_whisper_languages_are_unset_by_default(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("JARVIS_WHISPER_LANGUAGES", raising=False)
+    assert load_config().whisper_languages == ()
+    assert "languages" not in load_config().whisper_options
+
+
+def test_whisper_languages_limit_the_detection(monkeypatch, tmp_path):
+    _set_minimal_env(monkeypatch, tmp_path, JARVIS_WHISPER_LANGUAGES=" nl, en ,nl")
+    config = load_config()
+    assert config.whisper_languages == ("nl", "en")
+    assert config.whisper_options == {"languages": ("nl", "en")}
+
+
+@pytest.mark.parametrize("env", [
+    {"JARVIS_WHISPER_LANGUAGES": "nl"},
+    {"JARVIS_WHISPER_LANGUAGES": "nl,English"},
+    {"JARVIS_WHISPER_LANGUAGES": "nl;en"},
+    {"JARVIS_WHISPER_LANGUAGES": "nl,en", "JARVIS_WHISPER_LANGUAGE": "en"},
+])
+def test_bad_whisper_languages_are_refused_at_start(monkeypatch, tmp_path, env):
+    _set_minimal_env(monkeypatch, tmp_path, **env)
+    with pytest.raises(ConfigError):
+        load_config()

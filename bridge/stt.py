@@ -15,18 +15,35 @@ def _model(model_size: str):
 
 
 def transcribe(audio_bytes, *, model_size: str = "base", beam_size: int = 5,
-               language: str | None = None) -> str:
+               language: str | None = None, languages: tuple[str, ...] = ()) -> str:
     """The recording as text. Takes the uploaded bytes, or what decode() made of them.
 
     `beam_size` and `language` are faster-whisper's own (defaults 5 and detection).
     A fixed language skips the detection pass, measured on agent-lxc for base/int8
     on 4 to 9 s recordings: 1.7-1.9 s down to 0.9-1.1 s; beam 1 takes another
     0.05-0.2 s off (docs/how-to/bridge-service.md, "Where a turn's time goes").
+
+    `languages` (with no fixed `language`): detection picks the likeliest of these only
+    (pick_language), then the recording is transcribed in it. The same one detection
+    pass as faster-whisper's own, so no slower.
     """
     model = _model(model_size)
-    segments, _info = model.transcribe(_source(audio_bytes), beam_size=beam_size,
-                                       language=language)
+    source = _source(audio_bytes)
+    if language is None and languages:
+        if not hasattr(audio_bytes, "shape"):
+            source = decode(bytes(audio_bytes))
+        _top, _p, probabilities = model.detect_language(source)
+        language = pick_language(probabilities, languages)
+    segments, _info = model.transcribe(source, beam_size=beam_size, language=language)
     return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def pick_language(probabilities, languages: tuple[str, ...]) -> str:
+    """Of `languages`, the one Whisper's detection finds likeliest. `probabilities`:
+    (code, probability) pairs as faster-whisper's detect_language gives them. The
+    first of `languages` when none of them is in the list."""
+    scores = dict(probabilities)
+    return max(languages, key=lambda code: (scores.get(code, 0.0), -languages.index(code)))
 
 
 def _source(audio):
