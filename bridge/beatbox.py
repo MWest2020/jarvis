@@ -16,13 +16,17 @@ One pattern adds a hummed bass line and a sung hook ("Jar-vis", "yeah"), moved o
 their notes with the TD-PSOLA of bridge/singing.py. numpy only, no samples, no model.
 
 Off the normal path, like singing (`choose`): only when the tag is first on the agent's
-own line, the driver's words in this turn ask for a beat, the reply is not a read-back,
-and JARVIS_BEATBOX is not 0. Otherwise every tag is removed and the line is spoken.
+own line, the driver asked for a beat (his words in this turn, or a beat played in this
+conversation a few minutes ago: "another one"), the reply is not a read-back, and
+JARVIS_BEATBOX is not 0. Otherwise every tag is removed and, as the agent's line promised
+a beat that does not come, the bridge says a short line of its own instead (`DROPPED`).
 """
 from __future__ import annotations
 
 import random
 import re
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -52,8 +56,51 @@ OPEN_TAG = re.compile(r"\[\s*beat[- ]?box\w*\s*:?\s*[A-Za-z_-]*\s*", re.IGNORECA
 # "bietbox", "Pete box", "beatboks", "bait box", "bijtbox". Never a box alone ("inbox",
 # "postbox", "pizza box"); the agent's tag is needed too.
 MISHEARD = r"[bp](?:ea|ee|ie|ei|ai|ij|e|i)[dt]{1,2}e?[- ]?b(?:[ao]x|o[ck]k?s)\w*"
-ASKED = re.compile(rf"\b(beat[- ]?box\w*|beats?|beatjes?|boots and cats|{MISHEARD})\b",
+# The beats by name, as the driver may say them: "hip hop", "boots and cats" (also "boots
+# 'n cats", "boots en kats", "boots and katz"). Not "hook" or "cats" alone: too common.
+NAMED = r"hip[- ]?hop|boots?,? (?:and|an'?|n'?|'n'?|en|&) (?:cats?|kats?|katz)"
+ASKED = re.compile(rf"\b(beat[- ]?box\w*|beats?|beatjes?|{NAMED}|{MISHEARD})\b",
                    re.IGNORECASE)
+
+# Mark, 26 Nov 2026: "jarvis did a beatbox, but when prompted for another it stayed silent."
+# A minute after a beat, Whisper made "boots and cats" into "Okay, du buchst im Katz."; the
+# agent understood and tagged its line, the bridge found no word asking and dropped the
+# tag. So a beat played in this conversation makes the next tag count as asked, for this
+# long: "another one", "nog een", a misheard name. A follow-up comes within a minute or
+# two, also with a question in between (63 s on 26 Nov); ten minutes leaves room for a
+# short back-and-forth, and is well under the idle time after which the agent host starts
+# a new conversation, so a tag on an ordinary answer much later still needs the driver's
+# own words. Each beat starts the window again.
+FOLLOW_UP_S = 10 * 60.0
+
+# Said instead of the agent's line when its tag is dropped: the line promised a beat
+# ("Boots and cats, coming right up.") that does not come, so it is not said.
+DROPPED_NOT_ASKED = "Sorry, I didn't catch that you wanted a beat."
+DROPPED_SWITCHED_OFF = "Beatboxing is switched off."
+DROPPED_MISPLACED = "Sorry, I couldn't play that beat."
+# Said when the beat was chosen but could not be rendered.
+RENDER_FAILED = "Sorry, the beat didn't come out."
+
+
+class BeatMemory:
+    """When the last beat was played, per project (one conversation per project): a tag
+    within FOLLOW_UP_S of it counts as asked. Shared by the bridge's request threads."""
+
+    def __init__(self, window_s: float = FOLLOW_UP_S,
+                 clock: Callable[[], float] = time.monotonic):
+        self.window_s = window_s
+        self._clock = clock
+        self._played: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def played(self, project: str) -> None:
+        with self._lock:
+            self._played[project] = self._clock()
+
+    def recent(self, project: str) -> bool:
+        with self._lock:
+            at = self._played.get(project)
+            return at is not None and self._clock() - at <= self.window_s
 
 
 @dataclass(frozen=True)
@@ -162,9 +209,14 @@ class BeatRequest:
 
     @property
     def text(self) -> str:
-        """What the phone shows (X-Jarvis-Summary), and what is said instead when the
-        beat cannot be rendered."""
+        """What the phone shows (X-Jarvis-Summary)."""
         return _join(self.before, self.intro or self.pattern.spoken, self.after)
+
+    @property
+    def failed_text(self) -> str:
+        """What is said instead when the beat cannot be rendered: not the intro, which
+        promises the beat."""
+        return _join(self.before, RENDER_FAILED, self.after)
 
 
 def _join(*parts: str) -> str:
@@ -203,13 +255,16 @@ def tag_playable(spoken: str, framing: tuple[str, ...] = ()) -> bool:
 
 def choose(spoken: str, *, transcript: str, enabled: bool, read_back: bool,
            framing: tuple[str, ...] = (), rng: random.Random | None = None,
-           ) -> tuple[str, BeatRequest | None]:
+           follow_up: bool = False) -> tuple[str, BeatRequest | None]:
     """What to say, and the beat when this reply is beatboxed.
 
     A read-back is returned exactly as built. A reply without a beatbox tag is returned
     unchanged (a sing tag is singing.choose's). The tag must be first on the agent's own
-    line, after nothing but the bridge's fixed sentences in `framing`. A tagged reply
-    that is not beatboxed loses its tags and is spoken.
+    line, after nothing but the bridge's fixed sentences in `framing`, and the driver must
+    have asked: in `transcript`, or `follow_up` (a beat played in this conversation a few
+    minutes ago, BeatMemory). A tagged reply that is not beatboxed is not spoken: its line
+    promised a beat, so the bridge's own DROPPED_* sentence is said instead, between the
+    fixed sentences around it.
     """
     if read_back:
         return spoken, None
@@ -217,8 +272,13 @@ def choose(spoken: str, *, transcript: str, enabled: bool, read_back: bool,
     pattern, rest, tagged = split_tag(core, rng)
     if not tagged:
         return spoken, None
-    if pattern is None or not enabled or not asked_for_a_beat(transcript):
-        return _join(before, rest, after), None
+    asked = follow_up or asked_for_a_beat(transcript)
+    if not enabled:
+        return _join(before, DROPPED_SWITCHED_OFF, after), None
+    if not asked:
+        return _join(before, DROPPED_NOT_ASKED, after), None
+    if pattern is None:
+        return _join(before, DROPPED_MISPLACED, after), None
     # A sing tag after the beatbox tag ("[beatbox] [sing: twinkle] ...") is never said.
     _, intro, _ = singing.split_tag(rest)
     beat = BeatRequest(pattern, intro, before, after)

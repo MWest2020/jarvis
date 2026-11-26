@@ -198,6 +198,8 @@ class Handler(BaseHTTPRequestHandler):
     full: FullMode | None = None
     # add-drive-mode phase 1: the drive journal (D10).
     journal: Journal | None = None
+    # jarvis-beatbox: when a beat was last played, per project (a follow-up counts as asked).
+    beats: beatbox.BeatMemory = beatbox.BeatMemory()
 
     server_version = "jarvis-bridge/0.1"
     # A client that stalls mid-request does not hold a thread forever.
@@ -463,7 +465,7 @@ class Handler(BaseHTTPRequestHandler):
             timer.add("agent", time.monotonic() - handle_started - timer.ms.get("vad", 0) / 1000)
             # The bridge's notice, fallback and news sentences may stand around the
             # agent's own line: the tag is looked for on that line.
-            spoken, song = self._song(outcome.spoken, transcript,
+            spoken, song = self._song(outcome.spoken, transcript, project=project_name,
                                       read_back=outcome.needs_confirmation,
                                       framing=FRAMING_SENTENCES)
             logger.info("project=%s summary=%r", project_name, spoken)
@@ -492,7 +494,8 @@ class Handler(BaseHTTPRequestHandler):
 
         with timer.stage("agent"):
             turn = self.readonly.run_turn(project=project, prompt=transcript)
-        summary, song = self._song(turn.spoken, transcript, read_back=False)
+        summary, song = self._song(turn.spoken, transcript, project=project_name,
+                                   read_back=False)
         logger.info("project=%s summary=%r", project_name, summary)
         self._journal_turn(project_name, transcript, summary, session_id=turn.ref)
         self._speak(summary, turn.ref, song=song, timer=timer, project=project_name)
@@ -555,22 +558,26 @@ class Handler(BaseHTTPRequestHandler):
         self._speak(spoken, "", timer=timer, project=name)
         return True
 
-    def _song(self, spoken: str, transcript: str, *, read_back: bool,
+    def _song(self, spoken: str, transcript: str, *, project: str, read_back: bool,
               framing: tuple[str, ...] = ()) -> tuple[str, Performance | None]:
         """jarvis-sing, jarvis-beatbox: the agent's reply, and the song or the beat when
         it is to be performed. Only for an agent's reply the driver asked for it, never
-        for a read-back."""
+        for a read-back. A beat played in this project a few minutes ago counts as asked
+        for the next one (beatbox.BeatMemory)."""
+        follow_up = self.beats.recent(project)
         text, beat = beatbox.choose(spoken, transcript=transcript,
                                     enabled=self.config.beatbox, read_back=read_back,
-                                    framing=framing)
+                                    framing=framing, follow_up=follow_up)
         if beat is not None:
             logger.info("beatboxed: %s", beat.pattern.id)
+            self.beats.played(project)
             return text, beat
         if text != spoken:
-            # The agent tagged its line, and the bridge said it without the beat: say
-            # why, so "it said the line and then nothing" can be read from the log.
-            logger.info("beatbox tag dropped: switched_on=%s asked=%s tag_first=%s",
-                        self.config.beatbox, beatbox.asked_for_a_beat(transcript),
+            # The agent tagged its line, and the bridge did not play the beat: say why,
+            # so "it said the line and then nothing" can be read from the log.
+            logger.info("beatbox tag dropped: switched_on=%s asked=%s follow_up=%s "
+                        "tag_first=%s", self.config.beatbox,
+                        beatbox.asked_for_a_beat(transcript), follow_up,
                         beatbox.tag_playable(spoken, framing))
         text, song = singing.choose(text, transcript=transcript,
                                     enabled=self.config.sing, read_back=read_back,
@@ -605,6 +612,9 @@ class Handler(BaseHTTPRequestHandler):
                 logger.exception("project=%s: the song or beat could not be rendered; "
                                  "spoken instead",
                                  project)
+                if isinstance(song, beatbox.BeatRequest):
+                    # The agent's line promised the beat: not said without it.
+                    text = song.failed_text
             else:
                 if not getattr(self, "_stream_reply", False):
                     timer.reply = "wav"
@@ -889,6 +899,7 @@ def make_server(config: BridgeConfig) -> BoundedHTTPServer:
         timeout_s=config.claude_timeout_s,
     )
     Handler.journal = _make_journal(config)
+    Handler.beats = beatbox.BeatMemory()
     Handler.full = None
     if config.agent_mode == MODE_FULL:
         if config.agent_host is None:
@@ -940,7 +951,9 @@ def main() -> None:
     # Kokoro load alone took over two minutes (2026-11-14 tailnet test).
     logger.info("loading speech models (whisper %s, beam %s, language %s; kokoro)",
                 config.whisper_model, config.whisper_beam_size,
-                config.whisper_language or "detected")
+                config.whisper_language
+                or (f"detected from {','.join(config.whisper_languages)}"
+                    if config.whisper_languages else "detected"))
     stt.warm_up(config.whisper_model)
     tts.warm_up()
     server = make_server(config)

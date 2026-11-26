@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from bridge import beatbox, claude_adapter, singing, summary, tts
+from bridge import beatbox, claude_adapter, server, singing, summary, tts
 from bridge.beatbox import KIT, PATTERNS, STEPS_PER_BAR
 from bridge.full_mode import FRAMING_SENTENCES, PROJECT_READY
 from bridge.remote_adapter import NOTICE_SENTENCES
@@ -142,16 +142,16 @@ def test_other_words_do_not_ask(transcript):
     assert not beatbox.asked_for_a_beat(transcript)
 
 
-def test_without_the_drivers_request_the_line_is_spoken():
+def test_without_the_drivers_request_the_bridge_says_so_instead_of_the_promise():
     text, beat = beatbox.choose("[beatbox] Here we go.", transcript="what is open?",
                                 enabled=True, read_back=False)
-    assert beat is None and text == "Here we go."
+    assert beat is None and text == beatbox.DROPPED_NOT_ASKED
 
 
-def test_switched_off_the_line_is_spoken():
+def test_switched_off_the_bridge_says_so_instead_of_the_promise():
     text, beat = beatbox.choose("[beatbox: hip-hop] Here we go.", transcript="beatbox",
                                 enabled=False, read_back=False)
-    assert beat is None and text == "Here we go."
+    assert beat is None and text == beatbox.DROPPED_SWITCHED_OFF
 
 
 def test_a_read_back_is_never_beatboxed_or_changed():
@@ -211,10 +211,10 @@ def test_after_a_notice_the_beat_still_comes_and_news_after_it():
                                 read_back=False, framing=FRAMING_SENTENCES)
     assert (beat.before, beat.intro, beat.after) == (sentence, "Here we go.", PROJECT_READY)
     assert text == f"{sentence} Here we go. {PROJECT_READY}"
-    # Anything else before the tag: not first, not beatboxed.
+    # Anything else before the tag: not first, not beatboxed, and the promise not said.
     text, beat = beatbox.choose("Sure thing. [beatbox] Go.", transcript="beatbox",
                                 enabled=True, read_back=False, framing=FRAMING_SENTENCES)
-    assert beat is None and text == "Sure thing. Go."
+    assert beat is None and text == beatbox.DROPPED_MISPLACED
 
 
 def test_the_tag_passes_the_spoken_filter():
@@ -413,10 +413,10 @@ def test_a_beat_is_streamed_whole_in_pcm(full):
     assert data == tts.to_l16(np.full(SR // 5, 0.25, dtype=np.float32))
 
 
-def test_a_tagged_reply_nobody_asked_for_is_spoken(full):
+def test_a_tagged_reply_nobody_asked_for_is_not_promised(full):
     full.host.scenario(mode="wrapper", spoken=TAGGED)
     response, said = full.say("what is open?")
-    assert said == "WAV:Here's a beat for the road."
+    assert said == f"WAV:{beatbox.DROPPED_NOT_ASKED}"
     assert full.beatboxer.beats == []
 
 
@@ -434,16 +434,20 @@ def test_switched_off_nothing_is_beatboxed(full):
     full.start()
     full.host.scenario(mode="wrapper", spoken=TAGGED)
     response, said = full.say("beatbox")
-    assert said == "WAV:Here's a beat for the road."
+    assert said == f"WAV:{beatbox.DROPPED_SWITCHED_OFF}"
     assert full.beatboxer.beats == []
 
 
-def test_a_beat_that_fails_to_render_is_spoken(full):
+def test_a_beat_that_fails_to_render_is_not_promised(full):
     full.beatboxer.fail = True
     full.host.scenario(mode="wrapper", spoken=TAGGED)
     response, said = full.say("beatbox")
     assert response.status == 200
-    assert said == "WAV:Here's a beat for the road."
+    assert said == f"WAV:{beatbox.RENDER_FAILED}"
+    # After a notice, the notice is still said.
+    full.host.scenario(mode="wrapper", notice="new_session", spoken=TAGGED)
+    response, said = full.say("beatbox")
+    assert said == f"WAV:{NOTICE_SENTENCES['new_session']} {beatbox.RENDER_FAILED}"
 
 
 def test_singing_still_sings(full):
@@ -571,3 +575,135 @@ def test_a_tag_dropped_because_nobody_asked_is_logged(full, caplog):
     dropped = [r.getMessage() for r in caplog.records if "beatbox tag dropped" in r.getMessage()]
     assert dropped and "tag_first=True" in dropped[0]
     assert "what is open" not in dropped[0]  # never the transcript
+
+
+# --- Mark, 26 Nov 2026: "jarvis did a beatbox, but when prompted for another it stayed silent"
+# Turn bcd0c440 played jarvis-hook ("Jarvis, drop a beat."). 63 s later, in turn 4075c2e0,
+# Whisper made Mark's English "boots and cats" into German; the agent tagged its line, the
+# bridge logged "beatbox tag dropped: switched_on=True asked=False tag_first=True" and said
+# "Boots and cats, coming right up." with no beat after it.
+
+SECOND_WORDS = "Okay, du buchst im Katz."
+SECOND_REPLY = "SPOKEN SUMMARY: [beatbox: boots-and-cats] Boots and cats, coming right up."
+FIRST_REPLY = "SPOKEN SUMMARY: [beatbox: jarvis-hook] Here's a beat for the road, Mark."
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_a_beat_a_few_minutes_ago_makes_the_next_tag_asked():
+    clock = Clock()
+    beats = beatbox.BeatMemory(clock=clock)
+    assert not beats.recent("jarvis-home")
+    beats.played("jarvis-home")
+    clock.now += 63
+    assert beats.recent("jarvis-home")
+    # Per project: another conversation's beat does not count.
+    assert not beats.recent("wanderer")
+    clock.now += beatbox.FOLLOW_UP_S
+    assert not beats.recent("jarvis-home")
+
+
+def test_the_window_is_ten_minutes():
+    assert beatbox.FOLLOW_UP_S == 600
+
+
+def test_a_follow_up_tag_is_beatboxed_even_when_the_words_do_not_ask():
+    for words in (SECOND_WORDS, "another one", "nog een", "doe er nog een", "again!"):
+        text, beat = beatbox.choose(summary.extract_summary(SECOND_REPLY), transcript=words,
+                                    enabled=True, read_back=False, follow_up=True)
+        assert beat is not None and beat.pattern.id == "boots-and-cats", words
+        assert text == "Boots and cats, coming right up."
+    # Without a beat before it, the same words do not ask.
+    text, beat = beatbox.choose(summary.extract_summary(SECOND_REPLY), transcript=SECOND_WORDS,
+                                enabled=True, read_back=False)
+    assert beat is None and text == beatbox.DROPPED_NOT_ASKED
+
+
+def test_a_follow_up_never_beatboxes_a_read_back_or_when_switched_off():
+    readback = "[beatbox] Merge pull request 21 on jarvis. Say yes to go ahead."
+    assert beatbox.choose(readback, transcript="another one", enabled=True, read_back=True,
+                          follow_up=True) == (readback, None)
+    text, beat = beatbox.choose("[beatbox] Go.", transcript="another one", enabled=False,
+                                read_back=False, follow_up=True)
+    assert beat is None and text == beatbox.DROPPED_SWITCHED_OFF
+
+
+@pytest.mark.parametrize("transcript", [
+    "hip hop", "do the hip-hop one", "boots and cats", "boots n cats", "boots 'n cats",
+    "boots en kats", "boots and katz", "Boots & cats"])
+def test_the_driver_asks_by_a_beats_name(transcript):
+    assert beatbox.asked_for_a_beat(transcript)
+
+
+@pytest.mark.parametrize("transcript", [
+    "fix the webhook", "the cats are fine", "Katz", "reboots the pod", "hook it up"])
+def test_a_name_alone_that_is_an_ordinary_word_does_not_ask(transcript):
+    assert not beatbox.asked_for_a_beat(transcript)
+
+
+def test_marks_second_beat_plays_after_the_first(full):
+    full.host.scenario(mode="wrapper", notice="new_session", spoken=FIRST_REPLY)
+    full.say("Jarvis, drop a beat.")
+    full.host.scenario(mode="wrapper",
+                       spoken="SPOKEN SUMMARY: No new ones, I've still got the same three.")
+    full.say("Jav, did you get some new beats? Or did you just regurgitate old ones?")
+    full.host.scenario(mode="wrapper", spoken=SECOND_REPLY)
+    response, said = full.say(SECOND_WORDS)
+    assert said == "BEAT:%d" % (SR // 5)
+    assert [b.pattern.id for b in full.beatboxer.beats] == ["jarvis-hook", "boots-and-cats"]
+    assert urllib.parse.unquote(response.getheader("X-Jarvis-Summary")) == (
+        "Boots and cats, coming right up.")
+
+
+def test_a_follow_up_counts_only_in_the_same_project(full):
+    full.host.scenario(mode="wrapper", spoken=FIRST_REPLY)
+    full.say("Jarvis, drop a beat.", project="other")
+    full.host.scenario(mode="wrapper", spoken=SECOND_REPLY)
+    response, said = full.say(SECOND_WORDS)
+    assert said == f"WAV:{beatbox.DROPPED_NOT_ASKED}"
+
+
+def test_after_the_window_the_garbled_ask_is_dropped_and_not_promised(full, monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(server.Handler, "beats", beatbox.BeatMemory(clock=clock))
+    full.host.scenario(mode="wrapper", spoken=FIRST_REPLY)
+    full.say("Jarvis, drop a beat.")
+    clock.now += beatbox.FOLLOW_UP_S + 1
+    full.host.scenario(mode="wrapper", spoken=SECOND_REPLY)
+    response, said = full.say(SECOND_WORDS)
+    assert said == f"WAV:{beatbox.DROPPED_NOT_ASKED}"
+    assert "coming right up" not in urllib.parse.unquote(
+        response.getheader("X-Jarvis-Summary"))
+    assert [b.pattern.id for b in full.beatboxer.beats] == ["jarvis-hook"]
+
+
+def test_a_dropped_follow_up_is_logged_with_why(full, caplog):
+    full.host.scenario(mode="wrapper", spoken=SECOND_REPLY)
+    with caplog.at_level("INFO", logger="bridge.server"):
+        full.say(SECOND_WORDS)
+    dropped = [r.getMessage() for r in caplog.records if "beatbox tag dropped" in r.getMessage()]
+    assert dropped == ["beatbox tag dropped: switched_on=True asked=False follow_up=False "
+                       "tag_first=True"]
+
+
+def test_a_follow_up_in_readonly_mode_too(tmp_path, monkeypatch):
+    b = Bridge(tmp_path, monkeypatch, mode="readonly")
+    try:
+        beatboxer = Beatboxer()
+        monkeypatch.setattr(tts, "beatbox", beatboxer)
+        monkeypatch.setattr(tts, "wav_bytes", lambda samples: b"BEAT")
+        replies = iter([FIRST_REPLY, SECOND_REPLY])
+        monkeypatch.setattr(claude_adapter, "run_turn",
+                            lambda **kwargs: (next(replies), "session-ro"))
+        b.say("Jarvis, drop a beat.")
+        response, said = b.say(SECOND_WORDS)
+        assert said == "BEAT"
+        assert [beat.pattern.id for beat in beatboxer.beats] == ["jarvis-hook", "boots-and-cats"]
+    finally:
+        b.stop()
