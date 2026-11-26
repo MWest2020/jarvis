@@ -30,7 +30,7 @@ def transcribe(audio_bytes, *, model_size: str = "base", beam_size: int = 5,
     model = _model(model_size)
     source = _source(audio_bytes)
     if language is None and languages:
-        if not hasattr(audio_bytes, "shape"):
+        if isinstance(audio_bytes, (bytes, bytearray, memoryview)):
             source = decode(bytes(audio_bytes))
         _top, _p, probabilities = model.detect_language(source)
         language = pick_language(probabilities, languages)

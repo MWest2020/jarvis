@@ -21,13 +21,16 @@ the approval point, as for `jarvis-beatbox`.
 
 ## What Changes
 
-- **A follow-up counts as asked.** A beat played in this conversation (this project) less
-  than ten minutes ago makes the next beatbox tag count as asked ("another one", "nog
-  een", a garbled transcript). Each beat starts the ten minutes again. The beats' names
-  ("hip hop", "boots and cats") also ask. Still never unprompted: the tag must be first on
-  the agent's line, never a read-back, and a beat must have been asked for in words first.
-- **No promise without a beat.** When the bridge drops a beatbox tag, it says a short line
-  of its own instead of the agent's line ("Sorry, I didn't catch that you wanted a beat.",
+- **A follow-up counts as asked.** A beat asked for in words in this conversation (this
+  project) less than ten minutes ago makes the next beatbox tags count as asked ("another
+  one", "nog een", a garbled transcript), at most three of them; a follow-up does not
+  restart the ten minutes. The beats' names ("hip hop", "boots and cats") also ask. Still
+  never unprompted: the tag must be first on the agent's line, never a read-back, a beat
+  must have been asked for in words first, and an agent that tags every reply gets at most
+  three beats.
+- **No promise without a beat.** When the bridge drops a beatbox tag that stood first on
+  the agent's line, it says a short line of its own instead of the agent's line (a tag
+  elsewhere is taken out and the line spoken, as before) ("Sorry, I didn't catch that you wanted a beat.",
   "Beatboxing is switched off.", "Sorry, I couldn't play that beat."); when a beat cannot be
   rendered, "Sorry, the beat didn't come out."
 - **The answer, not a pointer to a log.** A semicolon is speech. A summary with code in it
@@ -35,11 +38,11 @@ the approval point, as for `jarvis-beatbox`.
   without a summary line, the reply's own first sentences are said, made speakable the same
   way. Only when nothing speakable is left: "Done, but I couldn't put the answer into words.
   Ask me to say it again." Never a log.
-- **One line still leaves the agent host.** In `full` mode the agent host sends the agent's
-  summary line as before or, when there is none or the filters would replace it, a summary
-  line of its own made from the reply with the same filters, at most 160 characters
-  (`summary.spoken_line`). Changes D33 of `jarvis-full-agent` in that one respect. The
-  bridge speaks the field only when it is a summary line.
+- **One filtered line leaves the agent host.** In `full` mode the agent host sends a
+  summary line with exactly what the bridge makes of the whole reply
+  (`summary.spoken_line`): the agent's summary when speakable as it is, else a filtered
+  excerpt of the reply, at most 160 characters, else nothing. Changes D33 of
+  `jarvis-full-agent` in that respect. The bridge speaks only the summary line of the field.
 - **The driver's languages (opt-in).** `JARVIS_WHISPER_LANGUAGES=nl,en`: Whisper's language
   detection picks the likeliest of these only. Unset: as before.
 

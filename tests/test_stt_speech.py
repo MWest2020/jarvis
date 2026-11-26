@@ -72,6 +72,13 @@ def test_the_bytes_are_decoded_once_for_the_detection(monkeypatch):
     assert model.calls[0] == ("detect", "ndarray")
 
 
+def test_a_memoryview_is_decoded_for_the_detection(monkeypatch):
+    model = FakeWhisper()
+    monkeypatch.setattr(stt, "_model", lambda size: model)
+    assert stt.transcribe(memoryview(_wav([0] * 16000)), languages=("nl", "en")) == "said in en"
+    assert model.calls[0] == ("detect", "ndarray")
+
+
 def test_without_languages_whisper_detects_as_before(monkeypatch):
     model = FakeWhisper()
     monkeypatch.setattr(stt, "_model", lambda size: model)

@@ -481,24 +481,32 @@ part of a turn; a longer one is cut at its last sentence end within 160 characte
 else at its last semicolon, else at a word, with "…"), and only as it is when it contains nothing that looks like code or a path (backticks, slashes, file
 names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
 letters, digits, `_` or `-`). A semicolon is speech: until 26 Nov 2026 it counted as
-code, and 29 of 165 recorded turns lost a good summary to it.
+code, and 29 of 165 recorded turns lost a good summary to it (a command joined by one is
+still caught, by its flags or calls).
 
 When the summary has code in it, or there is no summary line, Jarvis says what can be said
 (`summary.speakable`): first the summary line made speakable, else the reply's own first
-sentences, at most 160 characters. Code blocks, tables and horizontal rules are left out;
+sentences, at most 160 characters (only the first 4000 characters are read). Code blocks,
+fenced or indented, tables and horizontal rules are left out;
 list, quote and heading markup and markdown are taken off; a link is said as its text, a
 URL as "the link", a path or file as its name ("bridge/server.py" as "server", "owner/repo"
-as "owner repo"); inline code stays when it is one plain word. A sentence that still holds
-code, a path or anything shaped like a credential is left out whole. Only when nothing is
+as "owner repo"); inline code stays when it is one plain word. A path or inline code shaped like a credential
+(also split by `/`: "wJalr.../PxRfi..."), or with a user or port in it, a URL of any scheme
+(`postgres://user:pass@...` is "the link"), an scp remote (`git@host:repo`), and a sentence
+that reads as code (a call such as `print(i)`, an assignment, a flag such as `--force` or
+`-rf`, a leading `def`/`import`/`return`), are left out with their sentence, and so is
+any word shaped like a credential or id (16 or more letters and digits mixed). These code
+checks apply to the summary line too. Only when nothing is
 left does the phone hear "Done, but I couldn't put the answer into words. Ask me to say it
 again." It never mentions a log: Mark, 26 Nov 2026, "and he says check the log for
 details, but cant show them".
 
 In `full` mode the bridge gets only one line of the reply (`spoken`, jarvis-full-agent
-D33). The agent host sends the agent's summary line as before, or, when there is none or
-the filters would replace it, a summary line of its own with what the bridge would make of
-the whole reply (`summary.spoken_line`: the same filters, at most 160 characters), so both
-modes say the same. The bridge speaks the `spoken` field only when it is a summary line.
+D33). The agent host now sends a summary line with exactly what the bridge would make of
+the whole reply (`summary.spoken_line`): the agent's own summary when it is speakable as it
+is, else the speakable excerpt, at most 160 characters, else `""`. So only filtered text
+leaves the agent host, and both modes say the same. The bridge speaks only the summary line
+of the `spoken` field, never lines around it.
 That part of the change needs the agent host reinstalled (`agent_host/install.sh`).
 
 ## Where a turn's time goes
@@ -807,8 +815,9 @@ never said.
 and mail, and it can be wrong; a 15-second beat in the car on an ordinary answer is
 the kind of thing a check the model does not control should stop. So the bridge plays
 a beat only when the tag is first on the agent's line *and* the driver asked: the
-transcript of this turn asks for one, or a beat was played in this conversation (this
-project) less than ten minutes ago (`FOLLOW_UP_S`). Whisper mishears "beatbox" (23 Nov
+transcript of this turn asks for one, or he asked for a beat in words in this conversation
+(this project) less than ten minutes ago (`FOLLOW_UP_S`), for at most three follow-ups
+(`MAX_FOLLOW_UPS`). Whisper mishears "beatbox" (23 Nov
 2026: "Jarvis, drop a beatbox" came out as "Jawers, troop en peedbox!"), so the ask also
 takes the misheard forms in `bridge/beatbox.py` (`MISHEARD`) and the beats' names ("hip
 hop", "boots and cats", "boots n katz"; not "hook" or "cats" alone).
@@ -816,22 +825,27 @@ hop", "boots and cats", "boots n katz"; not "hook" or "cats" alone).
 **Another one.** On 26 Nov 2026 Jarvis played a beat, and a minute later Mark asked for
 "boots and cats"; Whisper heard "Okay, du buchst im Katz.", the agent understood and
 tagged its line, and the bridge, finding no word that asked, said "Boots and cats, coming
-right up." and nothing else. Now a beat played in this conversation makes the next tag
-count as asked for ten minutes ("another one", "nog een", "doe er nog een", or a garbled
-name), and each beat starts the ten minutes again. A follow-up comes within a minute or two,
-also with a question in between; ten minutes leaves room for that and is well under the 60
-minutes after which the agent host starts a new conversation. The memory is the bridge's
-own, per project, and starts empty when the bridge restarts.
+right up." and nothing else. Now a beat he asked for in words makes the next tags count as
+asked for ten minutes ("another one", "nog een", "doe er nog een", or a garbled name), at
+most three of them. A follow-up comes within a minute or two, also with a question in
+between; ten minutes leaves room for that and is well under the 60 minutes after which the
+agent host starts a new conversation. Only a beat asked for in words starts the ten minutes
+again, and the cap holds: an agent that tags every reply, by a slip or because of words it
+read, cannot keep beats coming. The memory is the bridge's own, per project (a closed
+conversation does not clear it; the ten minutes and the cap still bound it), and starts
+empty when the bridge restarts.
 
 **No promise without a beat.** The agent's line promises a beat ("Boots and cats, coming
-right up."). When the bridge drops the tag, it says its own short line instead of that
-promise, with any notice of the bridge before or after it:
+right up."). When the bridge drops a tag that stood first on the agent's line, it says its
+own short line instead of that promise, with any notice of the bridge before or after it.
+A tag elsewhere in the line ("I fixed the [beatbox] tag handling.") promises nothing: it
+is taken out and the line is spoken.
 
 | Why the tag is dropped | Jarvis says |
 |---|---|
-| the driver did not ask (and no beat in the last ten minutes) | "Sorry, I didn't catch that you wanted a beat." |
-| `JARVIS_BEATBOX=0` | "Beatboxing is switched off." |
-| the tag was not first on the line, or broken | "Sorry, I couldn't play that beat." |
+| the driver did not ask (and no follow-up left) | "Sorry, I didn't catch that you wanted a beat." |
+| he asked, but `JARVIS_BEATBOX=0` | "Beatboxing is switched off." |
+| the tag was broken ("[beatbox: hip-hop Here we go") | "Sorry, I couldn't play that beat." |
 | the beat could not be rendered | "Sorry, the beat didn't come out." |
 
 When the agent tagged its line and the bridge did not play the beat, the log says why:
@@ -886,8 +900,8 @@ the agent's:
 
 - the tag is the very first thing on the agent's own spoken line (only the bridge's fixed
   sentences, `FRAMING_SENTENCES`, are looked past);
-- the driver asked: a beat was played in this conversation less than ten minutes ago, or
-  his own words in this turn ask for it: "beatbox" (also "beatboxen",
+- the driver asked: he asked for a beat in words in this conversation less than ten
+  minutes ago (at most three follow-ups), or his own words in this turn ask for it: "beatbox" (also "beatboxen",
   "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats", "hip hop", or "beatbox" as
   Whisper mishears it: a b or p, a vowel, a d or t, then "box" ("peedbox", "beadbox",
   "bietbox", "Pete box"). On 23 Nov 2026 "Jarvis, drop a beatbox" came out as "Jawers,

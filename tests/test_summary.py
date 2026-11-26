@@ -245,6 +245,7 @@ def test_spoken_line_gives_the_bridge_what_the_whole_reply_gives(reply):
     assert "\n" not in line
     assert line == "" or line.startswith(SUMMARY_MARKER)
     assert extract_summary(line) == extract_summary(reply)
+    assert line == "" or line == f"{SUMMARY_MARKER} {extract_summary(reply)}"
 
 
 def test_replays_of_the_recorded_turns_never_fall_back_on_a_speakable_summary():
@@ -256,3 +257,69 @@ def test_replays_of_the_recorded_turns_never_fall_back_on_a_speakable_summary():
         record = json.loads(path.read_text())
         if record.get("outcome") == "ok" and record.get("reply"):
             assert extract_summary(record["reply"]) != FALLBACK_SUMMARY, path.name
+
+
+
+# Review of #104: what speakable() makes of text must still pass the spoken filter.
+
+@pytest.mark.parametrize("bad", [
+    "I set the key to wJalrXUtnFEMIK7MDENGb/PxRfiCYEXAMPLEKEYab12 for you.",
+    "Secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY set.",
+    "Connect with postgres://admin:S3cretPass@db.internal:5432/app please.",
+    "See redis://:hunter2pass@cache:6379/0 now.",
+    "Clone git@github.com:MWest2020/jarvis.git",
+    "The commit is 3f2a9c1d4e5f6a7b8c9d.",
+    "Use `ghp_A1b2C3d4E5f6G7h8` as the token.",
+])
+def test_a_secret_never_survives_being_made_speakable(bad):
+    for reply in (f"Body text.\n{SUMMARY_MARKER} {bad}", bad):
+        said = extract_summary(reply)
+        line = spoken_line(reply)
+        for secret in ("PxRfi", "S3cret", "hunter2", "git@", "bPxRf", "3f2a9c", "ghp_"):
+            assert secret not in line and secret not in said
+
+
+@pytest.mark.parametrize("bad", [
+    "    for i in range(10): print(i)\nThat loops.",
+    "\tx = compute()\nThat loops.",
+    "def main(argv): return run(argv).\nThat loops.",
+    "Run git push --force origin main to publish.\nThat loops.",
+    "Run cd /tmp; rm -rf build to clean up.\nThat loops.",
+    "Run import os; os.remove(p) first.\nThat loops.",
+    "import os\nThat loops.",
+    "Set retries = 3 in the config.\nThat loops.",
+])
+def test_code_in_the_body_is_never_spoken(bad):
+    assert extract_summary(bad) == "That loops."
+
+
+def test_a_command_with_a_semicolon_in_the_summary_is_not_spoken():
+    for bad in ("Run cd /tmp; rm -rf build to clean up.", "Run import os; os.remove(p) first."):
+        assert extract_summary(f"Reply.\n{SUMMARY_MARKER} {bad}") == "Reply."
+
+
+def test_home_and_root_paths_are_said_as_names():
+    assert extract_summary("I put it in ~/.env and /etc for you.") == (
+        "I put it in env and etc for you.")
+
+
+def test_plain_words_in_brackets_are_no_call():
+    assert extract_summary("Updated the test(s) and the doc(es).") == (
+        "Updated the test(s) and the doc(es).")
+    assert extract_summary("The build (on main) passed.") == "The build (on main) passed."
+
+
+def test_a_nested_list_item_is_no_code_block():
+    assert extract_summary("Done:\n- first\n    - second item") == "Done. first. second item."
+
+
+@pytest.mark.parametrize("pathological", [
+    "a-" * 10000, " \n" * 20000, "-" * 20000, "\n" * 20000, "a/" * 10000, "a." * 10000,
+    "```\n" + "x\n" * 10000, "word " * 20000,
+])
+def test_a_pathological_reply_is_handled_fast(pathological):
+    import time
+    started = time.monotonic()
+    extract_summary(pathological)
+    spoken_line(pathological)
+    assert time.monotonic() - started < 1.0

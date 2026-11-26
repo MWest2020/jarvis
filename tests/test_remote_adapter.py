@@ -641,3 +641,12 @@ def test_check_ssh_reports_a_missing_client(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(RuntimeError, match="ssh client"):
         remote_adapter.check_ssh()
+
+
+
+def test_only_the_marker_line_of_the_spoken_field_is_spoken(host):
+    # Review of #104: lines around the marker in the field are never spoken.
+    host.scenario(mode="wrapper", spoken="Private notes here.\nSPOKEN SUMMARY: Two are open.")
+    assert _adapter(host).run_turn(project=DEMO, prompt="x").spoken == "Two are open."
+    host.scenario(mode="wrapper", spoken="Private notes here.\nSPOKEN SUMMARY: run `rm -rf /`")
+    assert _adapter(host).run_turn(project=DEMO, prompt="x").spoken == FALLBACK_SUMMARY

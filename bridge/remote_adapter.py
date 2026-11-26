@@ -720,8 +720,8 @@ def _spoken(notice: str, marker_line: str) -> str:
     """The notice's fixed sentence first, then the agent's summary when it gave one.
     Only a marker line is the agent's summary (D33): anything else in the field is
     not spoken."""
-    if not last_marker_line(marker_line):
-        marker_line = ""
+    # The marker line alone: lines around it in the field are never spoken.
+    marker_line = last_marker_line(marker_line)
     if not notice:
         return extract_summary(marker_line)
     sentence = NOTICE_SENTENCES[notice]

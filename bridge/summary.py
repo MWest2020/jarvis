@@ -108,7 +108,10 @@ def last_marker_line(reply_text: str) -> str:
 
 
 def _speakable_ok(text: str) -> bool:
-    return not _UNSPEAKABLE.search(text) and not _SECRET_LIKE.search(text)
+    """Nothing that looks like code, a path or a credential (the spoken filter)."""
+    return (not _UNSPEAKABLE.search(text)
+            and not _SECRET_LIKE.search(text) and not _CODE_LIKE.search(text)
+            and not any(_tokenish(word) for word in text.split()))
 
 
 def extract_summary(reply_text: str) -> str:
@@ -129,7 +132,7 @@ def extract_summary(reply_text: str) -> str:
             rest = [ln for ln in lines[i + 1:] if ln.strip()]
             summary = _clean(rest[0]) if rest else ""
         # The filters see the whole summary, also the part a cut would drop.
-        if summary and _speakable_ok(summary):
+        if summary and len(summary) <= _MAX_SPEAKABLE_INPUT and _speakable_ok(summary):
             return shorten(summary, MAX_SUNG_CHARS if _SUNG.match(summary) else MAX_SPOKEN_CHARS)
         candidates.append(summary)
         body = lines[:i]
@@ -147,38 +150,74 @@ def extract_summary(reply_text: str) -> str:
 
 # --- a reply made speakable (no summary line, or one with code in it) -------------------
 
+# Only the start of a reply is read: 160 characters are spoken, and the patterns below
+# stay fast on any input (review of #104: some took seconds on 20 KB of one character).
+_MAX_SPEAKABLE_INPUT = 4000
+# A longer "sentence" is no sentence (a run of code or data): never spoken.
+_MAX_SENTENCE_CHARS = 600
 _FILE_EXT = (r"py|js|ts|tsx|json|ya?ml|toml|md|sh|go|rs|java|c|h|cpp|rb|php|html|css|sql|"
              r"lock|txt|cfg|ini|env|kt|swift|xml|csv|log")
-_FENCE = re.compile(r"^\s*(```|~~~).*?(^\s*\1[^\n]*$|\Z)", re.MULTILINE | re.DOTALL)
+_FENCE = re.compile(r"^[ \t]*(```|~~~).*?(^[ \t]*\1[^\n]*$|\Z)", re.MULTILINE | re.DOTALL)
 _DROP_LINE = re.compile(r"^\s*(\||[-*_=]{3,}\s*$|SESSION:\s*close\b)", re.IGNORECASE)
+# Code indented as a block (four spaces or a tab), not a nested list item.
+_INDENTED_CODE = re.compile(r"^(?: {4,}|\t)(?![ \t]*(?:[-*+•]|\d{1,3}[.)])\s)")
 _LINE_MARKUP = re.compile(r"^\s*(?:#{1,6}\s+|>+\s*|[-*+•]\s+|\d{1,3}[.)]\s+|\[[ xX]\]\s+)+")
 _MD_LINK = re.compile(r"\[([^\]\n]+)\]\([^)\n]*\)")
-_URL = re.compile(r"\b(?:https?://|www\.)[^\s<>()\]]+[^\s<>()\].,;:!?'\"]", re.IGNORECASE)
+# Any scheme ("https://", "postgres://", "redis://"), or "www.".
+_URL = re.compile(r"\b(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s<>()\]]*[^\s<>()\].,;:!?'\"]",
+                  re.IGNORECASE)
+# An scp-style remote ("git@github.com:owner/repo.git").
+_REMOTE = re.compile(r"\b[\w.-]+@[\w.-]+:\S*")
 _INLINE_CODE = re.compile(r"`+([^`\n]*)`+")
 _SIMPLE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9.-]{0,30}")
-# A path: a slash between names, or one before a name ("/etc/hosts", "~/x", "./run").
-_PATH = re.compile(r"(?<![\w/])(?:~|\.{1,2})?/?(?:[\w.-]+/)+[\w.-]*")
+# A path: one starting at "/", "~/", "./" or "../" ("/etc", "~/.env"), or names with a
+# slash between them ("bridge/server.py", "owner/repo").
+_PATH = re.compile(r"(?<![\w/])(?:(?:~|\.{1,2})?/[\w.-]+(?:/[\w.-]*)*|[\w.-]+(?:/[\w.-]*)+)")
 _FILE = re.compile(rf"\b([\w-]+)\.(?:{_FILE_EXT})\b")
+# What reads as code in a sentence: a call ("print(i)", not "test(s)"), an assignment,
+# a command-line flag ("--force", "-rf"), or a statement keyword at its start.
+_CODE_LIKE = re.compile(
+    r"\b[A-Za-z_][\w.]*\((?!e?s\))[^()\n]{0,80}\)|\s==?\s|(?:^|\s)--?[A-Za-z][\w-]*|"
+    r"^(?:def|class|import|from|return|export|const|let|var|async|await)\s")
 # Never in a spoken sentence: a sentence with what is left of code is left out whole.
 _CODE_LEFT = "\x00"
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 
 
+def _tokenish(text: str) -> bool:
+    """Shaped like part of a credential or an id, also when split by "/" or "." (review
+    of #104: "wJalrXUtnFEMIK7MDENGb/PxRfiCYEXAMPLEKEYab12" passed as two words): a run of
+    16 or more letters and digits with both in it, or 20 or more letters and digits in
+    all with digits, capitals and small letters."""
+    parts = re.split(r"[^A-Za-z0-9]+", text)
+    for part in parts:
+        if len(part) >= 16 and re.search(r"\d", part) and re.search(r"[A-Za-z]", part):
+            return True
+    joined = "".join(parts)
+    return (len(joined) >= 20 and bool(re.search(r"\d", joined))
+            and bool(re.search(r"[A-Z]", joined)) and bool(re.search(r"[a-z]", joined)))
+
+
 def _path_words(match: re.Match) -> str:
     """A path as words: a file's or a deep path's last name without its extension
-    ("bridge/server.py" -> "server"); "owner/repo" or "and/or" with a space."""
+    ("bridge/server.py" -> "server"); "owner/repo" or "and/or" with a space. A path
+    shaped like a credential, or with a user or port in it, leaves its sentence out."""
     path = match.group(0)
+    if _tokenish(path) or "@" in path or ":" in path:
+        return _CODE_LEFT
     parts = [p for p in path.split("/") if p not in ("", "~", ".", "..")]
     if not parts:
         return " "
     last = parts[-1]
     if path.startswith(("/", "~", ".")) or len(parts) > 2 or _FILE.fullmatch(last):
-        return _FILE.sub(r"\1", last)
+        return _FILE.sub(r"\1", last).lstrip(".") or " "
     return " ".join(parts)
 
 
 def _inline_code(match: re.Match) -> str:
     code = match.group(1).strip()
+    if _tokenish(code):
+        return _CODE_LEFT
     if _SIMPLE_WORD.fullmatch(code) and not _FILE.fullmatch(code):
         return code
     if _FILE.fullmatch(code):
@@ -191,12 +230,16 @@ def _speakable_line(line: str) -> str:
     line = _MD_LINK.sub(r"\1", line)
     line = _INLINE_CODE.sub(_inline_code, line)
     line = _URL.sub("the link", line)
-    line = _PATH.sub(_path_words, line)
-    line = _FILE.sub(r"\1", line)
+    line = _REMOTE.sub(_CODE_LEFT, line)
+    if "/" in line:
+        line = _PATH.sub(_path_words, line)
+    if "." in line:
+        line = _FILE.sub(r"\1", line)
     line = _clean(line)
     line = re.sub(r"\(\s*\)", "", line)
     line = re.sub(r"\s+([.,;:!?])", r"\1", line)
     line = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", line).strip(" ,;")
+    line = " ".join(line.split())
     if line and line[-1] in ":,;-":
         line = line[:-1].rstrip() + "."
     elif line and line[-1] not in ".!?…":
@@ -206,36 +249,36 @@ def _speakable_line(line: str) -> str:
 
 def speakable(text: str) -> str:
     """`text` (a reply, or a summary line with code in it) as words that can be read
-    aloud: no code blocks, tables or list markup, no markdown, links as their text, a URL
-    as "the link", a path or file as its name. A sentence that still holds code, a path
-    or anything shaped like a credential is left out whole. "" when nothing is left.
-    Not shortened: extract_summary does that."""
-    text = _FENCE.sub("\n", text or "")
+    aloud: no code blocks (fenced or indented), tables or list markup, no markdown,
+    links as their text, a URL as "the link", a path or file as its name. A sentence
+    that still holds code, a path or anything shaped like a credential is left out
+    whole. "" when nothing is left. Only the first _MAX_SPEAKABLE_INPUT characters are
+    read. Not shortened: extract_summary does that."""
+    text = _FENCE.sub("\n", (text or "")[:_MAX_SPEAKABLE_INPUT])
     lines = []
     for line in text.splitlines():
-        if not line.strip() or _DROP_LINE.match(line) or _MARKER.match(line):
+        if (not line.strip() or _DROP_LINE.match(line) or _MARKER.match(line)
+                or _INDENTED_CODE.match(line)):
             continue
         line = _speakable_line(line)
         if line:
             lines.append(line)
     kept = [sentence for sentence in _SENTENCE.split(" ".join(lines))
-            if sentence and _CODE_LEFT not in sentence and _speakable_ok(sentence)
+            if sentence and len(sentence) <= _MAX_SENTENCE_CHARS
+            and _CODE_LEFT not in sentence and _speakable_ok(sentence)
             and re.search(r"[A-Za-z]{2}", sentence)]
     return " ".join(kept)
 
 
 def spoken_line(reply_text: str) -> str:
-    """The `spoken` field the agent host sends (jarvis-full-agent D33): the reply's
-    summary line verbatim, as before, when the bridge makes the same of it as of the
-    whole reply. When the reply has no summary line, or one that extract_summary has to
-    replace, a line with the marker and what extract_summary makes of the whole reply
-    (at most MAX_SPOKEN_CHARS, through the same filters), so the driver hears the
-    answer instead of the fallback. "" or the line itself when nothing is speakable."""
-    line = last_marker_line(reply_text)
+    """The `spoken` field the agent host sends (jarvis-full-agent D33): a line with the
+    marker and exactly what extract_summary makes of the reply, so only filtered text
+    leaves the agent host (review of #104: the verbatim line could hold a password the
+    bridge would not say). When the summary line is speakable as it is, that is the
+    summary line itself; without one, or with one the filters replace, it is what can be
+    said of the reply, at most MAX_SPOKEN_CHARS. "" when nothing is speakable."""
     spoken = extract_summary(reply_text)
-    if spoken == FALLBACK_SUMMARY or extract_summary(line) == spoken:
-        return line
-    return f"{SUMMARY_MARKER} {spoken}"
+    return "" if spoken == FALLBACK_SUMMARY else f"{SUMMARY_MARKER} {spoken}"
 
 
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")

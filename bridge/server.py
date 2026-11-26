@@ -198,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
     full: FullMode | None = None
     # add-drive-mode phase 1: the drive journal (D10).
     journal: Journal | None = None
-    # jarvis-beatbox: when a beat was last played, per project (a follow-up counts as asked).
+    # jarvis-beatbox: when a beat was last asked for, per project (follow-ups count as asked).
     beats: beatbox.BeatMemory = beatbox.BeatMemory()
 
     server_version = "jarvis-bridge/0.1"
@@ -562,15 +562,15 @@ class Handler(BaseHTTPRequestHandler):
               framing: tuple[str, ...] = ()) -> tuple[str, Performance | None]:
         """jarvis-sing, jarvis-beatbox: the agent's reply, and the song or the beat when
         it is to be performed. Only for an agent's reply the driver asked for it, never
-        for a read-back. A beat played in this project a few minutes ago counts as asked
-        for the next one (beatbox.BeatMemory)."""
+        for a read-back. A beat asked for in words in this project a few minutes ago makes
+        the next few tags count as asked (beatbox.BeatMemory)."""
         follow_up = self.beats.recent(project)
         text, beat = beatbox.choose(spoken, transcript=transcript,
                                     enabled=self.config.beatbox, read_back=read_back,
                                     framing=framing, follow_up=follow_up)
         if beat is not None:
             logger.info("beatboxed: %s", beat.pattern.id)
-            self.beats.played(project)
+            self.beats.played(project, asked_in_words=beatbox.asked_for_a_beat(transcript))
             return text, beat
         if text != spoken:
             # The agent tagged its line, and the bridge did not play the beat: say why,

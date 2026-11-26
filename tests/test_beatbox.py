@@ -211,10 +211,10 @@ def test_after_a_notice_the_beat_still_comes_and_news_after_it():
                                 read_back=False, framing=FRAMING_SENTENCES)
     assert (beat.before, beat.intro, beat.after) == (sentence, "Here we go.", PROJECT_READY)
     assert text == f"{sentence} Here we go. {PROJECT_READY}"
-    # Anything else before the tag: not first, not beatboxed, and the promise not said.
+    # Anything else before the tag: not first, not beatboxed, the tag taken out.
     text, beat = beatbox.choose("Sure thing. [beatbox] Go.", transcript="beatbox",
                                 enabled=True, read_back=False, framing=FRAMING_SENTENCES)
-    assert beat is None and text == beatbox.DROPPED_MISPLACED
+    assert beat is None and text == "Sure thing. Go."
 
 
 def test_the_tag_passes_the_spoken_filter():
@@ -600,7 +600,7 @@ def test_a_beat_a_few_minutes_ago_makes_the_next_tag_asked():
     clock = Clock()
     beats = beatbox.BeatMemory(clock=clock)
     assert not beats.recent("jarvis-home")
-    beats.played("jarvis-home")
+    beats.played("jarvis-home", asked_in_words=True)
     clock.now += 63
     assert beats.recent("jarvis-home")
     # Per project: another conversation's beat does not count.
@@ -707,3 +707,61 @@ def test_a_follow_up_in_readonly_mode_too(tmp_path, monkeypatch):
         assert [beat.pattern.id for beat in beatboxer.beats] == ["jarvis-hook", "boots-and-cats"]
     finally:
         b.stop()
+
+
+# Review of #104: the follow-up window must not let beats come unasked.
+
+def test_only_a_beat_asked_in_words_opens_the_window():
+    clock = Clock()
+    beats = beatbox.BeatMemory(clock=clock)
+    beats.played("p", asked_in_words=False)
+    assert not beats.recent("p")
+
+
+def test_follow_ups_do_not_restart_the_window_and_are_capped():
+    clock = Clock()
+    beats = beatbox.BeatMemory(clock=clock)
+    beats.played("p", asked_in_words=True)
+    for _ in range(beatbox.MAX_FOLLOW_UPS):
+        assert beats.recent("p")
+        beats.played("p", asked_in_words=False)
+        clock.now += 60
+    assert not beats.recent("p")                 # three follow-ups used
+    beats.played("p", asked_in_words=True)       # asked in words again
+    assert beats.recent("p")
+    clock.now += beatbox.FOLLOW_UP_S / 2
+    beats.played("p", asked_in_words=False)      # a follow-up does not move the start
+    clock.now += beatbox.FOLLOW_UP_S / 2 + 1
+    assert not beats.recent("p")
+
+
+def test_an_agent_that_tags_every_reply_gets_no_endless_beats(full):
+    full.host.scenario(mode="wrapper", spoken=FIRST_REPLY)
+    full.say("Jarvis, drop a beat.")
+    full.host.scenario(mode="wrapper", spoken=SECOND_REPLY)
+    said = [full.say("is the deploy green?")[1] for _ in range(beatbox.MAX_FOLLOW_UPS + 2)]
+    assert len(full.beatboxer.beats) == 1 + beatbox.MAX_FOLLOW_UPS
+    assert said[-1] == f"WAV:{beatbox.DROPPED_NOT_ASKED}"
+
+
+@pytest.mark.parametrize("enabled,transcript", [
+    (True, "what did you fix"), (True, "beatbox"), (False, "what did you fix")])
+def test_a_tag_inside_the_answer_keeps_the_answer(enabled, transcript):
+    text, beat = beatbox.choose("Tests pass. I fixed the [beatbox] tag handling.",
+                                transcript=transcript, enabled=enabled, read_back=False)
+    assert beat is None and text == "Tests pass. I fixed the tag handling."
+
+
+def test_switched_off_is_said_only_when_he_asked():
+    text, _ = beatbox.choose("[beatbox: hip-hop] Go.", transcript="what is open?",
+                             enabled=False, read_back=False)
+    assert text == beatbox.DROPPED_NOT_ASKED
+    text, _ = beatbox.choose("[beatbox: hip-hop] Go.", transcript="drop a beat",
+                             enabled=False, read_back=False)
+    assert text == beatbox.DROPPED_SWITCHED_OFF
+
+
+def test_a_broken_tag_first_is_not_promised():
+    text, beat = beatbox.choose("[beatbox: hip-hop Here we go.", transcript="drop a beat",
+                                enabled=True, read_back=False)
+    assert beat is None and text == beatbox.DROPPED_MISPLACED
