@@ -56,12 +56,13 @@ your process manager.
 | `JARVIS_NOTE_WORDS` | no (default `note,make a note,take a note,noteer,notitie,maak een notitie`) | The first words that make an utterance a note, in the same form. None of these, nor a recap word, may also be a yes or a no of `full` mode (refused at start). |
 | `JARVIS_WHISPER_MODEL` | no (default `base`) | faster-whisper model size; CPU-friendly sizes are `tiny`, `base`, `small`. |
 | `JARVIS_WHISPER_LANGUAGE` | no (default: detected per recording) | A language code (`en`, `nl`) to skip Whisper's language detection, which costs a second pass over the recording: on `agent-lxc` (base, int8) 0.8 s of the 1.7-1.9 s a short question takes. Set it only when you speak one language to Jarvis: Dutch speech with `en` comes out as a rough English translation. See "Where a turn's time goes". |
+| `JARVIS_WHISPER_LANGUAGES` | no (default: any language) | The languages you speak to Jarvis, comma-separated, at least two (`nl,en`). Whisper still detects the language per recording, but picks the likeliest of these only, then transcribes in it: the same one detection pass, so no slower. Short English in the car was detected as German on 26 Nov 2026 ("boots and cats" came back as "Okay, du buchst im Katz."); with `nl,en` it comes out as English or Dutch. Not together with `JARVIS_WHISPER_LANGUAGE`; one code is refused (set that one instead). |
 | `JARVIS_WHISPER_BEAM_SIZE` | no (default `5`) | Whisper's beam width, 1 to 10. `1` (greedy) took another 0.05-0.2 s off with the same transcripts on the test recordings. |
 | `JARVIS_KOKORO_VOICE` | no (default `bm_george`) | A Kokoro voice name. The default is a British male voice; the image also carries `af_heart` (American female). Pick one by ear once the service runs (see below). |
 | `JARVIS_STREAM_REPLIES` | no (default on) | `0`: every client gets the whole WAV, also one that asks for a streamed reply. Unset or `1`: a client that asks gets the reply as it is rendered (see "Streamed replies"). Anything else is refused at start. |
 | `JARVIS_SING` | no (default on) | `0`: Jarvis never sings; a reply meant to be sung is spoken as words. Unset or `1`: the easter egg is on (see "Singing (easter egg)"). Anything else is refused at start. |
 | `JARVIS_SING_PARODY` | no (default on) | `0`: the parody tunes (`iron-man`) are taken out of the table on their own; a reply tagged with one is spoken as words, the public-domain tunes are still sung. Unset or `1`: they are in. Anything else is refused at start. `JARVIS_SING=0` stops all singing either way. The prompts still name `iron-man` when it is `0`, so Jarvis may offer it and then speak those lines. |
-| `JARVIS_BEATBOX` | no (default on) | `0`: Jarvis never beatboxes; a reply meant to be a beat is spoken as words. Unset or `1`: the second easter egg is on (see "Beatboxing (easter egg)"). Independent of `JARVIS_SING`. Anything else is refused at start. |
+| `JARVIS_BEATBOX` | no (default on) | `0`: Jarvis never beatboxes; for a reply meant to be a beat he says "Beatboxing is switched off." Unset or `1`: the second easter egg is on (see "Beatboxing (easter egg)"). Independent of `JARVIS_SING`. Anything else is refused at start. |
 | `JARVIS_CLAUDE_TIMEOUT_S` | no (default `120`) | Seconds one Claude Code turn may take; on timeout the whole process group is killed and the phone gets a 502. |
 | `JARVIS_HEADER_DEADLINE_S` | no (default `10`) | Seconds a client gets, in total, to send the request line and all headers. A number above 0, at most 300; anything else is refused at start. See "What the endpoints do". |
 | `JARVIS_AGENT_MODE` | no (default `readonly`) | `readonly` or `full`. See "Agent modes" below. Unset, the bridge behaves exactly as before there were modes and reads none of the `full` settings. |
@@ -477,10 +478,28 @@ Only the summary is spoken, at most 160 characters of it (240 for a sung line, s
 "Singing (easter egg)"; Claude Code is asked for
 one sentence, two at most, of about 100 to 150 characters, because speech is the slow
 part of a turn; a longer one is cut at its last sentence end within 160 characters,
-or else at a word, with "…"), and only when it contains nothing that looks like code or a path (backticks, slashes, file
+else at its last semicolon, else at a word, with "…"), and only as it is when it contains nothing that looks like code or a path (backticks, slashes, file
 names, shell operators) or like a credential (`sk-ant-`, or any run of 32 or more
-letters, digits, `_` or `-`). Otherwise the phone hears "Done. Check the log for
-details."
+letters, digits, `_` or `-`). A semicolon is speech: until 26 Nov 2026 it counted as
+code, and 29 of 165 recorded turns lost a good summary to it.
+
+When the summary has code in it, or there is no summary line, Jarvis says what can be said
+(`summary.speakable`): first the summary line made speakable, else the reply's own first
+sentences, at most 160 characters. Code blocks, tables and horizontal rules are left out;
+list, quote and heading markup and markdown are taken off; a link is said as its text, a
+URL as "the link", a path or file as its name ("bridge/server.py" as "server", "owner/repo"
+as "owner repo"); inline code stays when it is one plain word. A sentence that still holds
+code, a path or anything shaped like a credential is left out whole. Only when nothing is
+left does the phone hear "Done, but I couldn't put the answer into words. Ask me to say it
+again." It never mentions a log: Mark, 26 Nov 2026, "and he says check the log for
+details, but cant show them".
+
+In `full` mode the bridge gets only one line of the reply (`spoken`, jarvis-full-agent
+D33). The agent host sends the agent's summary line as before, or, when there is none or
+the filters would replace it, a summary line of its own with what the bridge would make of
+the whole reply (`summary.spoken_line`: the same filters, at most 160 characters), so both
+modes say the same. The bridge speaks the `spoken` field only when it is a summary line.
+That part of the change needs the agent host reinstalled (`agent_host/install.sh`).
 
 ## Where a turn's time goes
 
@@ -784,18 +803,42 @@ random. A name is normalised like a tune name (`[beatbox: Boots and Cats]` works
 `[beat box]` and `[beat-box]` count as the tag. A sing tag written after it is removed,
 never said.
 
-**Why the driver's own words must ask for it.** The agent reads repositories, web pages
+**Why the driver must ask for it.** The agent reads repositories, web pages
 and mail, and it can be wrong; a 15-second beat in the car on an ordinary answer is
 the kind of thing a check the model does not control should stop. So the bridge plays
-a beat only when the tag is first on the agent's line *and* the transcript of this turn
-asks for one. Whisper mishears "beatbox" (23 Nov 2026: "Jarvis, drop a beatbox" came out
-as "Jawers, troop en peedbox!"), so the ask also takes the misheard forms in
-`bridge/beatbox.py` (`MISHEARD`).
+a beat only when the tag is first on the agent's line *and* the driver asked: the
+transcript of this turn asks for one, or a beat was played in this conversation (this
+project) less than ten minutes ago (`FOLLOW_UP_S`). Whisper mishears "beatbox" (23 Nov
+2026: "Jarvis, drop a beatbox" came out as "Jawers, troop en peedbox!"), so the ask also
+takes the misheard forms in `bridge/beatbox.py` (`MISHEARD`) and the beats' names ("hip
+hop", "boots and cats", "boots n katz"; not "hook" or "cats" alone).
 
-When the agent tagged its line and the bridge said it without the beat, the log says why:
-`beatbox tag dropped: switched_on=True asked=False tag_first=True` (whether the feature is
-on, whether the driver asked, whether the tag stood where it can be played). A beat that
-plays logs `beatboxed: <pattern>`. Neither line holds the transcript.
+**Another one.** On 26 Nov 2026 Jarvis played a beat, and a minute later Mark asked for
+"boots and cats"; Whisper heard "Okay, du buchst im Katz.", the agent understood and
+tagged its line, and the bridge, finding no word that asked, said "Boots and cats, coming
+right up." and nothing else. Now a beat played in this conversation makes the next tag
+count as asked for ten minutes ("another one", "nog een", "doe er nog een", or a garbled
+name), and each beat starts the ten minutes again. A follow-up comes within a minute or two,
+also with a question in between; ten minutes leaves room for that and is well under the 60
+minutes after which the agent host starts a new conversation. The memory is the bridge's
+own, per project, and starts empty when the bridge restarts.
+
+**No promise without a beat.** The agent's line promises a beat ("Boots and cats, coming
+right up."). When the bridge drops the tag, it says its own short line instead of that
+promise, with any notice of the bridge before or after it:
+
+| Why the tag is dropped | Jarvis says |
+|---|---|
+| the driver did not ask (and no beat in the last ten minutes) | "Sorry, I didn't catch that you wanted a beat." |
+| `JARVIS_BEATBOX=0` | "Beatboxing is switched off." |
+| the tag was not first on the line, or broken | "Sorry, I couldn't play that beat." |
+| the beat could not be rendered | "Sorry, the beat didn't come out." |
+
+When the agent tagged its line and the bridge did not play the beat, the log says why:
+`beatbox tag dropped: switched_on=True asked=False follow_up=False tag_first=True`
+(whether the feature is on, whether the driver's words asked, whether a beat was played in
+the last ten minutes, whether the tag stood where it can be played). A beat that plays
+logs `beatboxed: <pattern>`. Neither line holds the transcript.
 
 | Tag | Beat | Tempo, length |
 |---|---|---|
@@ -834,15 +877,18 @@ L16 stream, with the agent's line and any notice of the bridge said before it (0
 between) and news of a new project after it. `X-Jarvis-Summary` carries the line (or,
 when the agent wrote none, the beat's own words, such as "Boots and cats and boots and
 cats."). Rendering takes a few seconds (four to six words from Kokoro, warm), so it starts
-later than a spoken reply. When it fails, those words are spoken instead.
+later than a spoken reply. When it fails, Jarvis says "Sorry, the beat didn't come out."
+instead (not the line, which promised the beat).
 
 **When it beatboxes, and when not.** As for singing, all four must hold; otherwise every
-beatbox tag is removed and the line is spoken:
+beatbox tag is removed and the bridge's own line from the table above is said instead of
+the agent's:
 
 - the tag is the very first thing on the agent's own spoken line (only the bridge's fixed
   sentences, `FRAMING_SENTENCES`, are looked past);
-- the driver's own words in this turn ask for it: "beatbox" (also "beatboxen",
-  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats", or "beatbox" as
+- the driver asked: a beat was played in this conversation less than ten minutes ago, or
+  his own words in this turn ask for it: "beatbox" (also "beatboxen",
+  "beat-box", "beat box"), "beat", "beats", "beatje", "boots and cats", "hip hop", or "beatbox" as
   Whisper mishears it: a b or p, a vowel, a d or t, then "box" ("peedbox", "beadbox",
   "bietbox", "Pete box"). On 23 Nov 2026 "Jarvis, drop a beatbox" came out as "Jawers,
   troop en peedbox!"; the agent tagged its line and the bridge, finding no word that
