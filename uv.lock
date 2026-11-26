@@ -940,7 +940,7 @@ dev = [
 requires-dist = [
     { name = "av", specifier = ">=12,<17" },
     { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
-    { name = "faster-whisper", specifier = ">=1.0" },
+    { name = "faster-whisper", specifier = ">=1.1" },
     { name = "kokoro", specifier = ">=0.7" },
     { name = "soundfile", specifier = ">=0.12" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.6" },

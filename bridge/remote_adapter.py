@@ -43,7 +43,7 @@ from bridge.config import (
     check_private_file,
 )
 from bridge.logging_setup import FILE_ONLY
-from bridge.summary import FALLBACK_SUMMARY, extract_summary
+from bridge.summary import FALLBACK_SUMMARY, extract_summary, last_marker_line
 
 logger = logging.getLogger("bridge.remote")
 
@@ -59,8 +59,11 @@ PROJECT_NAME = AGENT_PROJECT_NAME
 #   error     null, or a code from the closed list
 #   turn      the turn id on the agent host, null when no turn started
 #   spoken    the agent's marker line, marker included, or "". It goes through
-#             summary.extract_summary as a read-only reply does; nothing else of the
-#             reply ever leaves the agent host
+#             summary.extract_summary as a read-only reply does. When the reply has no
+#             marker line, or one the filters reject, the agent host sends a marker line
+#             of its own instead: what extract_summary makes of the whole reply, at most
+#             160 characters through the same filters (summary.spoken_line). Nothing
+#             else of the reply ever leaves the agent host
 #   pending   true when a gated call waits for the driver's yes
 #   readback  the sentence to speak when pending, else null
 #   confirm   when pending: {"id", "sha256", "class", "expires_s"}, else null
@@ -714,7 +717,11 @@ def _unlink(path: str) -> None:
 
 
 def _spoken(notice: str, marker_line: str) -> str:
-    """The notice's fixed sentence first, then the agent's summary when it gave one."""
+    """The notice's fixed sentence first, then the agent's summary when it gave one.
+    Only a marker line is the agent's summary (D33): anything else in the field is
+    not spoken."""
+    # The marker line alone: lines around it in the field are never spoken.
+    marker_line = last_marker_line(marker_line)
     if not notice:
         return extract_summary(marker_line)
     sentence = NOTICE_SENTENCES[notice]

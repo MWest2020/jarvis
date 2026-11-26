@@ -166,7 +166,7 @@ configuration (`/etc/jarvis-agent/`). It:
   | `status` | `"ok"` or `"error"` |
   | `error` | `null`, or one code from the closed list: `bad_request`, `no_checkout`, `busy`, `low_memory`, `timeout`, `agent_failed`, `disabled`, `unsafe_settings`, `expired` |
   | `turn` | the turn id on the agent host, `null` when no turn started |
-  | `spoken` | the agent's marker line, verbatim and with its marker (the last line of the reply that starts with the marker), or `""`. The bridge runs it through `bridge/summary.extract_summary` exactly as it does for a read-only turn. Nothing else of the reply is sent |
+  | `spoken` | the agent's marker line, verbatim and with its marker (the last line of the reply that starts with the marker), or `""`. The bridge runs it through `bridge/summary.extract_summary` exactly as it does for a read-only turn. Since change `jarvis-say-it-honestly` (2026-11-26) the wrapper sends a marker line with exactly what `extract_summary` makes of the whole reply (`summary.spoken_line`): the agent's summary when speakable as it is, else a filtered excerpt of the reply, at most 160 characters, else `""`; so only filtered text leaves the host. Nothing else of the reply is sent |
   | `pending` | `true` when a gated call waits for a yes, else `false` |
   | `readback` | the read-back sentence when `pending` is `true`, else `null`. A separate field, never the marker line, so the bridge cannot mistake one for the other |
   | `confirm` | when `pending` is `true`: `{"id","sha256","class","expires_s"}`, else `null` |

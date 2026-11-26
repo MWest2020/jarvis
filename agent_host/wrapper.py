@@ -75,7 +75,7 @@ from agent_host.boundedio import MAX_SETTINGS_BYTES, read_regular
 from agent_host.config import PENDING_SECONDS, AgentHostConfig, hook_config_path, load_config
 from agent_host.sessions import KeyValueStore, SessionStore
 from agent_host.turnlock import Busy, acquire_turn_lock, available_memory_mb
-from bridge.summary import last_marker_line
+from bridge.summary import spoken_line
 
 V1_FIELDS: tuple[str, ...] = (
     "v", "status", "error", "turn", "spoken", "pending", "readback", "confirm", "notice",
@@ -789,7 +789,7 @@ def _run_turn(
         # A notice still is: that a new session started must not be lost.
         return _reply(status="ok", turn=turn_id, spoken="", pending=True,
                       notice=new_session, project=project_field, **pending_fields)
-    spoken = last_marker_line(spoken_text)
+    spoken = spoken_line(spoken_text)
     notice = most_important_notice([notice, new_session])
     return _reply(status="ok", turn=turn_id, spoken=spoken, notice=notice,
                   project=project_field)
