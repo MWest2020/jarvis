@@ -270,12 +270,14 @@ def test_replays_of_the_recorded_turns_never_fall_back_on_a_speakable_summary():
     "Clone git@github.com:MWest2020/jarvis.git",
     "The commit is 3f2a9c1d4e5f6a7b8c9d.",
     "Use `ghp_A1b2C3d4E5f6G7h8` as the token.",
+    "It is at host.example.com/path?token=abcdef123456 now.",
 ])
 def test_a_secret_never_survives_being_made_speakable(bad):
     for reply in (f"Body text.\n{SUMMARY_MARKER} {bad}", bad):
         said = extract_summary(reply)
         line = spoken_line(reply)
-        for secret in ("PxRfi", "S3cret", "hunter2", "git@", "bPxRf", "3f2a9c", "ghp_"):
+        for secret in ("PxRfi", "S3cret", "hunter2", "git@", "bPxRf", "3f2a9c", "ghp_",
+                       "abcdef123456"):
             assert secret not in line and secret not in said
 
 

@@ -175,9 +175,11 @@ _SIMPLE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9.-]{0,30}")
 _PATH = re.compile(r"(?<![\w/])(?:(?:~|\.{1,2})?/[\w.-]+(?:/[\w.-]*)*|[\w.-]+(?:/[\w.-]*)+)")
 _FILE = re.compile(rf"\b([\w-]+)\.(?:{_FILE_EXT})\b")
 # What reads as code in a sentence: a call ("print(i)", not "test(s)"), an assignment,
-# a command-line flag ("--force", "-rf"), or a statement keyword at its start.
+# a command-line flag ("--force", "-rf"), a query parameter ("?token=...", review of
+# #104), or a statement keyword at its start.
 _CODE_LIKE = re.compile(
     r"\b[A-Za-z_][\w.]*\((?!e?s\))[^()\n]{0,80}\)|\s==?\s|(?:^|\s)--?[A-Za-z][\w-]*|"
+    r"[?&][A-Za-z_][\w-]*=\S|"
     r"^(?:def|class|import|from|return|export|const|let|var|async|await)\s")
 # Never in a spoken sentence: a sentence with what is left of code is left out whole.
 _CODE_LEFT = "\x00"
