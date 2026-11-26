@@ -8,6 +8,7 @@ import pytest
 from bridge import remote_adapter
 from bridge.agent import AgentTurnFailed, AgentUnavailable, ConfirmAnswer, PendingConfirmation
 from bridge.config import AgentHostConfig, ProjectConfig
+from bridge.summary import FALLBACK_SUMMARY
 from bridge.remote_adapter import (
     READBACK_UNSPEAKABLE,
     RemoteAdapter,
@@ -152,8 +153,7 @@ def test_a_spoken_line_with_code_or_a_secret_is_not_spoken(host):
     for line in ("SPOKEN SUMMARY: run `rm -rf /`", "SPOKEN SUMMARY: the key is " + "a" * 40,
                  "no marker at all"):
         host.scenario(mode="wrapper", spoken=line)
-        assert _adapter(host).run_turn(project=DEMO, prompt="x").spoken == (
-            "Done. Check the log for details.")
+        assert _adapter(host).run_turn(project=DEMO, prompt="x").spoken == FALLBACK_SUMMARY
 
 
 def test_a_read_back_is_returned_as_given_with_its_confirmation(host):
@@ -270,8 +270,8 @@ def test_every_other_error_fails_the_turn_with_its_code(host, code, turn):
     ("target_changed", "", "The push target changed. I passed that on to the coding session."),
     ("out_of_budget", "", "The agent is out of budget for now."),
     # A summary that may not be spoken leaves the fixed sentence alone.
-    ("needs_desk", "SPOKEN SUMMARY: see `gate.py`", "I passed that on to the coding session."),
-    (None, "", "Done. Check the log for details."),
+    ("needs_desk", "SPOKEN SUMMARY: run `rm -rf /`", "I passed that on to the coding session."),
+    (None, "", FALLBACK_SUMMARY),
 ])
 def test_a_notice_is_spoken_as_the_bridges_own_fixed_sentence(host, notice, spoken, expected):
     host.scenario(mode="wrapper", notice=notice, spoken=spoken)

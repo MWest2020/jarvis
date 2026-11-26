@@ -57,7 +57,10 @@ SYSTEM_PROMPT_ADDITION = (
     + BEATBOX_INSTRUCTION
 )
 
-FALLBACK_SUMMARY = "Done. Check the log for details."
+# Said only when neither the summary line nor the reply holds anything speakable. Mark is
+# in the car with a phone, not at a screen: "and he says check the log for details, but
+# cant show them" (26 Nov 2026). So it never points at a log.
+FALLBACK_SUMMARY = "Done, but I couldn't put the answer into words. Ask me to say it again."
 
 
 # Speech is the slow part of a turn: Kokoro renders at about real time, some
@@ -74,8 +77,11 @@ _MARKER = re.compile(r"^[\s*#_>`-]*SPOKEN SUMMARY:[*_`]*\s*(.*)$", re.IGNORECASE
 _UNSPEAKABLE = re.compile(
     r"(```|`|(^|\s)[~.]?/[\w.-]+/|[\w-]+/[\w./-]+|\\[\w]|"
     r"\b[\w-]+\.(py|js|ts|tsx|json|ya?ml|toml|md|sh|go|rs|java|c|h|cpp|rb|php|html|css|sql|lock)\b|"
-    r"[{}<>$|;]|&&|=>|\(\))"
+    r"[{}<>$|]|&&|=>|\(\))"
 )
+# A semicolon is speech, not code (it was in the set above until 26 Nov 2026, and 29 of
+# 165 recorded turns, "...nothing failing; the only blips were...", were replaced by the
+# fallback for it).
 # Never speak anything shaped like a credential: an Anthropic key, or any long
 # unbroken run of token characters (hex tokens, base64 secrets, session ids).
 _SECRET_LIKE = re.compile(r"sk-ant-|[A-Za-z0-9_-]{32,}", re.IGNORECASE)
@@ -101,8 +107,18 @@ def last_marker_line(reply_text: str) -> str:
     return ""
 
 
+def _speakable_ok(text: str) -> bool:
+    return not _UNSPEAKABLE.search(text) and not _SECRET_LIKE.search(text)
+
+
 def extract_summary(reply_text: str) -> str:
+    """What is spoken for `reply_text`: its summary line when that is speakable as it is;
+    otherwise the summary line made speakable (speakable()); otherwise the reply itself
+    made speakable, its first sentences; and only when nothing speakable is left,
+    FALLBACK_SUMMARY."""
     lines = reply_text.splitlines()
+    candidates = []
+    body = lines
     for i in range(len(lines) - 1, -1, -1):
         m = _MARKER.match(lines[i])
         if not m:
@@ -113,12 +129,113 @@ def extract_summary(reply_text: str) -> str:
             rest = [ln for ln in lines[i + 1:] if ln.strip()]
             summary = _clean(rest[0]) if rest else ""
         # The filters see the whole summary, also the part a cut would drop.
-        if summary and not _UNSPEAKABLE.search(summary) and not _SECRET_LIKE.search(summary):
+        if summary and _speakable_ok(summary):
             return shorten(summary, MAX_SUNG_CHARS if _SUNG.match(summary) else MAX_SPOKEN_CHARS)
+        candidates.append(summary)
+        body = lines[:i]
         break
-    # No marker, or a summary with code, paths or a credential: a short, safe
-    # line instead of reading it aloud. The full reply is in the log.
+    # No marker, or a summary with code, paths or a credential: what can be said of it,
+    # else of the reply (in `full` mode the bridge has only the summary line; the agent
+    # host makes the reply's own line, spoken_line()).
+    candidates.append("\n".join(body))
+    for text in candidates:
+        said = speakable(text)
+        if said:
+            return shorten(said)
     return FALLBACK_SUMMARY
+
+
+# --- a reply made speakable (no summary line, or one with code in it) -------------------
+
+_FILE_EXT = (r"py|js|ts|tsx|json|ya?ml|toml|md|sh|go|rs|java|c|h|cpp|rb|php|html|css|sql|"
+             r"lock|txt|cfg|ini|env|kt|swift|xml|csv|log")
+_FENCE = re.compile(r"^\s*(```|~~~).*?(^\s*\1[^\n]*$|\Z)", re.MULTILINE | re.DOTALL)
+_DROP_LINE = re.compile(r"^\s*(\||[-*_=]{3,}\s*$|SESSION:\s*close\b)", re.IGNORECASE)
+_LINE_MARKUP = re.compile(r"^\s*(?:#{1,6}\s+|>+\s*|[-*+•]\s+|\d{1,3}[.)]\s+|\[[ xX]\]\s+)+")
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\([^)\n]*\)")
+_URL = re.compile(r"\b(?:https?://|www\.)[^\s<>()\]]+[^\s<>()\].,;:!?'\"]", re.IGNORECASE)
+_INLINE_CODE = re.compile(r"`+([^`\n]*)`+")
+_SIMPLE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9.-]{0,30}")
+# A path: a slash between names, or one before a name ("/etc/hosts", "~/x", "./run").
+_PATH = re.compile(r"(?<![\w/])(?:~|\.{1,2})?/?(?:[\w.-]+/)+[\w.-]*")
+_FILE = re.compile(rf"\b([\w-]+)\.(?:{_FILE_EXT})\b")
+# Never in a spoken sentence: a sentence with what is left of code is left out whole.
+_CODE_LEFT = "\x00"
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _path_words(match: re.Match) -> str:
+    """A path as words: a file's or a deep path's last name without its extension
+    ("bridge/server.py" -> "server"); "owner/repo" or "and/or" with a space."""
+    path = match.group(0)
+    parts = [p for p in path.split("/") if p not in ("", "~", ".", "..")]
+    if not parts:
+        return " "
+    last = parts[-1]
+    if path.startswith(("/", "~", ".")) or len(parts) > 2 or _FILE.fullmatch(last):
+        return _FILE.sub(r"\1", last)
+    return " ".join(parts)
+
+
+def _inline_code(match: re.Match) -> str:
+    code = match.group(1).strip()
+    if _SIMPLE_WORD.fullmatch(code) and not _FILE.fullmatch(code):
+        return code
+    if _FILE.fullmatch(code):
+        return _FILE.sub(r"\1", code)
+    return _CODE_LEFT
+
+
+def _speakable_line(line: str) -> str:
+    line = _LINE_MARKUP.sub("", line)
+    line = _MD_LINK.sub(r"\1", line)
+    line = _INLINE_CODE.sub(_inline_code, line)
+    line = _URL.sub("the link", line)
+    line = _PATH.sub(_path_words, line)
+    line = _FILE.sub(r"\1", line)
+    line = _clean(line)
+    line = re.sub(r"\(\s*\)", "", line)
+    line = re.sub(r"\s+([.,;:!?])", r"\1", line)
+    line = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", line).strip(" ,;")
+    if line and line[-1] in ":,;-":
+        line = line[:-1].rstrip() + "."
+    elif line and line[-1] not in ".!?…":
+        line += "."
+    return line
+
+
+def speakable(text: str) -> str:
+    """`text` (a reply, or a summary line with code in it) as words that can be read
+    aloud: no code blocks, tables or list markup, no markdown, links as their text, a URL
+    as "the link", a path or file as its name. A sentence that still holds code, a path
+    or anything shaped like a credential is left out whole. "" when nothing is left.
+    Not shortened: extract_summary does that."""
+    text = _FENCE.sub("\n", text or "")
+    lines = []
+    for line in text.splitlines():
+        if not line.strip() or _DROP_LINE.match(line) or _MARKER.match(line):
+            continue
+        line = _speakable_line(line)
+        if line:
+            lines.append(line)
+    kept = [sentence for sentence in _SENTENCE.split(" ".join(lines))
+            if sentence and _CODE_LEFT not in sentence and _speakable_ok(sentence)
+            and re.search(r"[A-Za-z]{2}", sentence)]
+    return " ".join(kept)
+
+
+def spoken_line(reply_text: str) -> str:
+    """The `spoken` field the agent host sends (jarvis-full-agent D33): the reply's
+    summary line verbatim, as before, when the bridge makes the same of it as of the
+    whole reply. When the reply has no summary line, or one that extract_summary has to
+    replace, a line with the marker and what extract_summary makes of the whole reply
+    (at most MAX_SPOKEN_CHARS, through the same filters), so the driver hears the
+    answer instead of the fallback. "" or the line itself when nothing is speakable."""
+    line = last_marker_line(reply_text)
+    spoken = extract_summary(reply_text)
+    if spoken == FALLBACK_SUMMARY or extract_summary(line) == spoken:
+        return line
+    return f"{SUMMARY_MARKER} {spoken}"
 
 
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
@@ -133,6 +250,10 @@ def shorten(summary: str, limit: int = MAX_SPOKEN_CHARS) -> str:
     ends = [m.end() for m in _SENTENCE_END.finditer(summary) if m.end() <= limit]
     if ends:
         return summary[:ends[-1]]
+    # A semicolon ends a clause: "..., and nothing failing; the only blips were ...".
+    clauses = [m.start() for m in re.finditer(r";(?=\s)", summary) if m.start() < limit]
+    if clauses and clauses[-1] > limit // 3:
+        return summary[:clauses[-1]].rstrip() + "."
     head = summary[:limit - 1]
     if not summary[limit - 1].isspace() and " " in head:
         head = head[:head.rindex(" ")]
